@@ -29,4 +29,11 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 litellm-rs = "0.1.3"
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22.1"
+ort = { version = "2.0.0-rc.9", features = ["download-binaries", "ndarray"] }
+hf-hub = "0.4"
+ndarray = "0.17"
+symphonia = { version = "0.5", features = ["all"] }
+rubato = "0.16"
+tokenizers = "0.22"
+
 
