@@ -130,66 +130,65 @@ function cancel() {
 </script>
 
 <template>
-    <div class="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-200 p-8 font-sans">
+    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans">
         <div class="max-w-2xl mx-auto">
             <header class="mb-10">
-                <h1
-                    class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-blue-600 mb-2 drop-shadow-lg">
+                <h1 class="text-4xl font-bold text-white mb-2">
                     LLM Settings
                 </h1>
                 <p class="text-gray-400">Configure your AI model and API credentials</p>
             </header>
 
-            <div class="backdrop-blur-xl bg-white/5 border border-white/10 p-8 rounded-2xl shadow-2xl">
+            <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl">
 
                 <!-- Base URL -->
                 <div class="mb-6 group">
                     <label
-                        class="block text-sm font-semibold text-gray-300 mb-2 group-hover:text-purple-400 transition-colors">
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
                         Base URL
                     </label>
                     <input v-model="localBaseUrl" type="text"
-                        class="w-full p-3 pl-4 rounded-xl bg-gray-900/50 border border-gray-700 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all duration-300 placeholder-gray-600"
+                        class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
                         placeholder="https://generativelanguage.googleapis.com" />
-                    <p class="text-xs text-gray-500 mt-1">The base URL for the LLM API endpoint (trailing slashes will
+                    <p class="text-xs text-gray-500 mt-2">The base URL for the LLM API endpoint (trailing slashes will
                         be removed)</p>
                 </div>
 
                 <!-- API Key -->
                 <div class="mb-6 group">
                     <label
-                        class="block text-sm font-semibold text-gray-300 mb-2 group-hover:text-purple-400 transition-colors">
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
                         API Key
                     </label>
                     <input v-model="localApiKey" type="password"
-                        class="w-full p-3 pl-4 rounded-xl bg-gray-900/50 border border-gray-700 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all duration-300 placeholder-gray-600"
+                        class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
                         placeholder="Enter your API key" />
-                    <p class="text-xs text-gray-500 mt-1">Your API key will be stored locally in the browser</p>
+                    <p class="text-xs text-gray-500 mt-2">Your API key will be stored locally in the browser</p>
                 </div>
 
                 <!-- Model Selection -->
                 <div class="mb-6 group">
                     <label
-                        class="block text-sm font-semibold text-gray-300 mb-2 group-hover:text-purple-400 transition-colors">
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
                         Model
                     </label>
                     <div class="flex gap-3 mb-2">
                         <select v-if="!showManualInput" v-model="localModel"
-                            class="flex-1 p-3 pl-4 rounded-xl bg-gray-900/50 border border-gray-700 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all duration-300">
+                            class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300">
                             <option v-if="availableModels.length === 0" :value="localModel">{{ localModel }}</option>
                             <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
                         </select>
                         <input v-else v-model="localModel" type="text"
-                            class="flex-1 p-3 pl-4 rounded-xl bg-gray-900/50 border border-gray-700 focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 outline-none transition-all duration-300 placeholder-gray-600"
+                            class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
                             placeholder="Enter model name manually" />
                         <button @click="fetchModels" :disabled="isFetchingModels || !localApiKey"
-                            class="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white font-semibold rounded-xl shadow-lg hover:shadow-blue-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 active:scale-95">
+                            class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95">
                             {{ isFetchingModels ? 'Fetching...' : 'Fetch Models' }}
                         </button>
                     </div>
                     <div class="flex items-center gap-2 mb-1">
                         <button @click="showManualInput = !showManualInput"
-                            class="text-xs text-purple-400 hover:text-purple-300 transition-colors underline">
+                            class="text-xs text-blue-400 hover:text-blue-300 transition-colors underline">
                             {{ showManualInput ? 'Use dropdown' : 'Enter manually' }}
                         </button>
                     </div>
@@ -200,11 +199,11 @@ function cancel() {
                 <!-- Action Buttons -->
                 <div class="flex gap-4 mt-8">
                     <button @click="saveSettings" :disabled="!hasChanges"
-                        class="flex-1 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-emerald-900/30 hover:shadow-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:-translate-y-0.5 active:translate-y-0">
+                        class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0">
                         Save Settings
                     </button>
                     <button @click="cancel"
-                        class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-6 rounded-xl border border-gray-600 hover:border-gray-500 transition-all duration-300 shadow-lg hover:shadow-xl active:scale-95">
+                        class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all shadow-lg hover:shadow-xl active:scale-95">
                         Cancel
                     </button>
                 </div>

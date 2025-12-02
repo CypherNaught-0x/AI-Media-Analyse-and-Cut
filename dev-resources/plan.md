@@ -194,27 +194,25 @@ A desktop application for intelligent video and audio segmentation using AI. Sup
 - Basic transcription with context and glossary fields
 - Segment display in UI
 - Basic video cutting
+- Speaker count configuration
+- Enhanced segment editing (manual adjustments)
+- Short clips generation with AI scoring
+- Progress indicators for long operations
+- Improved error handling (JSON parsing)
 
 ### In Progress
 
-- Improving transcription accuracy and error handling
 - UI/UX refinements
 
 ### Planned (High Priority)
 
-1. Speaker count configuration
-2. Enhanced segment editing (manual adjustments)
-3. Short clips generation with AI scoring
-4. Progress indicators for all long operations
-5. Better error handling and user feedback
-
+1. Local transcription with nvidia/parakeet-tdt-0.6b-v3 (ONNX)
 ### Future Considerations
 
-- Local transcription with nvidia/parakeet-tdt-0.6b-v3 (ONNX)
 - Batch processing multiple files
 - Export templates for different platforms
-- Cloud storage integration for outputs
-- Collaboration features (share segments, get feedback)
+- Batch processing multiple files
+- Platform export presets (Aspect ratio conversion)
 
 ---
 
