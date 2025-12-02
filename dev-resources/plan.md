@@ -1,145 +1,269 @@
-# **App Summary**
+# AI Media Cutter - Development Plan
 
-## **Media AI Cutter** is a cross-platform desktop application built with Tauri v2 (Rust) and Vue 3 (TypeScript/pnpm). It serves as a local media lab that allows users to drag and drop video or audio files for intelligent processing.
+## Project Overview
 
-  * **Core Function**: Automatically extracts audio, optimizes it for API usage (AAC/OGG conversion), and generates highly accurate transcripts using Google's **Gemini 2.5 Flash/Pro** models.
-  * **Key Features**:
-      * **Auto-setup**: Automatically downloads the required FFmpeg binaries on the first run.
-      * **Smart Uploads**: Uses the Google Files API for large media to bypass token limits.
-      * **AI Editing**: Users can edit transcripts to cut video segments non-linearly.
-      * **Viral Shorts**: AI-driven detection of "interesting" segments for social media generation.
-      * **Local Privacy Option**: (Planned) Support for offline transcription via NVIDIA Parakeet.
+A desktop application for intelligent video and audio segmentation using AI. Supports transcription with timestamps and speaker annotations, segment identification, and intelligent video cutting for both full segments and social media clips.
 
-### **Unit Test Requirements**
+## Technology Stack
 
-To ensure reliability, the following test coverage is required:
+- **Frontend**: Vue.js 3 + TypeScript + TailwindCSS
+- **Backend**: Rust + Tauri
+- **AI**: LiteLLM (Google Gemini, OpenAI-compatible APIs), Future: Local ONNX models
+- **Media Processing**: FFmpeg
 
-  * **Audio Conversion**: Assert that `ffmpeg-sidecar` correctly converts a sample `.mp4` to `.aac` and returns the correct file path.
-  * **Size Calculation**: Test the file size estimator function against known byte counts to determine if the Files API is needed (threshold \> 20MB).
-  * **JSON Parsing**: Mock a Gemini response (with and without timestamps) and assert that the Rust struct correctly parses it into `Segment` objects.
-  * **PromptBuilder**: Assert that the system prompt correctly injects the user's glossary and context strings.
+---
 
------
+## Feature Checklist
 
-### **Implementation Steps**
+### udio Extraction
 
-#### **Step 1: Project Initialization & Prerequisites**
+- [x] Extract audio track from video files using FFmpeg
+- [x] Convert to OGG format (libvorbis) for AI processing
+- [x] Monitor file size for upload decisions
+- [x] Support direct audio file input (skip extraction)
 
-**Requirements**: `pnpm`, `TypeScript`, `Tauri v2 CLI`.
+### LLM Configuration & Settings
 
-1.  **Setup Environment**:
-      * Install pnpm: `npm install -g pnpm`
-      * Ensure Rust is up to date: `rustup update`
-2.  **Scaffold Project**:
-    ```bash
-    pnpm create tauri-app@latest --template vue-ts
-    # Select "TypeScript" and "pnpm" explicitly
-    ```
-3.  **Install Frontend Dependencies**:
-    ```bash
-    cd media-ai-cutter
-    pnpm install
-    pnpm add -D tailwindcss postcss autoprefixer
-    pnpm tailwindcss init -p
-    ```
-      * *Config*: Ensure `tsconfig.json` has `"strict": true`.
+- [x] Settings page for API configuration
+- [x] Support for multiple LLM providers (Google Gemini, OpenAI, LiteLLM)
+- [x] Base URL normalization (strip trailing slashes, add https://)
+- [x] Model selection with fetch from API
+- [x] Manual model input fallback
+- [x] API key management (stored in localStorage)
+- [x] Proper authentication (query parameter for Google, Bearer token for OpenAI)
 
-#### **Step 2: FFmpeg Sidecar & Auto-Download**
+### Transcription Features
 
-**Goal**: Remove manual binary management and use the crate's auto-download feature.
+#### Current Implementation
 
-1.  **Add Dependency**:
-    In `src-tauri/Cargo.toml`:
-    ```toml
-    [dependencies]
-    ffmpeg-sidecar = "2.0" # Check latest version
-    anyhow = "1.0"
-    ```
-2.  **Implement Auto-Download**:
-    In `src-tauri/src/main.rs`, adds a startup check.
-      * **Logic**: On app launch, call `ffmpeg_sidecar::download::auto_download().unwrap()`.
-      * **UX**: Show a "Initializing AI Engine..." splash screen on the frontend while this runs (it downloads \~70MB).
-3.  **Refine Configuration**:
-      * Documentation notes that `auto_download` places binaries in a local directory. Ensure your Tauri permissions (in `tauri.conf.json`) allow executing binaries from the app data folder if strictly sandboxed, though `ffmpeg-sidecar` usually handles the path resolution internally.
+- [x] Google Gemini API integration with file upload (>20MB)
+- [x] OpenAI-compatible API support with base64 encoding
+- [x] Base64 file encoding via Tauri command
+- [x] Context input field for content description
+- [x] Glossary input field for keyword descriptions
+- [x] Basic transcript parsing with timestamps
 
-#### **Step 3: Audio Pre-processing (The Pipeline)**
+#### Missing Features
 
-**Goal**: Convert audio to a bandwidth-efficient format (`audio/ogg` or `audio/aac`) before sending to AI.
+- [ ] **Speaker count configuration input**
+  - Add UI field for number of speakers
+  - Pass to system prompt for better speaker annotation
+- [ ] **Enhanced system prompt with speaker information**
+  - Include speaker count in prompt
+  - Request clear speaker labels (e.g., Speaker 1, Speaker 2)
+- [ ] **Improved JSON parsing and validation**
+  - Validate timestamp format (MM:SS)
+  - Handle malformed responses gracefully
+  - Show parsing errors to user
+- [ ] **Error handling and retry logic**
+  - Retry failed API calls
+  - Better error messages
+  - Timeout handling
 
-1.  **Conversion Command**:
-    Create a Rust function `prepare_audio_for_ai(input: &str) -> Result<PathBuf>`.
-      * Use `ffmpeg-sidecar` to run:
-        `ffmpeg -i input.mp4 -vn -c:a libvorbis -q:a 4 output.ogg` (or `-c:a aac -b:a 32k` for extreme compression).
-      * *Why*: OGG/Vorbis is highly efficient for speech and natively supported by Gemini.
-2.  **Size Calculation**:
-      * Implement `fs::metadata(&output_path)?.len()` to get bytes.
-      * **Decision Logic**:
-          * If `< 18MB`: Use Inline Data (base64 encoded in `litellm_rs` payload).
-          * If `> 18MB`: Use Google Files API (Step 4).
+#### Future: Local Transcription Option
 
-#### **Step 4: Google Files API Integration**
+- [ ] **Integrate nvidia/parakeet-tdt-0.6b-v3 (ONNX)**
+  - Research ONNX integration in Rust/Tauri
+  - Implement model loading and inference
+  - Support for multi-language transcription
+  - Word-level and segment-level timestamps
+  - Handle long audio (up to 24 min with full attention, 3hr with local attention)
+- [ ] **Audio segmentation for local transcription**
+  - Split audio into chunks when approaching limits
+  - Merge transcripts from multiple chunks
+  - Preserve timestamp continuity across chunks
+- [ ] **Local vs Cloud toggle in Settings**
+  - UI option to choose transcription method
+  - Auto-fallback if local model unavailable
 
-**Goal**: Handle large files that exceed the standard prompt payload limit.
+### Segment Identification & Editing
 
-  * *Note*: `litellm_rs` focuses on the completion/generation interface. For the **Files API** (uploading the blob), we need a standard HTTP client.
+#### Current Implementation
 
-<!-- end list -->
+- [x] Basic transcript parsing into segments
+- [x] Display segments in UI with timestamps, speaker, and text
+- [x] Segment list visualization
 
-1.  **Add `reqwest`**: Use `reqwest = { version = "0.11", features = ["json", "multipart"] }` purely for the upload step.
-2.  **Upload Logic**:
-      * POST to `https://generativelanguage.googleapis.com/upload/v1beta/files?key=YOUR_API_KEY`.
-      * Get `file_uri` from the response (e.g., `https://generativelanguage.googleapis.com/v1beta/files/abc-123`).
-      * **State**: Verify the file state is `ACTIVE` before proceeding.
+#### Missing Features
 
-#### **Step 5: Intelligence Layer (litellm\_rs)**
+- [ ] **AI-powered segment identification**
+  - Analyze transcript for topic changes
+  - Detect natural break points
+  - Group related content together
+  - Configurable segment rules (min/max duration)
+- [ ] **Manual segment editing**
+  - Click to edit segment start/end times
+  - Drag-and-drop timeline editor
+  - Merge adjacent segments
+  - Split segments at cursor position
+  - Delete/add segments
+- [ ] **Segment preview**
+  - Play segment in embedded player
+  - Visual waveform/timeline
+  - Keyboard shortcuts (Space: play/pause, Arrow keys: navigate)
+- [ ] **Segment metadata**
+  - Assign titles/names to segments
+  - Add notes/descriptions
+  - Tag segments (e.g., intro, main content, outro)
 
-**Goal**: Use `litellm_rs` to interact with Gemini 2.5.
+### Video Cutting
 
-1.  **Add Dependency**:
-    ```toml
-    [dependencies]
-    litellm-rs = "0.1" # Verify latest version
-    tokio = { version = "1", features = ["full"] }
-    ```
-2.  **Client Configuration**:
-      * Model: `gemini/gemini-2.5-flash` or `gemini/gemini-2.5-pro` (Check specific provider string in `litellm_rs` docs, usually `gemini/` prefix routes to Google).
-3.  **Construct the Payload**:
-      * If **Inline** (Small file):
-        Pass the audio as a base64 string in the content block (if `litellm_rs` supports multimodal content blocks), or fallback to `reqwest` if the crate is strictly text-only.
-      * If **Files API** (Large file):
-        Pass the `file_uri` obtained in Step 4.
-4.  **The Prompt**:
-      * **System Prompt**:
-        > "You are a professional video editor assistant. Your task is to transcribe the audio and identify logical segments."
-      * **User Prompt**:
-        > "Analyze the following audio.
-        > Context: {{ user\_context }}
-        > Glossary: {{ glossary\_terms }}
-        > [WISH FOR TIMESTAMPS]: Please output the transcription in a strict JSON format with 'start', 'end', 'speaker', and 'text' fields. Ensure timestamps are in 'MM:SS' format.
-        > *Note: This prompt is exemplary; the model may hallucinate timestamp formats without few-shot examples. Please verify output.*"
+#### Current Implementation
 
-#### **Step 6: Frontend & Parsing (Vue + TS)**
+- [x] Basic video cutting by segments using FFmpeg
+- [x] Output path generation (\_cut suffix)
 
-1.  **Strict Types**:
-    Define interfaces in `src/types/index.ts`:
-    ```typescript
-    interface TranscriptSegment {
-      start: string;
-      end: string;
-      text: string;
-      speaker: string;
-    }
-    ```
-2.  **Parsing Rust Response**:
-      * The `litellm_rs` response will likely be a string containing JSON code blocks (markdown).
-      * Implement a regex parser in Rust or TS to extract the JSON array from the Markdown code fences.
-3.  **Editor UI**:
-      * Render the segments.
-      * Clicking a segment uses the HTML5 Video API (`video.currentTime = ...`) to jump to the specific second.
+#### Missing Features
 
-#### **Step 7: Video Generation (Cutting)**
+- [ ] **Progress indication**
+  - Real-time progress bar for cutting operations
+  - Estimated time remaining
+  - Cancel operation button
+- [ ] **Batch export**
+  - Export all segments at once
+  - Choose output directory
+  - Naming convention (e.g., segment_001.mp4, segment_002.mp4)
+- [ ] **Output configuration**
+  - Format selection (MP4, MKV, AVI, etc.)
+  - Quality/bitrate settings
+  - Resolution options (keep original, or resize)
+  - Codec selection
+- [ ] **Advanced cutting options**
+  - Include/exclude specific segments
+  - Add fade in/out effects
+  - Add intro/outro clips
+  - Preserve or re-encode (fast vs quality)
 
-1.  **Execution**:
-      * Receive the list of "kept" segments from the UI.
-      * Use `ffmpeg-sidecar` to run the cut command.
-      * *Optimization*: Use a `filter_complex` command to cut and concat in a single pass to avoid intermediate files if possible.
+### Short Clips Generation (NEW)
+
+- [ ] **Interestingness scoring algorithm**
+  - Analyze segments for engagement factors:
+    - Speaker changes (dialogue vs monologue)
+    - Keyword density from glossary
+    - Length appropriateness (15-60s ideal)
+    - Audio energy/volume variations
+  - Score each segment 0-100
+- [ ] **Configurable clip count**
+  - UI input for number of clips to generate (x)
+  - Default to 3-5 clips
+- [ ] **Duration constraints**
+  - Platform presets: LinkedIn (30-60s), Instagram (15-60s), TikTok (15-60s)
+  - Custom duration ranges
+  - Auto-trim or extend segments to fit
+- [ ] **Auto-selection of best segments**
+  - Sort segments by interestingness score
+  - Select top x segments
+  - Avoid overlapping clips
+  - Ensure variety (different speakers, topics)
+- [ ] **Platform-specific optimization**
+  - Aspect ratio conversion (16:9, 9:16, 1:1)
+  - Target resolution (1080p, 720p)
+  - Bitrate optimization for platform
+  - Add captions/subtitles overlay
+- [ ] **Thumbnail generation**
+  - Extract frame from middle of clip
+  - Add text overlay with title
+  - Save as separate image files
+- [ ] **Clip preview and approval**
+  - Show selected clips before export
+  - Allow manual adjustments
+  - Regenerate if unsatisfied
+
+### Audio File Support
+
+- [ ] **Direct audio file processing**
+  - Skip video extraction for audio files (MP3, WAV, OGG, etc.)
+  - All transcription features work on audio
+- [ ] **Audio-specific features**
+  - Waveform visualization
+  - Audio-only export options
+  - Podcast segment detection
+
+---
+
+## Current Status
+
+### Completed
+
+- FFmpeg integration and auto-download
+- Audio extraction from video files
+- Settings page with multi-provider LLM configuration
+- Google Gemini API integration (with file upload for large files)
+- OpenAI/LiteLLM compatibility (with base64 encoding)
+- Base64 file encoding via Tauri command
+- Basic transcription with context and glossary fields
+- Segment display in UI
+- Basic video cutting
+
+### In Progress
+
+- Improving transcription accuracy and error handling
+- UI/UX refinements
+
+### Planned (High Priority)
+
+1. Speaker count configuration
+2. Enhanced segment editing (manual adjustments)
+3. Short clips generation with AI scoring
+4. Progress indicators for all long operations
+5. Better error handling and user feedback
+
+### Future Considerations
+
+- Local transcription with nvidia/parakeet-tdt-0.6b-v3 (ONNX)
+- Batch processing multiple files
+- Export templates for different platforms
+- Cloud storage integration for outputs
+- Collaboration features (share segments, get feedback)
+
+---
+
+## Technical Implementation Notes
+
+### Audio Processing
+
+- Uses `ffmpeg-sidecar` with auto-download
+- Converts to OGG format (libvorbis codec, quality setting: q:a 4)
+- Tauri command: `prepare_audio_for_ai`
+
+### API Integration
+
+- Dynamic endpoint detection (Google vs OpenAI-compatible)
+- Conditional authentication:
+  - Google: API key as query parameter (`?key=`)
+  - OpenAI/LiteLLM: Bearer token in `Authorization` header
+- File handling:
+  - Google: File upload API for files >20MB
+  - Others: Base64 encoding via `read_file_as_base64` command
+- Different request formats:
+  - Google: `contents`, `system_instruction`
+  - OpenAI: `model`, `messages` with roles
+
+### Frontend Architecture
+
+- Vue 3 Composition API with TypeScript
+- Reactive settings management (`useSettings` composable with localStorage)
+- Tauri commands for all backend operations
+- Modern gradient-based UI with dark mode theme
+- TailwindCSS for styling
+
+### Backend Architecture
+
+- Rust with Tauri for native desktop app
+- Modular structure:
+  - `gemini.rs`: LLM client with multi-provider support
+  - `upload.rs`: Google Files API upload (conditional)
+  - `video.rs`: FFmpeg-based video cutting
+  - `lib.rs`: Tauri commands and app initialization
+
+---
+
+## Next Steps (Prioritized)
+
+1. **Add speaker count input** - Quick win for better transcription
+2. **Implement segment editing UI** - Core functionality for user control
+3. **Short clips generation MVP** - High-value feature for social media users
+4. **Progress indicators** - Better UX for long operations
+5. **Research local transcription** - Evaluate ONNX integration feasibility
+6. **Batch processing** - Allow processing multiple files in queue
+7. **Platform export presets** - Simplify output for different social platforms
