@@ -5,6 +5,13 @@ export interface TranscriptSegment {
   speaker: string;
 }
 
+export interface Clip {
+  start: string;
+  end: string;
+  title: string;
+  reason: string;
+}
+
 export interface AudioInfo {
   path: string;
   size: number;
