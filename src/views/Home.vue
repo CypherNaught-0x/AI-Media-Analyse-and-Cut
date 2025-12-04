@@ -5,7 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open, save, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
-import type { TranscriptSegment, AudioInfo, Clip } from "../types";
+import type { TranscriptSegment, AudioInfo, Clip, SilenceInterval } from "../types";
 import { useSettings } from "../composables/useSettings";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
@@ -161,6 +161,11 @@ async function processFile() {
         const audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { inputPath: inputPath.value });
         status.value = `Audio prepared: ${audioInfo.path} (${(audioInfo.size / 1024 / 1024).toFixed(2)} MB)`;
 
+        // 1b. Detect Silence
+        status.value = "Detecting silence...";
+        const silenceIntervals = await invoke<SilenceInterval[]>("detect_silence", { path: audioInfo.path });
+        console.log(`Found ${silenceIntervals.length} silence intervals.`);
+
         const isGoogleApi = settings.value.baseUrl.includes('generativelanguage.googleapis.com');
         let uri: string | null = null;
         let audioBase64: string | null = null;
@@ -207,6 +212,19 @@ async function processFile() {
                 if (!Array.isArray(parsed)) throw new Error("Response is not an array");
                 segments.value = parsed;
                 status.value = `Analysis complete. Found ${segments.value.length} segments.`;
+
+                // Filter silent segments
+                if (silenceIntervals.length > 0) {
+                    status.value = "Filtering silent segments...";
+                    const originalCount = segments.value.length;
+                    segments.value = filterSilentSegments(segments.value, silenceIntervals);
+                    const removedCount = originalCount - segments.value.length;
+                    if (removedCount > 0) {
+                        console.log(`Removed ${removedCount} silent segments.`);
+                        status.value = `Analysis complete. Found ${segments.value.length} segments (${removedCount} removed).`;
+                    }
+                }
+
                 await saveTranscript();
 
                 // 5. Advanced Alignment (Optional)
@@ -447,6 +465,29 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
     });
     
     await saveTranscript();
+}
+
+function filterSilentSegments(segments: TranscriptSegment[], silence: SilenceInterval[]): TranscriptSegment[] {
+    const parseTime = (t: string) => {
+        const parts = t.split(':').map(Number);
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        return 0;
+    };
+
+    return segments.filter(seg => {
+        const start = parseTime(seg.start);
+        const end = parseTime(seg.end);
+        
+        for (const s of silence) {
+            // If segment is fully contained within silence (with small tolerance)
+            if (start >= s.start && end <= s.end) {
+                console.log(`Removing silent segment: [${seg.start}-${seg.end}] "${seg.text}" (Silence: ${s.start}-${s.end})`);
+                return false;
+            }
+        }
+        return true;
+    });
 }
 
 function jumpTo(time: number) {

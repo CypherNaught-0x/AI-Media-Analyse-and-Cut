@@ -137,6 +137,7 @@ mod gemini;
 pub mod time_utils;
 mod upload;
 mod video;
+mod silence;
 
 use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
@@ -144,6 +145,7 @@ use crate::upload::upload_file_and_wait;
 use crate::video::{
     cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
 };
+use crate::silence::detect_silence;
 
 #[tauri::command]
 async fn upload_file(
@@ -297,7 +299,8 @@ pub fn run() {
             open_folder,
             write_text_file,
             read_text_file,
-            align_transcript
+            align_transcript,
+            detect_silence
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

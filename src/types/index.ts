@@ -16,3 +16,9 @@ export interface AudioInfo {
   path: string;
   size: number;
 }
+
+export interface SilenceInterval {
+  start: number;
+  end: number;
+  duration: number;
+}
