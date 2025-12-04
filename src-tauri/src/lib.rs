@@ -233,10 +233,12 @@ async fn generate_clips(
     count: u32,
     min_duration: u32,
     max_duration: u32,
+    topic: Option<String>,
+    splicing: bool,
 ) -> Result<String, String> {
     let client = GeminiClient::new(api_key, base_url, model);
     client
-        .generate_clips(&transcript, count, min_duration, max_duration)
+        .generate_clips(&transcript, count, min_duration, max_duration, topic, splicing)
         .await
         .map_err(|e| e.to_string())
 }

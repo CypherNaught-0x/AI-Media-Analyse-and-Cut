@@ -6,10 +6,11 @@ export interface TranscriptSegment {
 }
 
 export interface Clip {
-  start: string;
-  end: string;
+  segments: { start: string; end: string }[];
   title: string;
   reason: string;
+  start?: string; // Deprecated, kept for backward compatibility
+  end?: string;   // Deprecated, kept for backward compatibility
 }
 
 export interface AudioInfo {

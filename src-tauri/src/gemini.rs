@@ -153,19 +153,36 @@ impl GeminiClient {
         count: u32,
         min_duration: u32,
         max_duration: u32,
+        topic: Option<String>,
+        splicing: bool,
     ) -> Result<String> {
         let system_prompt = "You are a viral content expert. Your goal is to identify the most engaging moments in a video transcript for social media clips (TikTok, Reels, Shorts).";
-        let user_prompt = format!(
+        
+        let mut user_prompt = format!(
             "Analyze the following transcript and identify the top {} most interesting clips.
             Constraints:
             - Each clip must be between {} and {} seconds long.
             - Clips should be self-contained and engaging.
-            - Return a strict JSON array of objects with fields: 'start' (MM:SS), 'end' (MM:SS), 'title' (catchy title), 'reason' (why this is good).
-            
-            Transcript:
-            {}",
-            count, min_duration, max_duration, transcript
+            ",
+            count, min_duration, max_duration
         );
+
+        if let Some(t) = topic {
+            user_prompt.push_str(&format!("- Focus specifically on the topic: '{}'.\n", t));
+        }
+
+        if splicing {
+            user_prompt.push_str("- You MAY combine multiple non-contiguous segments into a single clip if they form a coherent narrative. \n");
+            user_prompt.push_str("- Return a strict JSON array of objects with fields: 'segments' (array of {start, end}), 'title' (catchy title), 'reason' (why this is good).\n");
+        } else {
+            user_prompt.push_str("- Return a strict JSON array of objects with fields: 'segments' (array with ONE {start, end} object), 'title' (catchy title), 'reason' (why this is good).\n");
+        }
+            
+        user_prompt.push_str(&format!(
+            "Transcript:
+            {}",
+            transcript
+        ));
 
         // Determine if this is a Google API or OpenAI-compatible API
         let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
