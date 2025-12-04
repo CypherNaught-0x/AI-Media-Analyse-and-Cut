@@ -4,6 +4,7 @@ export interface LLMSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  glossary: string;
 }
 
 const STORAGE_KEY = 'llm-settings';
@@ -12,6 +13,7 @@ const defaultSettings: LLMSettings = {
   baseUrl: 'https://generativelanguage.googleapis.com',
   apiKey: '',
   model: 'gemini-2.0-flash',
+  glossary: '',
 };
 
 // Load from localStorage
