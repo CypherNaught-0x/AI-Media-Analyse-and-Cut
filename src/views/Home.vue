@@ -416,15 +416,8 @@ function goToSettings() {
 </script>
 
 <template>
-    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30 pb-24">
+    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30">
         <div class="max-w-5xl mx-auto">
-            <header class="mb-12 text-center">
-                <h1 class="text-5xl font-bold text-white mb-3 tracking-tight">
-                    Media AI Cutter
-                </h1>
-                <p class="text-gray-400 text-lg font-light">Intelligent Video Segmentation & Processing</p>
-            </header>
-
             <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
 
                 <!-- LLM Configuration Display -->
