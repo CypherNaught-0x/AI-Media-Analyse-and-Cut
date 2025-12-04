@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import type { TranscriptSegment, AudioInfo, Clip } from "../types";
@@ -301,24 +301,66 @@ async function openExportFolder() {
     }
 }
 
-async function exportSubtitles(format: 'srt' | 'vtt' | 'txt') {
+async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolean = false) {
     if (segments.value.length === 0) return;
+    
+    // Helper to ensure timestamps are HH:MM:SS,mmm (SRT) or HH:MM:SS.mmm (VTT)
+    const formatTime = (time: string, separator: string) => {
+        let [base, ms] = time.split(/[.,]/);
+        if (!ms) ms = "000";
+        ms = ms.padEnd(3, '0').slice(0, 3);
+
+        const parts = base.split(':');
+        let h = "00";
+        let m = "00";
+        let s = "00";
+
+        if (parts.length >= 3) {
+            h = parts[parts.length - 3].padStart(2, '0');
+            m = parts[parts.length - 2].padStart(2, '0');
+            s = parts[parts.length - 1].padStart(2, '0');
+        } else if (parts.length === 2) {
+            m = parts[0].padStart(2, '0');
+            s = parts[1].padStart(2, '0');
+        } else {
+            s = parts[0].padStart(2, '0');
+        }
+
+        return `${h}:${m}:${s}${separator}${ms}`;
+    };
     
     try {
         let content = "";
-        const baseName = inputPath.value.replace(/(\.[\ w\d]+)$/, "");
-        const outputPath = `${baseName}.${format}`;
+        // Robustly remove extension
+        const baseName = inputPath.value.replace(/\.[^/\\.]+$/, "");
+        let outputPath = `${baseName}.${format}`;
         
         if (format === 'srt') {
             content = segments.value.map((s, i) => {
-                return `${i + 1}\n${s.start.replace('.', ',')} --> ${s.end.replace('.', ',')}\n${s.speaker}: ${s.text}\n`;
+                const start = formatTime(s.start, ',');
+                const end = formatTime(s.end, ',');
+                return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${s.text}\n`;
             }).join('\n');
         } else if (format === 'vtt') {
             content = "WEBVTT\n\n" + segments.value.map((s) => {
-                return `${s.start} --> ${s.end}\n<v ${s.speaker}>${s.text}`;
+                const start = formatTime(s.start, '.');
+                const end = formatTime(s.end, '.');
+                return `${start} --> ${end}\n<v ${s.speaker}>${s.text}`;
             }).join('\n\n');
         } else {
             content = segments.value.map(s => `[${s.start} - ${s.end}] ${s.speaker}: ${s.text}`).join('\n');
+        }
+
+        if (manualSave) {
+            const saved = await save({
+                defaultPath: outputPath,
+                filters: [{
+                    name: format.toUpperCase(),
+                    extensions: [format]
+                }]
+            });
+            if (!saved) return;
+            outputPath = saved;
         }
         
         await invoke("write_text_file", { path: outputPath, content });
@@ -446,9 +488,30 @@ function goToSettings() {
                             </span>
                         </div>
                         <div class="flex gap-2">
-                            <button @click="exportSubtitles('srt')" class="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs text-gray-300 border border-white/10 transition-colors">SRT</button>
-                            <button @click="exportSubtitles('vtt')" class="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs text-gray-300 border border-white/10 transition-colors">VTT</button>
-                            <button @click="exportSubtitles('txt')" class="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-xs text-gray-300 border border-white/10 transition-colors">TXT</button>
+                            <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
+                                <button @click="exportSubtitles('srt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">SRT</button>
+                                <button @click="exportSubtitles('srt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save SRT as...">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
+                                <button @click="exportSubtitles('vtt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">VTT</button>
+                                <button @click="exportSubtitles('vtt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save VTT as...">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
+                                <button @click="exportSubtitles('txt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">TXT</button>
+                                <button @click="exportSubtitles('txt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save TXT as...">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                </button>
+                            </div>
                         </div>
                     </div>
                     
