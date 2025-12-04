@@ -13,9 +13,9 @@ pub struct Segment {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClipSegment {
-    pub start: String,
-    pub end: String,
+    pub segments: Vec<Segment>,
     pub label: Option<String>,
+    pub reason: Option<String>,
 }
 
 pub fn cut_video<F>(
@@ -102,7 +102,7 @@ pub fn export_clips<F>(
     on_progress: F,
 ) -> Result<()>
 where
-    F: Fn(String) + Send + 'static,
+    F: Fn(String) + Send + Sync + 'static + Clone,
 {
     if output_dir.exists() {
         if !output_dir.is_dir() {
@@ -119,33 +119,55 @@ where
 
     for (i, segment) in segments.iter().enumerate() {
         let output_filename = build_clip_output_filename(i, segment);
-        let output_path = output_dir.join(output_filename);
+        let output_path = output_dir.join(&output_filename);
 
-        FfmpegCommand::new()
-            .input(input_path.to_str().unwrap())
-            .args(&[
-                "-y",
-                "-ss",
-                &segment.start,
-                "-to",
-                &segment.end,
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-            ])
-            .output(output_path.to_str().unwrap())
-            .spawn()
-            .map_err(|e| e.to_string())
-            .map_err(anyhow::Error::msg)?
-            .iter()
-            .map_err(|e| e.to_string())
-            .map_err(anyhow::Error::msg)?
-            .for_each(|event| {
-                if let FfmpegEvent::Progress(p) = event {
-                    on_progress(p.time);
-                }
-            });
+        // 1. Save Metadata
+        let metadata_filename = output_path.with_extension("json");
+        let metadata = serde_json::json!({
+            "title": segment.label,
+            "reason": segment.reason,
+            "segments": segment.segments
+        });
+        if let Ok(content) = serde_json::to_string_pretty(&metadata) {
+            let _ = std::fs::write(&metadata_filename, content);
+        }
+
+        // 2. Cut Video
+        // If single segment, use simple cut. If multiple, use cut_video logic (concat).
+        if segment.segments.len() == 1 {
+            let s = &segment.segments[0];
+            FfmpegCommand::new()
+                .input(input_path.to_str().unwrap())
+                .args(&[
+                    "-y",
+                    "-ss",
+                    &s.start,
+                    "-to",
+                    &s.end,
+                    "-c:v",
+                    "libx264",
+                    "-c:a",
+                    "aac",
+                ])
+                .output(output_path.to_str().unwrap())
+                .spawn()
+                .map_err(|e| e.to_string())
+                .map_err(anyhow::Error::msg)?
+                .iter()
+                .map_err(|e| e.to_string())
+                .map_err(anyhow::Error::msg)?
+                .for_each(|event| {
+                    if let FfmpegEvent::Progress(p) = event {
+                        on_progress(p.time);
+                    }
+                });
+        } else {
+            // Use existing cut_video logic which handles concat
+            let cb = on_progress.clone();
+            cut_video(input_path, &segment.segments, &output_path, move |time| {
+                cb(time);
+            })?;
+        }
     }
     Ok(())
 }
@@ -194,23 +216,23 @@ mod tests {
     #[test]
     fn test_build_clip_output_filename() {
         let s1 = ClipSegment {
-            start: "0".into(),
-            end: "10".into(),
+            segments: vec![Segment { start: "0".into(), end: "10".into() }],
             label: None,
+            reason: None,
         };
         assert_eq!(build_clip_output_filename(0, &s1), "clip_001.mp4");
 
         let s2 = ClipSegment {
-            start: "0".into(),
-            end: "10".into(),
+            segments: vec![Segment { start: "0".into(), end: "10".into() }],
             label: Some("My Clip".into()),
+            reason: None,
         };
         assert_eq!(build_clip_output_filename(1, &s2), "clip_002_MyClip.mp4");
 
         let s3 = ClipSegment {
-            start: "0".into(),
-            end: "10".into(),
+            segments: vec![Segment { start: "0".into(), end: "10".into() }],
             label: Some("Clip/With\\BadChars!".into()),
+            reason: None,
         };
         assert_eq!(
             build_clip_output_filename(2, &s3),

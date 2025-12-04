@@ -24,8 +24,10 @@ const inputPath = ref("");
 const segments = ref<TranscriptSegment[]>([]);
 const clips = ref<Clip[]>([]);
 const clipCount = ref(3);
-const clipMinDuration = ref(30);
-const clipMaxDuration = ref(60);
+const clipMinDuration = ref(10);
+const clipMaxDuration = ref(120);
+const clipTopic = ref("");
+const allowSplicing = ref(false);
 const speakerCount = ref<number | null>(null);
 const context = ref("");
 const lastExportPath = ref("");
@@ -302,7 +304,9 @@ async function generateClips() {
             transcript,
             count: clipCount.value,
             minDuration: clipMinDuration.value,
-            maxDuration: clipMaxDuration.value
+            maxDuration: clipMaxDuration.value,
+            topic: clipTopic.value || null,
+            splicing: allowSplicing.value
         });
         
         const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -310,7 +314,17 @@ async function generateClips() {
             try {
                 const parsed = JSON.parse(jsonMatch[0]);
                 if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-                clips.value = parsed;
+                
+                // Normalize clips to always have 'segments'
+                clips.value = parsed.map((c: any) => {
+                    if (c.segments) return c;
+                    // Backward compatibility for AI response without segments
+                    return {
+                        ...c,
+                        segments: [{ start: c.start, end: c.end }]
+                    };
+                });
+                
                 status.value = `Found ${clips.value.length} clips.`;
             } catch (e) {
                 console.error("JSON Parse Error", e);
@@ -337,9 +351,9 @@ async function exportClips() {
         // Robust extension replacement
         const outputDir = inputPath.value.replace(/\.[^/\\.]+$/, "") + "_clips";
         const clipSegments = clips.value.map(c => ({ 
-            start: c.start, 
-            end: c.end,
-            label: c.title 
+            segments: c.segments,
+            label: c.title,
+            reason: c.reason
         }));
         
         console.log({outputDir});
@@ -689,6 +703,31 @@ function goToSettings() {
                         </div>
                     </div>
 
+                    <div class="mb-6">
+                        <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Topic (Optional)</label>
+                        <input v-model="clipTopic" type="text"
+                            class="w-full p-4 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white placeholder-gray-600"
+                            placeholder="e.g. 'Funny moments', 'Technical explanation', 'Rants'..." />
+                    </div>
+
+                    <div class="mb-8 flex items-center justify-between p-4 bg-black/20 rounded-xl border border-white/5">
+                        <div>
+                            <h3 class="text-sm font-semibold text-gray-300">Smart Splicing</h3>
+                            <p class="text-xs text-gray-500">Allow AI to combine non-contiguous segments into one clip</p>
+                        </div>
+                        <button 
+                            @click="allowSplicing = !allowSplicing"
+                            class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-pink-500 focus:ring-offset-2 focus:ring-offset-gray-900"
+                            :class="allowSplicing ? 'bg-pink-600' : 'bg-gray-700'"
+                        >
+                            <span class="sr-only">Enable smart splicing</span>
+                            <span
+                                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                                :class="allowSplicing ? 'translate-x-6' : 'translate-x-1'"
+                            />
+                        </button>
+                    </div>
+
                     <button @click="generateClips" :disabled="isProcessing"
                         class="w-full mb-8 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0">
                         {{ isProcessing ? 'Processing...' : 'Generate Clips' }}
@@ -699,7 +738,11 @@ function goToSettings() {
                             class="p-6 bg-black/20 rounded-2xl border border-white/5 hover:border-pink-500/30 transition-colors">
                             <div class="flex justify-between items-start mb-3">
                                 <h3 class="font-bold text-lg text-pink-400">{{ clip.title }}</h3>
-                                <span class="px-2 py-1 rounded bg-white/5 text-xs text-gray-400 font-mono">{{ clip.start }} - {{ clip.end }}</span>
+                                <div class="flex flex-col items-end gap-1">
+                                    <span v-for="(seg, i) in clip.segments" :key="i" class="px-2 py-1 rounded bg-white/5 text-xs text-gray-400 font-mono">
+                                        {{ seg.start }} - {{ seg.end }}
+                                    </span>
+                                </div>
                             </div>
                             <p class="text-gray-300 text-sm leading-relaxed">{{ clip.reason }}</p>
                         </div>
