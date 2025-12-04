@@ -11,6 +11,14 @@ pub struct Segment {
     pub end: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TranscriptSegment {
+    pub start: String,
+    pub end: String,
+    pub speaker: String,
+    pub text: String,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClipSegment {
     pub segments: Vec<Segment>,

@@ -1,7 +1,9 @@
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::{json, Value};
+use crate::video::TranscriptSegment;
 
+#[derive(Clone)]
 pub struct GeminiClient {
     client: Client,
     api_key: String,
@@ -17,6 +19,156 @@ impl GeminiClient {
             base_url,
             model,
         }
+    }
+
+    pub async fn translate_transcript(
+        &self,
+        transcript: Vec<TranscriptSegment>,
+        target_language: String,
+        context: String,
+    ) -> Result<String> {
+        let chunk_size = 20;
+        let chunks: Vec<Vec<TranscriptSegment>> = transcript.chunks(chunk_size).map(|c| c.to_vec()).collect();
+        
+        let mut handles = vec![];
+        
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            let client = self.clone();
+            let target_language = target_language.clone();
+            let context = context.clone();
+            
+            handles.push(tokio::spawn(async move {
+                client.translate_chunk(chunk, target_language, context, i).await
+            }));
+        }
+        
+        let mut all_segments = vec![];
+        // Await in order to preserve order
+        for handle in handles {
+            let res_str = handle.await??;
+            
+            // Clean up markdown code blocks if present
+            let json_str = if let Some(start) = res_str.find('[') {
+                if let Some(end) = res_str.rfind(']') {
+                    &res_str[start..=end]
+                } else {
+                    &res_str
+                }
+            } else {
+                &res_str
+            };
+            
+            let segments: Vec<TranscriptSegment> = serde_json::from_str(json_str)?;
+            all_segments.extend(segments);
+        }
+        
+        Ok(serde_json::to_string(&all_segments)?)
+    }
+
+    async fn translate_chunk(
+        &self,
+        chunk: Vec<TranscriptSegment>,
+        target_language: String,
+        context: String,
+        chunk_index: usize,
+    ) -> Result<String> {
+        let transcript_json = serde_json::to_string(&chunk)?;
+        
+        let system_prompt = "You are a professional translator. Your task is to translate the text content of a transcript while preserving the structure and timestamps exactly.";
+        let user_prompt = format!(
+            "Translate the 'text' field of the following JSON transcript segments into {}.
+            
+            Context about the video: {}
+            
+            Constraints:
+            - Preserve 'start', 'end', and 'speaker' fields exactly.
+            - Only translate the 'text' field.
+            - Return a strict JSON array of objects.
+            - Do not translate speaker names.
+            - This is chunk #{} of the transcript.
+
+            Example Input:
+            [{{\"start\": \"00:00\", \"end\": \"00:05\", \"speaker\": \"Speaker 1\", \"text\": \"Hello world\"}}]
+
+            Example Output (if target is Spanish):
+            [{{\"start\": \"00:00\", \"end\": \"00:05\", \"speaker\": \"Speaker 1\", \"text\": \"Hola mundo\"}}]
+            
+            Transcript:
+            {}",
+            target_language, context, chunk_index + 1, transcript_json
+        );
+
+        // Determine if this is a Google API or OpenAI-compatible API
+        let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
+
+        let payload = if is_google_api {
+            // Google format
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": user_prompt }]
+                }],
+                "system_instruction": {
+                    "parts": [{ "text": system_prompt }]
+                },
+                "generationConfig": {
+                    "responseMimeType": "application/json"
+                }
+            })
+        } else {
+            // OpenAI format
+            json!({
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                "response_format": { "type": "json_object" }
+            })
+        };
+
+        let url = if is_google_api {
+            format!(
+                "{}/v1beta/models/{}:generateContent?key={}",
+                self.base_url, self.model, self.api_key
+            )
+        } else {
+            format!("{}/v1/chat/completions", self.base_url)
+        };
+
+        let mut request = self.client.post(&url).json(&payload);
+
+        if !is_google_api {
+            request = request.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        let response = request.send().await?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("API failed: {}", response.text().await?));
+        }
+
+        let res_json: Value = response.json().await?;
+
+        let text = if is_google_api {
+            res_json["candidates"][0]["content"]["parts"][0]["text"]
+                .as_str()
+                .unwrap_or("No text response")
+                .to_string()
+        } else {
+            res_json["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("No text response")
+                .to_string()
+        };
+
+        Ok(text)
     }
 
     pub async fn analyze_audio(
