@@ -347,6 +347,7 @@ dependencies = [
  "litellm-rs",
  "ndarray 0.17.1",
  "ort",
+ "regex",
  "reqwest 0.12.24",
  "rubato",
  "serde",
