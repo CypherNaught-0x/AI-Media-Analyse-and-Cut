@@ -8,6 +8,13 @@ import Editor from "../components/Editor.vue";
 import type { TranscriptSegment, AudioInfo, Clip } from "../types";
 import { useSettings } from "../composables/useSettings";
 
+import LightningIcon from '../assets/icons/lightning.svg?component';
+import VideoFileIcon from '../assets/icons/video-file.svg?component';
+import SpinnerIcon from '../assets/icons/spinner.svg?component';
+import DownloadIcon from '../assets/icons/download.svg?component';
+import UserIcon from '../assets/icons/user.svg?component';
+import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
+
 const router = useRouter();
 const { settings } = useSettings();
 
@@ -460,9 +467,7 @@ function goToSettings() {
                 <div class="mb-8 flex items-center justify-between bg-black/20 p-4 rounded-2xl border border-white/5">
                     <div class="flex items-center gap-4">
                         <div class="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                            </svg>
+                            <LightningIcon class="h-6 w-6" />
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Current Model</label>
@@ -484,9 +489,7 @@ function goToSettings() {
                                 class="w-full p-4 pl-12 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 focus:bg-black/30 outline-none transition-all text-gray-300 placeholder-gray-600 font-mono text-sm"
                                 placeholder="Select a video file..." readonly />
                             <div class="absolute left-4 top-4 text-gray-500">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
-                                </svg>
+                                <VideoFileIcon class="h-5 w-5" />
                             </div>
                         </div>
                         <button @click="selectFile"
@@ -533,10 +536,7 @@ function goToSettings() {
                 <div class="flex gap-4 mb-6">
                     <button @click="processFile" :disabled="isProcessing || !hasApiKey || hasTranscript"
                         class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2">
-                        <svg v-if="isProcessing" class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
+                        <SpinnerIcon v-if="isProcessing" class="animate-spin h-5 w-5 text-white" />
                         {{ isProcessing ? 'Processing...' : (hasTranscript ? 'Transcript Loaded' : 'Analyze Video') }}
                     </button>
 
@@ -562,25 +562,19 @@ function goToSettings() {
                             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
                                 <button @click="exportSubtitles('srt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">SRT</button>
                                 <button @click="exportSubtitles('srt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save SRT as...">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
+                                    <DownloadIcon class="h-3 w-3" />
                                 </button>
                             </div>
                             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
                                 <button @click="exportSubtitles('vtt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">VTT</button>
                                 <button @click="exportSubtitles('vtt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save VTT as...">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
+                                    <DownloadIcon class="h-3 w-3" />
                                 </button>
                             </div>
                             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
                                 <button @click="exportSubtitles('txt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">TXT</button>
                                 <button @click="exportSubtitles('txt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save TXT as...">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
+                                    <DownloadIcon class="h-3 w-3" />
                                 </button>
                             </div>
                         </div>
@@ -611,9 +605,7 @@ function goToSettings() {
                         <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                             <div v-for="speaker in uniqueSpeakers" :key="speaker" class="relative group">
                                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                    </svg>
+                                    <UserIcon class="h-4 w-4 text-gray-500" />
                                 </div>
                                 <input 
                                     :value="speaker" 
@@ -678,9 +670,7 @@ function goToSettings() {
                             </button>
                             <button v-if="lastExportPath" @click="openExportFolder"
                                 class="px-6 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-2xl border border-gray-700 transition-all" title="Open Folder">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
-                                </svg>
+                                <FolderOpenIcon class="h-6 w-6" />
                             </button>
                         </div>
                     </div>
