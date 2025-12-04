@@ -2,26 +2,53 @@
 import { ref, onMounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event';
-import { open, save, ask } from '@tauri-apps/plugin-dialog';
+import { open, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
+import SubtitleExport from "../components/SubtitleExport.vue";
 import type { TranscriptSegment, AudioInfo, Clip, SilenceInterval } from "../types";
 import { useSettings } from "../composables/useSettings";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import VideoFileIcon from '../assets/icons/video-file.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
-import DownloadIcon from '../assets/icons/download.svg?component';
 import UserIcon from '../assets/icons/user.svg?component';
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
+import TranslateIcon from '../assets/icons/translate.svg?component';
+import CheckIcon from '../assets/icons/check.svg?component';
+import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
 
 const router = useRouter();
 const { settings } = useSettings();
+
+const SUPPORTED_LANGUAGES = [
+    { code: 'en', name: 'English', country: 'us' },
+    { code: 'es', name: 'Spanish', country: 'es' },
+    { code: 'fr', name: 'French', country: 'fr' },
+    { code: 'de', name: 'German', country: 'de' },
+    { code: 'it', name: 'Italian', country: 'it' },
+    { code: 'pt', name: 'Portuguese', country: 'pt' },
+    { code: 'nl', name: 'Dutch', country: 'nl' },
+    { code: 'ru', name: 'Russian', country: 'ru' },
+    { code: 'ja', name: 'Japanese', country: 'jp' },
+    { code: 'zh', name: 'Chinese', country: 'cn' },
+    { code: 'ko', name: 'Korean', country: 'kr' },
+    { code: 'hi', name: 'Hindi', country: 'in' },
+    { code: 'ar', name: 'Arabic', country: 'sa' },
+    { code: 'tr', name: 'Turkish', country: 'tr' },
+    { code: 'pl', name: 'Polish', country: 'pl' },
+];
 
 const status = ref("Initializing...");
 const isProcessing = ref(false);
 const inputPath = ref("");
 const segments = ref<TranscriptSegment[]>([]);
+const translations = ref<Record<string, TranscriptSegment[]>>({});
+const currentLanguage = ref("Original");
+const targetLanguage = ref("");
+const isTranslating = ref(false);
+const showLanguageDropdown = ref(false);
+
 const clips = ref<Clip[]>([]);
 const clipCount = ref(3);
 const clipMinDuration = ref(10);
@@ -42,6 +69,20 @@ const hasTranscript = computed(() => segments.value.length > 0);
 const uniqueSpeakers = computed(() => {
     const s = new Set(segments.value.map(seg => seg.speaker));
     return Array.from(s).sort();
+});
+
+const displaySegments = computed({
+    get: () => {
+        if (currentLanguage.value === "Original") return segments.value;
+        return translations.value[currentLanguage.value] || segments.value;
+    },
+    set: (newSegments) => {
+        if (currentLanguage.value === "Original") {
+            segments.value = newSegments;
+        } else {
+            translations.value[currentLanguage.value] = newSegments;
+        }
+    }
 });
 
 const contextTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -84,6 +125,8 @@ onMounted(async () => {
 
 watch(inputPath, () => {
     segments.value = [];
+    translations.value = {};
+    currentLanguage.value = "Original";
     clips.value = [];
     loadTranscript();
 });
@@ -127,6 +170,59 @@ async function saveTranscript() {
         console.log("Transcript saved.");
     } catch (e) {
         console.error("Failed to save transcript:", e);
+    }
+}
+
+function selectLanguage(langName: string) {
+    targetLanguage.value = langName;
+    showLanguageDropdown.value = false;
+    
+    // If translation exists, switch to it
+    if (translations.value[langName]) {
+        currentLanguage.value = langName;
+    }
+}
+
+async function translateTranscript() {
+    if (!targetLanguage.value || segments.value.length === 0) return;
+    
+    const lang = targetLanguage.value.trim();
+    if (translations.value[lang]) {
+        currentLanguage.value = lang;
+        return;
+    }
+
+    isTranslating.value = true;
+    status.value = `Translating to ${lang}...`;
+
+    try {
+        const response = await invoke<string>("translate_transcript", {
+            transcript: segments.value,
+            targetLanguage: lang,
+            context: context.value,
+            apiKey: settings.value.apiKey,
+            baseUrl: settings.value.baseUrl,
+            model: settings.value.model
+        });
+
+        const jsonMatch = response.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (Array.isArray(parsed)) {
+                translations.value[lang] = parsed;
+                currentLanguage.value = lang;
+                status.value = `Translation to ${lang} complete.`;
+            } else {
+                throw new Error("Response is not an array");
+            }
+        } else {
+            throw new Error("Failed to find JSON in response");
+        }
+    } catch (e) {
+        console.error("Translation failed:", e);
+        status.value = `Translation failed: ${e}`;
+    } finally {
+        isTranslating.value = false;
     }
 }
 
@@ -380,75 +476,6 @@ async function openExportFolder() {
     }
 }
 
-async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolean = false) {
-    if (segments.value.length === 0) return;
-    
-    // Helper to ensure timestamps are HH:MM:SS,mmm (SRT) or HH:MM:SS.mmm (VTT)
-    const formatTime = (time: string, separator: string) => {
-        let [base, ms] = time.split(/[.,]/);
-        if (!ms) ms = "000";
-        ms = ms.padEnd(3, '0').slice(0, 3);
-
-        const parts = base.split(':');
-        let h = "00";
-        let m = "00";
-        let s = "00";
-
-        if (parts.length >= 3) {
-            h = parts[parts.length - 3].padStart(2, '0');
-            m = parts[parts.length - 2].padStart(2, '0');
-            s = parts[parts.length - 1].padStart(2, '0');
-        } else if (parts.length === 2) {
-            m = parts[0].padStart(2, '0');
-            s = parts[1].padStart(2, '0');
-        } else {
-            s = parts[0].padStart(2, '0');
-        }
-
-        return `${h}:${m}:${s}${separator}${ms}`;
-    };
-    
-    try {
-        let content = "";
-        // Robustly remove extension
-        const baseName = inputPath.value.replace(/\.[^/\\.]+$/, "");
-        let outputPath = `${baseName}.${format}`;
-        
-        if (format === 'srt') {
-            content = segments.value.map((s, i) => {
-                const start = formatTime(s.start, ',');
-                const end = formatTime(s.end, ',');
-                return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${s.text}\n`;
-            }).join('\n');
-        } else if (format === 'vtt') {
-            content = "WEBVTT\n\n" + segments.value.map((s) => {
-                const start = formatTime(s.start, '.');
-                const end = formatTime(s.end, '.');
-                return `${start} --> ${end}\n<v ${s.speaker}>${s.text}`;
-            }).join('\n\n');
-        } else {
-            content = segments.value.map(s => `[${s.start} - ${s.end}] ${s.speaker}: ${s.text}`).join('\n');
-        }
-
-        if (manualSave) {
-            const saved = await save({
-                defaultPath: outputPath,
-                filters: [{
-                    name: format.toUpperCase(),
-                    extensions: [format]
-                }]
-            });
-            if (!saved) return;
-            outputPath = saved;
-        }
-        
-        await invoke("write_text_file", { path: outputPath, content });
-        status.value = `Exported ${format.toUpperCase()} to ${outputPath}`;
-    } catch (e) {
-        status.value = `Error exporting subtitles: ${e}`;
-    }
-}
-
 async function renameSpeaker(oldName: string, newName: string, inputElement: HTMLInputElement) {
     const trimmedNewName = newName.trim();
     if (oldName === trimmedNewName || !trimmedNewName) {
@@ -561,7 +588,7 @@ function goToSettings() {
                         <div class="relative">
                             <textarea ref="contextTextarea" v-model="context" rows="2"
                                 class="w-full p-4 pb-8 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-colors text-gray-300 placeholder-gray-600 resize-none"
-                                placeholder="Describe the video content to help the AI..."></textarea>
+                                placeholder="Describe the video content to help the AI... Especially for translation"></textarea>
                             <div @mousedown.prevent="startResize"
                                 class="absolute bottom-0 left-0 right-0 h-6 cursor-ns-resize flex items-center justify-center hover:bg-white/5 rounded-b-2xl transition-colors group">
                                 <div class="w-12 h-1 bg-white/10 rounded-full group-hover:bg-white/20 transition-colors"></div>
@@ -610,28 +637,54 @@ function goToSettings() {
                         <div class="flex items-center gap-4">
                             <h2 class="text-2xl font-bold text-white">Transcript</h2>
                             <span class="px-3 py-1 rounded-full bg-white/10 text-gray-300 text-xs font-bold border border-white/10">
-                                {{ segments.length }} Segments
+                                {{ displaySegments.length }} Segments
                             </span>
                         </div>
-                        <div class="flex gap-2">
-                            <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                                <button @click="exportSubtitles('srt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">SRT</button>
-                                <button @click="exportSubtitles('srt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save SRT as...">
-                                    <DownloadIcon class="h-3 w-3" />
-                                </button>
+                        <div class="flex items-center gap-3">
+                            <!-- Language Selector -->
+                            <div class="flex items-center gap-2 bg-black/20 rounded-lg p-1 border border-white/10">
+                                <select v-model="currentLanguage" class="bg-transparent text-xs text-gray-300 outline-none border-none py-1 pl-2 pr-2 cursor-pointer [&>option]:bg-gray-900">
+                                    <option value="Original">Original</option>
+                                    <option v-for="(_, lang) in translations" :key="lang" :value="lang">{{ lang }}</option>
+                                </select>
                             </div>
-                            <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                                <button @click="exportSubtitles('vtt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">VTT</button>
-                                <button @click="exportSubtitles('vtt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save VTT as...">
-                                    <DownloadIcon class="h-3 w-3" />
-                                </button>
+
+                            <!-- New Translation Dropdown -->
+                            <div class="relative">
+                                <div class="flex items-center gap-2">
+                                    <button @click="showLanguageDropdown = !showLanguageDropdown" 
+                                        class="flex items-center gap-2 w-32 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none hover:bg-white/10 transition-colors">
+                                        <span class="truncate flex-1 text-left">{{ targetLanguage || 'Select Language' }}</span>
+                                        <ChevronDownIcon class="h-3 w-3 text-gray-500" />
+                                    </button>
+                                    
+                                    <button @click="translateTranscript" :disabled="isTranslating || !targetLanguage || !!translations[targetLanguage]" 
+                                        class="p-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/20" title="Translate">
+                                        <TranslateIcon class="h-4 w-4" :class="{ 'animate-pulse': isTranslating }" />
+                                    </button>
+                                </div>
+
+                                <!-- Dropdown Menu -->
+                                <div v-if="showLanguageDropdown" 
+                                    class="absolute top-full left-0 mt-1 w-48 max-h-64 overflow-y-auto bg-gray-900 border border-white/10 rounded-lg shadow-xl z-50 py-1">
+                                    <button v-for="lang in SUPPORTED_LANGUAGES" :key="lang.code"
+                                        @click="selectLanguage(lang.name)"
+                                        class="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-white/10 flex items-center justify-between group">
+                                        <span class="flex items-center gap-2">
+                                            <span :class="`fi fi-${lang.country}`" class="rounded-sm"></span>
+                                            <span>{{ lang.name }}</span>
+                                        </span>
+                                        <CheckIcon v-if="translations[lang.name]" class="h-3 w-3 text-emerald-400" />
+                                    </button>
+                                </div>
+                                
+                                <!-- Backdrop to close -->
+                                <div v-if="showLanguageDropdown" @click="showLanguageDropdown = false" class="fixed inset-0 z-40 bg-transparent"></div>
                             </div>
-                            <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                                <button @click="exportSubtitles('txt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">TXT</button>
-                                <button @click="exportSubtitles('txt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save TXT as...">
-                                    <DownloadIcon class="h-3 w-3" />
-                                </button>
-                            </div>
+
+                            <div class="w-px h-6 bg-white/10 mx-1"></div>
+
+                            <SubtitleExport :segments="displaySegments" :inputPath="inputPath" :language="currentLanguage" />
                         </div>
                     </div>
                     
@@ -671,7 +724,7 @@ function goToSettings() {
                         </div>
                     </div>
 
-                    <Editor :segments="segments" @jump-to="jumpTo" @update:segments="segments = $event" />
+                    <Editor :segments="displaySegments" @jump-to="jumpTo" @update:segments="displaySegments = $event" />
                 </div>
             </transition>
 
