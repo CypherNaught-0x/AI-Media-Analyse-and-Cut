@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue';
+import { ask } from '@tauri-apps/plugin-dialog';
 import type { TranscriptSegment } from '../types';
 
 const props = defineProps<{
@@ -42,8 +43,13 @@ const saveEdit = () => {
   }
 };
 
-const deleteSegment = (index: number) => {
-  if (confirm('Are you sure you want to delete this segment?')) {
+const deleteSegment = async (index: number) => {
+  const confirmed = await ask('Are you sure you want to delete this segment?', {
+    title: 'Confirm Deletion',
+    kind: 'warning'
+  });
+
+  if (confirmed) {
     const newSegments = [...props.segments];
     newSegments.splice(index, 1);
     emit('update:segments', newSegments);
