@@ -231,8 +231,8 @@ async function selectFile() {
         const selected = await open({
             multiple: false,
             filters: [{
-                name: 'Video',
-                extensions: ['mp4', 'mkv', 'mov', 'avi']
+                name: 'Media',
+                extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'm4v', 'mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma']
             }]
         });
 
@@ -361,7 +361,7 @@ async function processFile() {
 async function cutVideo() {
     if (segments.value.length === 0) return;
 
-    status.value = "Cutting video...";
+    status.value = "Cutting media...";
     isProcessing.value = true;
 
     try {
@@ -374,9 +374,9 @@ async function cutVideo() {
             outputPath
         });
 
-        status.value = `Video cut successfully to ${outputPath}`;
+        status.value = `Media cut successfully to ${outputPath}`;
     } catch (e) {
-        status.value = `Error cutting video: ${e}`;
+        status.value = `Error cutting media: ${e}`;
     } finally {
         isProcessing.value = false;
     }
@@ -569,7 +569,7 @@ function goToSettings() {
                         <div class="flex-1 relative group">
                             <input v-model="inputPath" type="text"
                                 class="w-full p-4 pl-12 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 focus:bg-black/30 outline-none transition-all text-gray-300 placeholder-gray-600 font-mono text-sm"
-                                placeholder="Select a video file..." readonly />
+                                placeholder="Select a media file..." readonly />
                             <div class="absolute left-4 top-4 text-gray-500">
                                 <VideoFileIcon class="h-5 w-5" />
                             </div>
@@ -619,12 +619,12 @@ function goToSettings() {
                     <button @click="processFile" :disabled="isProcessing || !hasApiKey || hasTranscript"
                         class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2">
                         <SpinnerIcon v-if="isProcessing" class="animate-spin h-5 w-5 text-white" />
-                        {{ isProcessing ? 'Processing...' : (hasTranscript ? 'Transcript Loaded' : 'Analyze Video') }}
+                        {{ isProcessing ? 'Processing...' : (hasTranscript ? 'Transcript Loaded' : 'Analyze Media') }}
                     </button>
 
                     <button @click="cutVideo" :disabled="segments.length === 0 || isProcessing"
                         class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0">
-                        Cut Video
+                        Cut Media
                     </button>
                 </div>
             </div>
