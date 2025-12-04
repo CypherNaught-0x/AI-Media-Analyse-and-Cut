@@ -12,9 +12,9 @@
   "app": {
     "windows": [
       {
-        "title": "ai-media-cutter",
+        "title": "Media AI Cutter - Intelligent Video Segmentation & Processing",
         "width": 800,
-        "height": 600
+        "height": 764
       }
     ],
     "security": {
