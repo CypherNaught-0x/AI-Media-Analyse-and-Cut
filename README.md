@@ -1,3 +1,5 @@
+[![Build and Release](https://github.com/CypherNaught-0x/AI-Media-Analyse-and-Cut/actions/workflows/build.yml/badge.svg)](https://github.com/CypherNaught-0x/AI-Media-Analyse-and-Cut/actions/workflows/build.yml)
+
 # AI Media Cutter
 
 **AI Media Cutter** is a powerful, cross-platform desktop application designed to streamline video editing workflows using Artificial Intelligence. It leverages advanced LLMs (like Google Gemini and OpenAI) to transcribe, analyze, and edit video content intelligently.
