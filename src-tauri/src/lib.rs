@@ -143,9 +143,25 @@ use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
 use crate::upload::upload_file_and_wait;
 use crate::video::{
-    cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
+    cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment, TranscriptSegment
 };
 use crate::silence::detect_silence;
+
+#[tauri::command]
+async fn translate_transcript(
+    api_key: String,
+    base_url: String,
+    model: String,
+    transcript: Vec<TranscriptSegment>,
+    target_language: String,
+    context: String,
+) -> Result<String, String> {
+    let client = GeminiClient::new(api_key, base_url, model);
+    client
+        .translate_transcript(transcript, target_language, context)
+        .await
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 async fn upload_file(
@@ -302,7 +318,8 @@ pub fn run() {
             write_text_file,
             read_text_file,
             align_transcript,
-            detect_silence
+            detect_silence,
+            translate_transcript
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
