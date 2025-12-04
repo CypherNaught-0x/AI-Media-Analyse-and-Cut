@@ -14,8 +14,75 @@ async fn init_ffmpeg() -> Result<String, String> {
     if ffmpeg_is_installed() {
         return Ok("FFmpeg is already installed.".to_string());
     }
-    auto_download().map_err(|e| e.to_string())?;
-    Ok("FFmpeg downloaded successfully.".to_string())
+    
+    // Try to download
+    if let Err(e) = auto_download() {
+        println!("FFmpeg auto_download failed: {}", e);
+        // We continue, maybe it's already there but not in PATH
+    }
+
+    if ffmpeg_is_installed() {
+        return Ok("FFmpeg downloaded successfully.".to_string());
+    }
+
+    // Fallback: Add current dir to PATH if ffmpeg is there
+    let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    let filename = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    
+    let mut found_path = None;
+    
+    // 1. Check direct paths
+    let candidates = vec![
+        current_dir.join(filename),
+        current_dir.join("ffmpeg").join(filename),
+        current_dir.join("bin").join(filename),
+        current_dir.join("ffmpeg").join("bin").join(filename),
+    ];
+    
+    for p in candidates {
+        if p.exists() {
+            found_path = Some(p);
+            break;
+        }
+    }
+    
+    // 2. Search in subdirectories (e.g. ffmpeg-6.0-windows-desktop/bin/ffmpeg.exe)
+    if found_path.is_none() {
+        if let Ok(entries) = std::fs::read_dir(&current_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Check inside this dir
+                    let p1 = path.join(filename);
+                    if p1.exists() { found_path = Some(p1); break; }
+                    
+                    // Check inside bin
+                    let p2 = path.join("bin").join(filename);
+                    if p2.exists() { found_path = Some(p2); break; }
+                }
+            }
+        }
+    }
+
+    if let Some(ffmpeg_path) = found_path {
+        let key = "PATH";
+        unsafe {
+            if let Ok(path) = std::env::var(key) {
+                let separator = if cfg!(windows) { ";" } else { ":" };
+                let parent = ffmpeg_path.parent().unwrap().to_string_lossy();
+                let new_path = format!("{}{}{}", path, separator, parent);
+                std::env::set_var(key, new_path);
+            } else {
+                std::env::set_var(key, ffmpeg_path.parent().unwrap().to_string_lossy().to_string());
+            }
+        }
+
+        if ffmpeg_is_installed() {
+            return Ok(format!("FFmpeg found at {} and added to PATH.", ffmpeg_path.display()));
+        }
+    }
+
+    Ok("FFmpeg downloaded but verification failed. Please restart the app.".to_string())
 }
 
 use ffmpeg_sidecar::command::FfmpegCommand;
