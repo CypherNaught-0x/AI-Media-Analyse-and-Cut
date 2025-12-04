@@ -26,7 +26,7 @@ const router = createRouter({
 describe('Settings.vue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    global.fetch = vi.fn();
+    globalThis.fetch = vi.fn();
   });
 
   it('renders correctly', () => {
@@ -42,7 +42,7 @@ describe('Settings.vue', () => {
 
   it('fetches models correctly', async () => {
     const mockModels = { models: [{ name: 'models/gemini-pro' }] };
-    (global.fetch as any).mockResolvedValue({
+    (globalThis.fetch as any).mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(mockModels),
     });
@@ -60,7 +60,7 @@ describe('Settings.vue', () => {
     
     await flushPromises();
 
-    expect(global.fetch).toHaveBeenCalled();
+    expect(globalThis.fetch).toHaveBeenCalled();
   });
 
   it('saves settings', async () => {
