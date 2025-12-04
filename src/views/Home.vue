@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { open, save, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import type { TranscriptSegment, AudioInfo, Clip } from "../types";
@@ -31,6 +31,10 @@ const currentModelDisplay = computed(() => {
     return `${settings.value.model}`;
 });
 const hasTranscript = computed(() => segments.value.length > 0);
+const uniqueSpeakers = computed(() => {
+    const s = new Set(segments.value.map(seg => seg.speaker));
+    return Array.from(s).sort();
+});
 
 onMounted(async () => {
     try {
@@ -370,6 +374,38 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
     }
 }
 
+async function renameSpeaker(oldName: string, newName: string, inputElement: HTMLInputElement) {
+    const trimmedNewName = newName.trim();
+    if (oldName === trimmedNewName || !trimmedNewName) {
+        inputElement.value = oldName; // Reset if empty or same
+        return;
+    }
+
+    const exists = uniqueSpeakers.value.includes(trimmedNewName);
+    
+    if (exists) {
+        const confirmed = await ask(
+            `Speaker "${trimmedNewName}" already exists.\n\nMerging "${oldName}" into "${trimmedNewName}" is irreversible.\n\nDo you want to continue?`,
+            { title: 'Merge Speakers?', kind: 'warning' }
+        );
+        
+        if (!confirmed) {
+            inputElement.value = oldName;
+            return;
+        }
+    }
+
+    // Update segments
+    segments.value = segments.value.map(seg => {
+        if (seg.speaker === oldName) {
+            return { ...seg, speaker: trimmedNewName };
+        }
+        return seg;
+    });
+    
+    await saveTranscript();
+}
+
 function jumpTo(time: number) {
     console.log("Jump to", time);
 }
@@ -532,6 +568,25 @@ function goToSettings() {
                                 :class="useAdvancedAlignment ? 'translate-x-6' : 'translate-x-1'"
                             />
                         </button>
+                    </div>
+
+                    <!-- Speaker Management -->
+                    <div v-if="uniqueSpeakers.length > 0" class="mb-6 p-4 bg-black/20 rounded-xl border border-white/5">
+                        <h3 class="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">Speakers</h3>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                            <div v-for="speaker in uniqueSpeakers" :key="speaker" class="relative group">
+                                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                    </svg>
+                                </div>
+                                <input 
+                                    :value="speaker" 
+                                    @change="renameSpeaker(speaker, ($event.target as HTMLInputElement).value, $event.target as HTMLInputElement)"
+                                    class="w-full pl-9 pr-3 py-2 rounded-lg bg-white/5 border border-white/10 focus:border-blue-500/50 focus:bg-black/30 outline-none text-sm text-gray-300 transition-all"
+                                />
+                            </div>
+                        </div>
                     </div>
 
                     <Editor :segments="segments" @jump-to="jumpTo" @update:segments="segments = $event" />
