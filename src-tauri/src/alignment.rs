@@ -1,17 +1,22 @@
+use crate::video::Segment;
 use anyhow::{anyhow, Context, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
+use ort::{
+    session::{builder::GraphOptimizationLevel, Session},
+    value::Value,
+};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::collections::HashMap;
 use std::path::Path;
-use tauri::Emitter;
-use crate::video::Segment;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::probe::Hint;
+use symphonia::core::audio::AudioBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::audio::AudioBuffer;
-use rubato::{Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters, WindowFunction};
-use ort::{session::{Session, builder::GraphOptimizationLevel}, value::Value};
+use symphonia::core::probe::Hint;
+use tauri::Emitter;
 
 // --- Vocab Info ---
 #[derive(Clone)]
@@ -44,7 +49,8 @@ impl VocabInfo {
         }
 
         let vocab_size = id_to_token.len();
-        let blank_id = blank_id.ok_or_else(|| anyhow!("No <blk>/<blank> token found in vocab file"))?;
+        let blank_id =
+            blank_id.ok_or_else(|| anyhow!("No <blk>/<blank> token found in vocab file"))?;
 
         Ok(Self {
             id_to_token,
@@ -83,8 +89,11 @@ pub struct ParakeetModel {
 impl ParakeetModel {
     pub fn download() -> Result<Self> {
         let api = Api::new()?;
-        let repo = api.repo(Repo::new("s0me-0ne/parakeet-tdt-0.6b-v3-onnx".to_string(), RepoType::Model));
-        
+        let repo = api.repo(Repo::new(
+            "s0me-0ne/parakeet-tdt-0.6b-v3-onnx".to_string(),
+            RepoType::Model,
+        ));
+
         let encoder_path = repo.get("encoder.onnx")?;
         let decoder_path = repo.get("decoder.onnx")?;
         let feature_extractor_path = repo.get("feature_extractor.onnx")?;
@@ -92,9 +101,14 @@ impl ParakeetModel {
 
         let vocab = VocabInfo::from_file(&vocab_path)?;
 
-        let builder = || Session::builder().unwrap().with_optimization_level(GraphOptimizationLevel::Level3).unwrap();
+        let builder = || {
+            Session::builder()
+                .unwrap()
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .unwrap()
+        };
 
-        // For now, using CPU to ensure compatibility. 
+        // For now, using CPU to ensure compatibility.
         // To enable GPU, we would need to configure execution providers here.
         let encoder_session = builder().commit_from_file(encoder_path)?;
         let decoder_session = builder().commit_from_file(decoder_path)?;
@@ -108,11 +122,11 @@ impl ParakeetModel {
             sample_rate: 16000,
         })
     }
-    
+
     // Note: The user asked to "align AI transcript with local timestamps".
     // The local model generates its own transcript and timestamps.
-    // Ideally, we would align the *original* text to these timestamps, but 
-    // simply returning the high-quality local transcript is often what is meant 
+    // Ideally, we would align the *original* text to these timestamps, but
+    // simply returning the high-quality local transcript is often what is meant
     // by "using a local model for alignment" in this context (replacing the API result with local result).
     // If strict alignment of the *original* text is required, we'd need DTW.
     // For now, we return the local transcript segments.
@@ -121,9 +135,9 @@ impl ParakeetModel {
         // Simple single-chunk for now, or loop if long
         let max_len = 480_000; // 30s
         if audio.len() > max_len {
-             self.transcribe_long_audio(audio)
+            self.transcribe_long_audio(audio)
         } else {
-             self.transcribe_single_chunk(audio)
+            self.transcribe_single_chunk(audio)
         }
     }
 
@@ -131,24 +145,26 @@ impl ParakeetModel {
         let chunk_size = 480_000;
         let overlap = 48_000;
         let sr = self.sample_rate as f32;
-        
+
         let mut segments = Vec::new();
         let mut pos = 0;
-        
+
         while pos < audio.len() {
             let end = (pos + chunk_size).min(audio.len());
             let chunk = &audio[pos..end];
-            
+
             let res = self.transcribe_single_chunk(chunk)?;
             let t0 = pos as f32 / sr;
-            
+
             for mut seg in res.segments {
                 seg.start += t0;
                 seg.end += t0;
                 segments.push(seg);
             }
-            
-            if end == audio.len() { break; }
+
+            if end == audio.len() {
+                break;
+            }
             pos += chunk_size - overlap;
         }
         
@@ -173,9 +189,12 @@ impl ParakeetModel {
         }
 
         let fe_outputs = self.feature_extractor_session.run(fe_inputs)?;
-        let features_val = fe_outputs.values().next().ok_or_else(|| anyhow!("No FE output"))?;
+        let features_val = fe_outputs
+            .values()
+            .next()
+            .ok_or_else(|| anyhow!("No FE output"))?;
         let (feat_shape, feat_slice) = features_val.try_extract_tensor::<f32>()?;
-        
+
         // Handle shape [B, 128, T] or [B, T, 128]
         let (features_tensor, t_len) = if feat_shape[1] == 128 {
             let t_dim = feat_shape[2];
@@ -198,7 +217,7 @@ impl ParakeetModel {
             let ft = Value::from_array((vec![b, 128, t], transposed))?;
             (ft, t as i64)
         };
-        
+
         drop(fe_outputs);
 
         // 2. Encoder
@@ -211,12 +230,17 @@ impl ParakeetModel {
                 enc_inputs.insert(input.name.clone(), features_tensor.clone().into_dyn());
             }
         }
-        
+
         let enc_outputs = self.encoder_session.run(enc_inputs)?;
-        let enc_val = enc_outputs.iter().find(|(k, _)| *k == "outputs").or_else(|| enc_outputs.iter().next()).unwrap().1;
+        let enc_val = enc_outputs
+            .iter()
+            .find(|(k, _)| *k == "outputs")
+            .or_else(|| enc_outputs.iter().next())
+            .unwrap()
+            .1;
         let (enc_shape, enc_slice) = enc_val.try_extract_tensor::<f32>()?;
         let (b, d, t_enc) = (enc_shape[0], enc_shape[1], enc_shape[2]);
-        
+
         let enc_vec = enc_slice.to_vec();
         drop(enc_outputs);
 
@@ -236,7 +260,11 @@ impl ParakeetModel {
         })
     }
 
-    fn decode_tdt_greedy(&mut self, encoder_all: &[f32], (b, d, t_enc): (usize, usize, usize)) -> Result<Vec<usize>> {
+    fn decode_tdt_greedy(
+        &mut self,
+        encoder_all: &[f32],
+        (b, d, t_enc): (usize, usize, usize),
+    ) -> Result<Vec<usize>> {
         let batch = 1usize;
         let mut states_1 = vec![0.0f32; 2 * batch * 640];
         let mut states_2 = vec![0.0f32; 2 * batch * 640];
@@ -247,7 +275,7 @@ impl ParakeetModel {
 
         while frame_idx < t_enc && decoded.len() < 4096 {
             let last_tok = decoded.last().copied().unwrap_or(self.vocab.blank_id) as i32;
-            
+
             let targets = Value::from_array(([batch, 1], vec![last_tok]))?;
             let target_len = Value::from_array(([batch], vec![1i32]))?;
             let s1 = Value::from_array(([2, batch, 640], states_1.clone()))?;
@@ -264,15 +292,17 @@ impl ParakeetModel {
             let outputs = self.decoder_session.run(inputs)?;
             let out_val = outputs.get("outputs").unwrap();
             let (out_shape, out_slice) = out_val.try_extract_tensor::<f32>()?;
-            
+
             let c_dim = out_shape[3] as usize;
             let start = frame_idx * c_dim;
-            let logits = &out_slice[start..start+c_dim];
+            let logits = &out_slice[start..start + c_dim];
             let (vocab_logits, dur_logits) = logits.split_at(self.vocab.vocab_size);
-            
+
             let (pred_token, _) = argmax_index(vocab_logits);
             let (mut dur_bin, _) = argmax_index(dur_logits);
-            if dur_bin == 0 { dur_bin = 1; }
+            if dur_bin == 0 {
+                dur_bin = 1;
+            }
 
             if pred_token == self.vocab.blank_id {
                 frame_idx += 1;
@@ -302,21 +332,29 @@ impl ParakeetModel {
 fn tokens_to_text(token_ids: &[usize], vocab: &VocabInfo) -> String {
     let mut words = Vec::new();
     let mut cur = String::new();
-    
+
     for &id in token_ids {
         if let Some(tok) = vocab.token_of(id) {
-            if tok == "<blk>" || tok == "<blank>" || tok == "<pad>" || tok == "<unk>" { continue; }
-            if tok.starts_with('<') { continue; }
-            
+            if tok == "<blk>" || tok == "<blank>" || tok == "<pad>" || tok == "<unk>" {
+                continue;
+            }
+            if tok.starts_with('<') {
+                continue;
+            }
+
             if tok.starts_with(' ') {
-                if !cur.is_empty() { words.push(cur); }
+                if !cur.is_empty() {
+                    words.push(cur);
+                }
                 cur = tok.chars().skip(1).collect();
             } else {
                 cur.push_str(tok);
             }
         }
     }
-    if !cur.is_empty() { words.push(cur); }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
     words.join(" ")
 }
 
@@ -350,7 +388,8 @@ fn load_audio(path: &Path) -> Result<Vec<f32>> {
     let probed = symphonia::default::get_probe().format(&hint, mss, &fmt_opts, &meta_opts)?;
     let mut format = probed.format;
 
-    let track = format.tracks()
+    let track = format
+        .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or_else(|| anyhow!("no supported audio tracks"))?;
@@ -397,13 +436,7 @@ fn load_audio(path: &Path) -> Result<Vec<f32>> {
             oversampling_factor: 256,
             window: WindowFunction::BlackmanHarris2,
         };
-        let mut resampler = SincFixedIn::<f32>::new(
-            ratio,
-            ratio,
-            params,
-            samples.len(),
-            1
-        )?;
+        let mut resampler = SincFixedIn::<f32>::new(ratio, ratio, params, samples.len(), 1)?;
         let waves_in = vec![samples];
         let waves_out = resampler.process(&waves_in, None)?;
         Ok(waves_out[0].clone())
@@ -425,23 +458,114 @@ pub struct AlignedSegment {
 pub async fn align_transcript(
     window: tauri::Window,
     audio_path: String,
-    _transcript: Vec<Segment>
+    _transcript: Vec<Segment>,
 ) -> Result<Vec<AlignedSegment>, String> {
-    window.emit("progress", "Downloading alignment model...").map_err(|e| e.to_string())?;
-    
-    let mut model = ParakeetModel::download().map_err(|e| format!("Failed to download model: {}", e))?;
-    
-    window.emit("progress", "Aligning...").map_err(|e| e.to_string())?;
-    
+    window
+        .emit("progress", "Downloading alignment model...")
+        .map_err(|e| e.to_string())?;
+
+    let mut model =
+        ParakeetModel::download().map_err(|e| format!("Failed to download model: {}", e))?;
+
+    window
+        .emit("progress", "Aligning...")
+        .map_err(|e| e.to_string())?;
+
     let audio = load_audio(Path::new(&audio_path)).map_err(|e| e.to_string())?;
     let result = model.transcribe_batch(&audio).map_err(|e| e.to_string())?;
-    
-    let aligned: Vec<AlignedSegment> = result.segments.into_iter().map(|s| AlignedSegment {
-        start: format_timestamp(s.start),
-        end: format_timestamp(s.end),
-        speaker: "Local".to_string(),
-        text: s.text,
-    }).collect();
-    
+
+    let aligned: Vec<AlignedSegment> = result
+        .segments
+        .into_iter()
+        .map(|s| AlignedSegment {
+            start: format_timestamp(s.start),
+            end: format_timestamp(s.end),
+            speaker: "Local".to_string(),
+            text: s.text,
+        })
+        .collect();
+
     Ok(aligned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_vocab_info() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "hello 0").unwrap();
+        writeln!(file, "world 1").unwrap();
+        writeln!(file, "<blk> 2").unwrap();
+
+        let vocab = VocabInfo::from_file(file.path()).unwrap();
+
+        assert_eq!(vocab.vocab_size, 3);
+        assert_eq!(vocab.blank_id, 2);
+        assert_eq!(vocab.token_of(0), Some("hello"));
+        assert_eq!(vocab.token_of(1), Some("world"));
+        assert_eq!(vocab.token_of(2), Some("<blk>"));
+        assert_eq!(vocab.token_of(3), None);
+    }
+
+    #[test]
+    fn test_argmax_index() {
+        let data = vec![0.1, 0.5, 0.2, 0.9, 0.3];
+        let (idx, val) = argmax_index(&data);
+        assert_eq!(idx, 3);
+        assert_eq!(val, 0.9);
+    }
+
+    #[test]
+    fn test_tokens_to_text() {
+        // Mock vocab
+        let mut id_to_token = HashMap::new();
+        id_to_token.insert(0, "hello".to_string());
+        id_to_token.insert(1, " ".to_string());
+        id_to_token.insert(2, "world".to_string());
+        id_to_token.insert(3, "<blk>".to_string());
+        id_to_token.insert(4, " ".to_string()); // space token
+        id_to_token.insert(5, "foo".to_string());
+
+        let _vocab = VocabInfo {
+            id_to_token,
+            vocab_size: 6,
+            blank_id: 3,
+        };
+
+        // "hello" " " "world"
+        let _tokens = vec![0, 1, 2];
+        // Note: The logic in tokens_to_text handles space tokens specially.
+        // If token starts with ' ', it appends to words.
+        // Let's adjust the test to match the logic:
+        // if tok.starts_with(' ') -> new word
+        // else -> append to current word
+
+        // Let's try to simulate sentence piece tokens:
+        // " Hello" " World"
+        let mut id_to_token = HashMap::new();
+        id_to_token.insert(0, " Hello".to_string());
+        id_to_token.insert(1, " World".to_string());
+        id_to_token.insert(2, "<blk>".to_string());
+
+        let vocab = VocabInfo {
+            id_to_token,
+            vocab_size: 3,
+            blank_id: 2,
+        };
+
+        let text = tokens_to_text(&[0, 1], &vocab);
+        assert_eq!(text, "Hello World");
+    }
+
+    #[test]
+    fn test_format_timestamp() {
+        assert_eq!(format_timestamp(0.0), "00:00.000");
+        assert_eq!(format_timestamp(61.5), "01:01.500");
+        assert_eq!(format_timestamp(3600.0), "60:00.000"); // Simple MM:SS logic might overflow MM if > 59, but that's what the code does.
+        assert_eq!(format_timestamp(12.3456), "00:12.346");
+    }
 }

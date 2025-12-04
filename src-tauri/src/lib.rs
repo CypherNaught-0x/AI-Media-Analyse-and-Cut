@@ -4,10 +4,10 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-use tauri::Emitter;
 use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
+use tauri::Emitter;
 
 #[tauri::command]
 async fn init_ffmpeg() -> Result<String, String> {
@@ -29,7 +29,10 @@ struct AudioInfo {
 }
 
 #[tauri::command]
-async fn prepare_audio_for_ai(window: tauri::Window, input_path: String) -> Result<AudioInfo, String> {
+async fn prepare_audio_for_ai(
+    window: tauri::Window,
+    input_path: String,
+) -> Result<AudioInfo, String> {
     let input = PathBuf::from(&input_path);
     if !input.exists() {
         return Err("Input file does not exist".to_string());
@@ -62,15 +65,18 @@ async fn prepare_audio_for_ai(window: tauri::Window, input_path: String) -> Resu
     })
 }
 
+mod alignment;
 mod gemini;
+pub mod time_utils;
 mod upload;
 mod video;
-mod alignment;
 
+use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
 use crate::upload::upload_file_and_wait;
-use crate::video::{cut_video as cut_video_fn, export_clips as export_clips_fn, Segment, ClipSegment};
-use crate::alignment::align_transcript;
+use crate::video::{
+    cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
+};
 
 #[tauri::command]
 async fn upload_file(
@@ -119,7 +125,8 @@ async fn cut_video(
     let output = PathBuf::from(output_path);
     cut_video_fn(&input, &segments, &output, move |time| {
         let _ = window.emit("progress", time);
-    }).map_err(|e| e.to_string())
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -133,7 +140,8 @@ async fn export_clips(
     let output = PathBuf::from(output_dir);
     export_clips_fn(&input, &segments, &output, move |time| {
         let _ = window.emit("progress", time);
-    }).map_err(|e| e.to_string())
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
