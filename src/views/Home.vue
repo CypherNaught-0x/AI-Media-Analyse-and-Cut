@@ -21,7 +21,6 @@ const clipMinDuration = ref(30);
 const clipMaxDuration = ref(60);
 const speakerCount = ref<number | null>(null);
 const context = ref("");
-const glossary = ref("");
 const lastExportPath = ref("");
 const useAdvancedAlignment = ref(false);
 
@@ -35,6 +34,31 @@ const uniqueSpeakers = computed(() => {
     const s = new Set(segments.value.map(seg => seg.speaker));
     return Array.from(s).sort();
 });
+
+const contextTextarea = ref<HTMLTextAreaElement | null>(null);
+
+function startResize(e: MouseEvent) {
+    const textarea = contextTextarea.value;
+    if (!textarea) return;
+
+    const startY = e.clientY;
+    const startHeight = textarea.offsetHeight;
+
+    function onMouseMove(e: MouseEvent) {
+        const newHeight = startHeight + (e.clientY - startY);
+        if (newHeight > 60) { // Minimum height
+            textarea!.style.height = `${newHeight}px`;
+        }
+    }
+
+    function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+}
 
 onMounted(async () => {
     try {
@@ -64,6 +88,14 @@ async function loadTranscript() {
         if (Array.isArray(parsed)) {
             segments.value = parsed;
             status.value = "Loaded existing transcript.";
+        } else if (parsed && typeof parsed === 'object') {
+            if (Array.isArray(parsed.segments)) {
+                segments.value = parsed.segments;
+            }
+            if (typeof parsed.context === 'string') {
+                context.value = parsed.context;
+            }
+            status.value = "Loaded existing transcript and context.";
         }
     } catch (e) {
         // Ignore error if file doesn't exist
@@ -75,9 +107,13 @@ async function saveTranscript() {
     if (!inputPath.value || segments.value.length === 0) return;
     const transcriptPath = inputPath.value + ".transcript.json";
     try {
+        const data = {
+            segments: segments.value,
+            context: context.value
+        };
         await invoke("write_text_file", { 
             path: transcriptPath, 
-            content: JSON.stringify(segments.value, null, 2) 
+            content: JSON.stringify(data, null, 2) 
         });
         console.log("Transcript saved.");
     } catch (e) {
@@ -150,7 +186,7 @@ async function processFile() {
             baseUrl: settings.value.baseUrl,
             model: settings.value.model,
             context: context.value,
-            glossary: glossary.value,
+            glossary: settings.value.glossary,
             speakerCount: speakerCount.value,
             audioUri: uri,
             audioBase64: audioBase64
@@ -464,14 +500,20 @@ function goToSettings() {
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
                     <div class="md:col-span-2">
                         <label class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Context</label>
-                        <textarea v-model="context" rows="2"
-                            class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 resize-none"
-                            placeholder="Describe the video content to help the AI..."></textarea>
+                        <div class="relative">
+                            <textarea ref="contextTextarea" v-model="context" rows="2"
+                                class="w-full p-4 pb-8 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-colors text-gray-300 placeholder-gray-600 resize-none"
+                                placeholder="Describe the video content to help the AI..."></textarea>
+                            <div @mousedown.prevent="startResize"
+                                class="absolute bottom-0 left-0 right-0 h-6 cursor-ns-resize flex items-center justify-center hover:bg-white/5 rounded-b-2xl transition-colors group">
+                                <div class="w-12 h-1 bg-white/10 rounded-full group-hover:bg-white/20 transition-colors"></div>
+                            </div>
+                        </div>
                     </div>
                     
                     <div>
                         <label class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Glossary</label>
-                        <textarea v-model="glossary" rows="2"
+                        <textarea v-model="settings.glossary" rows="2"
                             class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 resize-none"
                             placeholder="Specific terms, names, acronyms..."></textarea>
                     </div>
@@ -647,7 +689,7 @@ function goToSettings() {
         </div>
     </div>
     <!-- Status Bar (Outside main container to ensure fixed positioning works) -->
-    <div class="fixed bottom-0 left-0 right-0 p-4 bg-black/80 backdrop-blur-md border-t border-white/10 flex items-center justify-between z-50">
+    <div class="fixed bottom-0 left-0 right-0 p-4 bg-black/50 backdrop-blur-md border-t border-white/10 flex items-center justify-between z-50">
         <div class="max-w-5xl mx-auto w-full flex items-center gap-3">
             <div class="w-2 h-2 rounded-full"
                 :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
