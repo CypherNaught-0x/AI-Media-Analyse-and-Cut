@@ -204,6 +204,7 @@ async fn analyze_audio(
     context: String,
     glossary: String,
     speaker_count: Option<u32>,
+    remove_filler_words: bool,
     audio_uri: Option<String>,
     audio_base64: Option<String>,
 ) -> Result<String, String> {
@@ -213,6 +214,7 @@ async fn analyze_audio(
             &context,
             &glossary,
             speaker_count,
+            remove_filler_words,
             audio_uri.as_deref(),
             audio_base64.as_deref(),
         )
