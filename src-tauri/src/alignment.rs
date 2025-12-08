@@ -369,6 +369,7 @@ struct TranscriptionSegment {
 }
 
 struct BatchTranscriptionResult {
+    #[allow(unused)] // used in frontend
     text: String,
     segments: Vec<TranscriptionSegment>,
 }
