@@ -2,6 +2,7 @@ use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use std::path::Path;
+use log::{info, error, debug};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,8 @@ where
     //  [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
     // -map "[v]" -map "[a]" output.mp4
 
+    info!("Starting cut_video: input={:?}, output={:?}, segments={}", input_path, output_path, segments.len());
+
     let (filter_complex, _inputs) = build_filter_complex(segments);
 
     let mut last_error = None;
@@ -68,10 +71,10 @@ where
         .for_each(|event| match event {
             FfmpegEvent::Progress(p) => on_progress(p.time),
             FfmpegEvent::Log(_level, msg) => {
-                println!("[FFmpeg Log] {}", msg);
+                debug!("[FFmpeg Log] {}", msg);
             }
             FfmpegEvent::Error(e) => {
-                println!("[FFmpeg Error] {}", e);
+                error!("[FFmpeg Error] {}", e);
                 last_error = Some(e);
             }
             _ => {}
@@ -140,6 +143,8 @@ where
         })?;
     }
 
+    info!("Starting export_clips: input={:?}, output_dir={:?}, segments={}", input_path, output_dir, segments.len());
+
     for (i, segment) in segments.iter().enumerate() {
         let output_filename = build_clip_output_filename(i, segment);
         let output_path = output_dir.join(&output_filename);
@@ -173,10 +178,10 @@ where
                 .for_each(|event| match event {
                     FfmpegEvent::Progress(p) => on_progress(p.time),
                     FfmpegEvent::Log(_level, msg) => {
-                        println!("[FFmpeg Log] {}", msg);
+                        debug!("[FFmpeg Log] {}", msg);
                     }
                     FfmpegEvent::Error(e) => {
-                        println!("[FFmpeg Error] {}", e);
+                        error!("[FFmpeg Error] {}", e);
                         last_error = Some(e);
                     }
                     _ => {}

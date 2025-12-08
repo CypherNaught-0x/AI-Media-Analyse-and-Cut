@@ -2,6 +2,7 @@ use crate::video::TranscriptSegment;
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::{json, Value};
+use log::{info, error, debug};
 
 #[derive(Clone)]
 pub struct GeminiClient {
@@ -27,6 +28,7 @@ impl GeminiClient {
         target_language: String,
         context: String,
     ) -> Result<String> {
+        info!("Starting translation of {} segments to {}", transcript.len(), target_language);
         let chunk_size = 20;
         let chunks: Vec<Vec<TranscriptSegment>> =
             transcript.chunks(chunk_size).map(|c| c.to_vec()).collect();
@@ -39,9 +41,15 @@ impl GeminiClient {
             let context = context.clone();
 
             handles.push(tokio::spawn(async move {
-                client
+                match client
                     .translate_chunk(chunk, target_language, context, i)
-                    .await
+                    .await {
+                        Ok(res) => Ok(res),
+                        Err(e) => {
+                            error!("Translation chunk #{} failed: {}", i, e);
+                            Err(e)
+                        }
+                    }
             }));
         }
 
@@ -75,6 +83,7 @@ impl GeminiClient {
         context: String,
         chunk_index: usize,
     ) -> Result<String> {
+        debug!("Translating chunk #{} ({} segments)", chunk_index, chunk.len());
         let transcript_json = serde_json::to_string(&chunk)?;
 
         let system_prompt = "You are a professional translator. Your task is to translate the text content of a transcript while preserving the structure and timestamps exactly.";

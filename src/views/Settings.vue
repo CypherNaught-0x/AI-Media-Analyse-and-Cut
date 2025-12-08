@@ -2,6 +2,8 @@
 import { ref, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
+import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 
 const router = useRouter();
 const { settings, updateSettings } = useSettings();
@@ -113,6 +115,25 @@ async function fetchModels() {
     }
 }
 
+async function exportLogs() {
+    try {
+        const path = await save({
+            filters: [{
+                name: 'Zip Files',
+                extensions: ['zip']
+            }],
+            defaultPath: 'ai-media-cutter-logs.zip'
+        });
+        
+        if (path) {
+            await invoke('zip_logs', { targetPath: path });
+            alert('Logs exported successfully!');
+        }
+    } catch (e) {
+        alert(`Failed to export logs: ${e}`);
+    }
+}
+
 function saveSettings() {
     const normalizedUrl = normalizeBaseUrl(localBaseUrl.value);
 
@@ -194,6 +215,21 @@ function cancel() {
                     </div>
                     <p v-if="fetchError" class="text-xs text-red-400 mt-1">{{ fetchError }}</p>
                     <p v-else class="text-xs text-gray-500 mt-1">{{ endpointInfo }}</p>
+                </div>
+
+                <!-- Troubleshooting -->
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                        Troubleshooting
+                    </label>
+                    <div class="flex gap-3">
+                        <button @click="exportLogs"
+                            class="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-2xl border border-gray-600 hover:border-gray-500 transition-all shadow-lg hover:shadow-xl active:scale-95">
+                            Export Logs
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">Export application logs for debugging purposes.</p>
                 </div>
 
                 <!-- Action Buttons -->
