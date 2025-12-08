@@ -38,7 +38,7 @@ pub async fn detect_silence(path: String) -> Result<Vec<SilenceInterval>, String
 
     for event in events {
         if let FfmpegEvent::Log(_, line) = event {
-             if let Some(caps) = re_start.captures(&line) {
+            if let Some(caps) = re_start.captures(&line) {
                 if let Some(m) = caps.get(1) {
                     if let Ok(val) = m.as_str().parse::<f64>() {
                         current_start = Some(val);
