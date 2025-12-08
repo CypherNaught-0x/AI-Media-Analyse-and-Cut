@@ -10,6 +10,9 @@
 
 *   **AI Transcription**: Automatically transcribe audio and video files with high accuracy.
 *   **Text-Based Editing**: Edit videos by simply deleting text from the transcript. The video is automatically cut to match your text edits.
+*   **Smart Filler Word Removal**: Toggle to automatically remove filler words (um, uh, like) and non-voice sounds for cleaner cuts.
+*   **Advanced Editor**: Multi-select segments (Shift+Click) to merge or delete multiple parts at once.
+*   **Real-time Preview**: Built-in video player that simulates the final cut by skipping deleted segments during playback.
 *   **Viral Clips Generator**: AI analyzes your content to extract short, engaging clips suitable for TikTok, Shorts, or Reels. Includes "Smart Splicing" to combine non-contiguous relevant segments.
 *   **Multi-Language Translation**: Translate transcripts into 15+ languages (Spanish, French, German, Japanese, etc.) while preserving original timestamps.
 *   **Export Options**: Export subtitles (SRT, VTT, TXT) or the cut video file directly.
@@ -45,6 +48,35 @@
     pnpm tauri build
     ```
 
+## Testing
+
+The project includes a comprehensive test suite, including unit tests and integration tests.
+
+### Running Tests
+
+To run all tests (unit and integration):
+
+```bash
+cd src-tauri
+cargo test
+```
+
+### Integration Tests
+
+The integration tests include:
+*   **Mock Tests**: Verify the application logic against simulated API responses.
+*   **Real Pipeline Tests**: Run the full transcription, translation, and clip generation pipeline against a real API.
+
+To run the **Real Pipeline Tests**, you need to configure the following environment variables (or create a `.env` file in `src-tauri/`):
+
+```env
+API_KEY=your_api_key
+BASE_URL=https://generativelanguage.googleapis.com
+API_MODEL=gemini-1.5-flash
+```
+
+If these variables are not set, the real pipeline tests will be skipped automatically.
+
 ## How to Use
 
 1.  **Configure API**: 
@@ -60,11 +92,14 @@
 3.  **Analyze**:
     *   (Optional) Enter **Context** (e.g., "A coding tutorial about Rust") to help the AI understand the topic.
     *   (Optional) Add **Glossary** terms for specific names or acronyms.
-    *   Click **Analyze Video**. The AI will transcribe the content and identify speakers.
+    *   (Optional) Toggle **Remove Filler Words** to automatically clean up "um", "uh", and non-voice sounds.
+    *   Click **Analyze Media**. The AI will transcribe the content and identify speakers.
 
 4.  **Edit**:
     *   **Remove Segments**: Delete lines from the transcript to remove those sections from the video.
-    *   **Silence Removal**: The app automatically filters out silent parts based on audio analysis.
+    *   **Multi-Select**: Hold **Shift** and click multiple segments to select them. Use the floating toolbar to **Merge** or **Delete** them all at once.
+    *   **Preview**: Use the built-in video player to preview your cuts. It automatically skips deleted segments during playback.
+    *   **Silence Removal**: The app automatically filters out silent parts based on audio analysis (configurable minimum duration).
     *   **Rename Speakers**: Click on speaker names (e.g., "Speaker 1") to rename them globally.
 
 5.  **Translate** (Optional): 
@@ -78,7 +113,7 @@
     *   Click **Generate Clips** to have the AI find the most engaging moments.
 
 7.  **Export**:
-    *   Click **Cut Video** to render the final edited video based on your transcript.
+    *   Click **Export Video** to render the final edited video based on your transcript.
     *   Use the **SRT / VTT / TXT** buttons to export subtitles.
 
 ## Tech Stack
