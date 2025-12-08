@@ -8,20 +8,23 @@ use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use tauri::Emitter;
+use log::{info, warn, error};
 
 #[tauri::command]
 async fn init_ffmpeg() -> Result<String, String> {
     if ffmpeg_is_installed() {
+        info!("FFmpeg is already installed.");
         return Ok("FFmpeg is already installed.".to_string());
     }
 
     // Try to download
     if let Err(e) = auto_download() {
-        println!("FFmpeg auto_download failed: {}", e);
+        warn!("FFmpeg auto_download failed: {}", e);
         // We continue, maybe it's already there but not in PATH
     }
 
     if ffmpeg_is_installed() {
+        info!("FFmpeg downloaded successfully.");
         return Ok("FFmpeg downloaded successfully.".to_string());
     }
 
@@ -323,9 +326,42 @@ async fn read_text_file(path: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), String> {
+    use std::io::Write;
+    use tauri::Manager;
+
+    let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    
+    let file = std::fs::File::create(&target_path).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+
+    if log_dir.exists() {
+        for entry in std::fs::read_dir(&log_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name() {
+                     let name = name.to_string_lossy();
+                     zip.start_file(name, options).map_err(|e| e.to_string())?;
+                     let content = std::fs::read(&path).map_err(|e| e.to_string())?;
+                     zip.write_all(&content).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -345,7 +381,8 @@ pub fn run() {
             read_text_file,
             align_transcript,
             detect_silence,
-            translate_transcript
+            translate_transcript,
+            zip_logs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
