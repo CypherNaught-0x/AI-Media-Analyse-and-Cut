@@ -1,7 +1,7 @@
+use crate::video::TranscriptSegment;
 use anyhow::Result;
 use reqwest::Client;
 use serde_json::{json, Value};
-use crate::video::TranscriptSegment;
 
 #[derive(Clone)]
 pub struct GeminiClient {
@@ -28,25 +28,28 @@ impl GeminiClient {
         context: String,
     ) -> Result<String> {
         let chunk_size = 20;
-        let chunks: Vec<Vec<TranscriptSegment>> = transcript.chunks(chunk_size).map(|c| c.to_vec()).collect();
-        
+        let chunks: Vec<Vec<TranscriptSegment>> =
+            transcript.chunks(chunk_size).map(|c| c.to_vec()).collect();
+
         let mut handles = vec![];
-        
+
         for (i, chunk) in chunks.into_iter().enumerate() {
             let client = self.clone();
             let target_language = target_language.clone();
             let context = context.clone();
-            
+
             handles.push(tokio::spawn(async move {
-                client.translate_chunk(chunk, target_language, context, i).await
+                client
+                    .translate_chunk(chunk, target_language, context, i)
+                    .await
             }));
         }
-        
+
         let mut all_segments = vec![];
         // Await in order to preserve order
         for handle in handles {
             let res_str = handle.await??;
-            
+
             // Clean up markdown code blocks if present
             let json_str = if let Some(start) = res_str.find('[') {
                 if let Some(end) = res_str.rfind(']') {
@@ -57,11 +60,11 @@ impl GeminiClient {
             } else {
                 &res_str
             };
-            
+
             let segments: Vec<TranscriptSegment> = serde_json::from_str(json_str)?;
             all_segments.extend(segments);
         }
-        
+
         Ok(serde_json::to_string(&all_segments)?)
     }
 
@@ -73,7 +76,7 @@ impl GeminiClient {
         chunk_index: usize,
     ) -> Result<String> {
         let transcript_json = serde_json::to_string(&chunk)?;
-        
+
         let system_prompt = "You are a professional translator. Your task is to translate the text content of a transcript while preserving the structure and timestamps exactly.";
         let user_prompt = format!(
             "Translate the 'text' field of the following JSON transcript segments into {}.
@@ -180,7 +183,7 @@ impl GeminiClient {
         audio_base64: Option<&str>,
     ) -> Result<String> {
         let mut system_prompt = "You are a professional video editor assistant. Your task is to transcribe the audio and identify logical segments.".to_string();
-        
+
         if let Some(count) = speaker_count {
             system_prompt.push_str(&format!(" There are {} speakers in this audio. Please label them as Speaker 1, Speaker 2, etc.", count));
         }
@@ -309,7 +312,7 @@ impl GeminiClient {
         splicing: bool,
     ) -> Result<String> {
         let system_prompt = "You are a viral content expert. Your goal is to identify the most engaging moments in a video transcript for social media clips (TikTok, Reels, Shorts).";
-        
+
         let mut user_prompt = format!(
             "Analyze the following transcript and identify the top {} most interesting clips.
             Constraints:
@@ -329,7 +332,7 @@ impl GeminiClient {
         } else {
             user_prompt.push_str("- Return a strict JSON array of objects with fields: 'segments' (array with ONE {start, end} object), 'title' (catchy title), 'reason' (why this is good).\n");
         }
-            
+
         user_prompt.push_str(&format!(
             "Transcript:
             {}",

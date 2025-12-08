@@ -167,8 +167,12 @@ impl ParakeetModel {
             }
             pos += chunk_size - overlap;
         }
-        
-        let text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+
+        let text = segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(BatchTranscriptionResult { text, segments })
     }
 

@@ -14,7 +14,7 @@ async fn init_ffmpeg() -> Result<String, String> {
     if ffmpeg_is_installed() {
         return Ok("FFmpeg is already installed.".to_string());
     }
-    
+
     // Try to download
     if let Err(e) = auto_download() {
         println!("FFmpeg auto_download failed: {}", e);
@@ -27,10 +27,14 @@ async fn init_ffmpeg() -> Result<String, String> {
 
     // Fallback: Add current dir to PATH if ffmpeg is there
     let current_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let filename = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    
+    let filename = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+
     let mut found_path = None;
-    
+
     // 1. Check direct paths
     let candidates = vec![
         current_dir.join(filename),
@@ -38,14 +42,14 @@ async fn init_ffmpeg() -> Result<String, String> {
         current_dir.join("bin").join(filename),
         current_dir.join("ffmpeg").join("bin").join(filename),
     ];
-    
+
     for p in candidates {
         if p.exists() {
             found_path = Some(p);
             break;
         }
     }
-    
+
     // 2. Search in subdirectories (e.g. ffmpeg-6.0-windows-desktop/bin/ffmpeg.exe)
     if found_path.is_none() {
         if let Ok(entries) = std::fs::read_dir(&current_dir) {
@@ -54,11 +58,17 @@ async fn init_ffmpeg() -> Result<String, String> {
                 if path.is_dir() {
                     // Check inside this dir
                     let p1 = path.join(filename);
-                    if p1.exists() { found_path = Some(p1); break; }
-                    
+                    if p1.exists() {
+                        found_path = Some(p1);
+                        break;
+                    }
+
                     // Check inside bin
                     let p2 = path.join("bin").join(filename);
-                    if p2.exists() { found_path = Some(p2); break; }
+                    if p2.exists() {
+                        found_path = Some(p2);
+                        break;
+                    }
                 }
             }
         }
@@ -73,12 +83,18 @@ async fn init_ffmpeg() -> Result<String, String> {
                 let new_path = format!("{}{}{}", path, separator, parent);
                 std::env::set_var(key, new_path);
             } else {
-                std::env::set_var(key, ffmpeg_path.parent().unwrap().to_string_lossy().to_string());
+                std::env::set_var(
+                    key,
+                    ffmpeg_path.parent().unwrap().to_string_lossy().to_string(),
+                );
             }
         }
 
         if ffmpeg_is_installed() {
-            return Ok(format!("FFmpeg found at {} and added to PATH.", ffmpeg_path.display()));
+            return Ok(format!(
+                "FFmpeg found at {} and added to PATH.",
+                ffmpeg_path.display()
+            ));
         }
     }
 
@@ -134,18 +150,19 @@ async fn prepare_audio_for_ai(
 
 mod alignment;
 mod gemini;
+mod silence;
 pub mod time_utils;
 mod upload;
 mod video;
-mod silence;
 
 use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
+use crate::silence::detect_silence;
 use crate::upload::upload_file_and_wait;
 use crate::video::{
-    cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment, TranscriptSegment
+    cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
+    TranscriptSegment,
 };
-use crate::silence::detect_silence;
 
 #[tauri::command]
 async fn translate_transcript(
@@ -254,7 +271,14 @@ async fn generate_clips(
 ) -> Result<String, String> {
     let client = GeminiClient::new(api_key, base_url, model);
     client
-        .generate_clips(&transcript, count, min_duration, max_duration, topic, splicing)
+        .generate_clips(
+            &transcript,
+            count,
+            min_duration,
+            max_duration,
+            topic,
+            splicing,
+        )
         .await
         .map_err(|e| e.to_string())
 }
@@ -302,6 +326,8 @@ async fn read_text_file(path: String) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

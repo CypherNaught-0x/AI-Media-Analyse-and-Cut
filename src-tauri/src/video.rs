@@ -147,15 +147,7 @@ where
             FfmpegCommand::new()
                 .input(input_path.to_str().unwrap())
                 .args(&[
-                    "-y",
-                    "-ss",
-                    &s.start,
-                    "-to",
-                    &s.end,
-                    "-c:v",
-                    "libx264",
-                    "-c:a",
-                    "aac",
+                    "-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac",
                 ])
                 .output(output_path.to_str().unwrap())
                 .spawn()
@@ -224,21 +216,30 @@ mod tests {
     #[test]
     fn test_build_clip_output_filename() {
         let s1 = ClipSegment {
-            segments: vec![Segment { start: "0".into(), end: "10".into() }],
+            segments: vec![Segment {
+                start: "0".into(),
+                end: "10".into(),
+            }],
             label: None,
             reason: None,
         };
         assert_eq!(build_clip_output_filename(0, &s1), "clip_001.mp4");
 
         let s2 = ClipSegment {
-            segments: vec![Segment { start: "0".into(), end: "10".into() }],
+            segments: vec![Segment {
+                start: "0".into(),
+                end: "10".into(),
+            }],
             label: Some("My Clip".into()),
             reason: None,
         };
         assert_eq!(build_clip_output_filename(1, &s2), "clip_002_MyClip.mp4");
 
         let s3 = ClipSegment {
-            segments: vec![Segment { start: "0".into(), end: "10".into() }],
+            segments: vec![Segment {
+                start: "0".into(),
+                end: "10".into(),
+            }],
             label: Some("Clip/With\\BadChars!".into()),
             reason: None,
         };
