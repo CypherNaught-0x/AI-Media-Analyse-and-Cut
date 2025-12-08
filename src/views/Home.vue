@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event';
 import { open, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import SubtitleExport from "../components/SubtitleExport.vue";
-import type { TranscriptSegment, AudioInfo, Clip, SilenceInterval, ProcessedAudio, SegmentOffset } from "../types";
+import type { TranscriptSegment, AudioInfo, Clip, ProcessedAudio, SegmentOffset } from "../types";
 import { useSettings } from "../composables/useSettings";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
@@ -48,6 +48,8 @@ const currentLanguage = ref("Original");
 const targetLanguage = ref("");
 const isTranslating = ref(false);
 const showLanguageDropdown = ref(false);
+const removeFillerWords = ref(false);
+const videoRef = ref<HTMLVideoElement | null>(null);
 
 function parseTime(timeStr: string): number {
     const parts = timeStr.split(':');
@@ -333,6 +335,7 @@ async function processFile() {
             context: context.value,
             glossary: settings.value.glossary,
             speakerCount: speakerCount.value,
+            removeFillerWords: removeFillerWords.value,
             audioUri: uri,
             audioBase64: audioBase64
         });
@@ -547,7 +550,46 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
 }
 
 function jumpTo(time: number) {
-    console.log("Jump to", time);
+    if (videoRef.value) {
+        videoRef.value.currentTime = time;
+        videoRef.value.play();
+    }
+}
+
+function onTimeUpdate() {
+    if (!videoRef.value || segments.value.length === 0) return;
+    
+    const currentTime = videoRef.value.currentTime;
+    
+    // Check if current time is inside any segment
+    // We assume segments are sorted by start time
+    let inside = false;
+    let nextStart = -1;
+
+    for (const seg of segments.value) {
+        const start = parseTime(seg.start);
+        const end = parseTime(seg.end);
+
+        if (currentTime >= start && currentTime < end) {
+            inside = true;
+            break;
+        }
+        if (start > currentTime) {
+            nextStart = start;
+            break;
+        }
+    }
+    
+    if (!inside && nextStart !== -1) {
+        // Jump to next segment
+        videoRef.value.currentTime = nextStart;
+    } else if (!inside && nextStart === -1) {
+        const lastEnd = parseTime(segments.value[segments.value.length - 1].end);
+        if (currentTime > lastEnd) {
+            // End of video
+            videoRef.value.pause();
+        }
+    }
 }
 
 function goToSettings() {
@@ -629,6 +671,18 @@ function goToSettings() {
                     </div>
                 </div>
 
+                <!-- Advanced Options -->
+                <div class="mb-8 flex items-center gap-4">
+                    <div class="flex items-center gap-3 p-4 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/30 transition-colors" @click="removeFillerWords = !removeFillerWords">
+                        <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none"
+                            :class="removeFillerWords ? 'bg-blue-600' : 'bg-gray-700'">
+                            <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                                :class="removeFillerWords ? 'translate-x-6' : 'translate-x-1'" />
+                        </div>
+                        <span class="text-sm font-medium text-gray-300">Remove Filler Words</span>
+                    </div>
+                </div>
+
                 <!-- Action Buttons -->
                 <div class="flex gap-4 mb-6">
                     <button @click="processFile" :disabled="isProcessing || !hasApiKey || hasTranscript"
@@ -638,8 +692,9 @@ function goToSettings() {
                     </button>
 
                     <button @click="cutVideo" :disabled="segments.length === 0 || isProcessing"
-                        class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0">
-                        Cut Media
+                        class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0"
+                        title="Export the video with the current cuts applied">
+                        Export Video
                     </button>
                 </div>
             </div>
@@ -648,6 +703,18 @@ function goToSettings() {
             <transition name="fade">
                 <div v-if="segments.length > 0"
                     class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
+                    
+                    <!-- Video Preview -->
+                    <div class="mb-8 bg-black rounded-xl overflow-hidden border border-white/10 shadow-2xl">
+                        <video 
+                            ref="videoRef"
+                            :src="convertFileSrc(inputPath)"
+                            class="w-full max-h-[500px] mx-auto"
+                            controls
+                            @timeupdate="onTimeUpdate"
+                        ></video>
+                    </div>
+
                     <div class="flex justify-between items-center mb-6">
                         <div class="flex items-center gap-4">
                             <h2 class="text-2xl font-bold text-white">Transcript</h2>
