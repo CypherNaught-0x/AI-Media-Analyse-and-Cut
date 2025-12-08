@@ -47,6 +47,8 @@ where
 
     let (filter_complex, _inputs) = build_filter_complex(segments);
 
+    let mut last_error = None;
+
     FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
         .args(&[
@@ -60,16 +62,29 @@ where
         ])
         .output(output_path.to_str().unwrap())
         .spawn()
-        .map_err(|e| e.to_string())
-        .map_err(anyhow::Error::msg)?
+        .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
         .iter()
-        .map_err(|e| e.to_string())
-        .map_err(anyhow::Error::msg)?
-        .for_each(|event| {
-            if let FfmpegEvent::Progress(p) = event {
-                on_progress(p.time);
+        .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
+        .for_each(|event| match event {
+            FfmpegEvent::Progress(p) => on_progress(p.time),
+            FfmpegEvent::Log(_level, msg) => {
+                println!("[FFmpeg Log] {}", msg);
             }
+            FfmpegEvent::Error(e) => {
+                println!("[FFmpeg Error] {}", e);
+                last_error = Some(e);
+            }
+            _ => {}
         });
+
+    if !output_path.exists() {
+        let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
+        return Err(anyhow::anyhow!(
+            "FFmpeg failed to create output file: {:?}. Error: {}",
+            output_path,
+            msg
+        ));
+    }
 
     Ok(())
 }
@@ -144,6 +159,7 @@ where
         // If single segment, use simple cut. If multiple, use cut_video logic (concat).
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
+            let mut last_error = None;
             FfmpegCommand::new()
                 .input(input_path.to_str().unwrap())
                 .args(&[
@@ -151,16 +167,29 @@ where
                 ])
                 .output(output_path.to_str().unwrap())
                 .spawn()
-                .map_err(|e| e.to_string())
-                .map_err(anyhow::Error::msg)?
+                .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
                 .iter()
-                .map_err(|e| e.to_string())
-                .map_err(anyhow::Error::msg)?
-                .for_each(|event| {
-                    if let FfmpegEvent::Progress(p) = event {
-                        on_progress(p.time);
+                .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
+                .for_each(|event| match event {
+                    FfmpegEvent::Progress(p) => on_progress(p.time),
+                    FfmpegEvent::Log(_level, msg) => {
+                        println!("[FFmpeg Log] {}", msg);
                     }
+                    FfmpegEvent::Error(e) => {
+                        println!("[FFmpeg Error] {}", e);
+                        last_error = Some(e);
+                    }
+                    _ => {}
                 });
+
+            if !output_path.exists() {
+                let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
+                return Err(anyhow::anyhow!(
+                    "FFmpeg failed to create output file: {:?}. Error: {}",
+                    output_path,
+                    msg
+                ));
+            }
         } else {
             // Use existing cut_video logic which handles concat
             let cb = on_progress.clone();
