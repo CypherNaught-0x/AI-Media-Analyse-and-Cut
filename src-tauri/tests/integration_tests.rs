@@ -35,7 +35,7 @@ async fn test_transcription_mock() {
         "gemini-1.5-flash".to_string(),
     );
 
-    let result = client.analyze_audio("context", "glossary", None, None, None).await.unwrap();
+    let result = client.analyze_audio("context", "glossary", None, false, None, None).await.unwrap();
     
     // The result is a JSON string of segments. It might be wrapped in markdown code blocks.
     let json_str = if let Some(start) = result.find('[') {
@@ -152,19 +152,19 @@ async fn test_generate_clips_mock() {
 async fn test_real_pipeline() {
     let _ = dotenvy::dotenv();
     
-    let api_key = env::var("TEST_API_KEY").or_else(|_| env::var("API_KEY")).ok();
-    let base_url = env::var("TEST_BASE_URL").or_else(|_| env::var("BASE_URL")).ok();
-    let model = env::var("TEST_MODEL").or_else(|_| env::var("API_MODEL")).ok();
+    let api_key = env::var("TEST_API_KEY").or_else(|_| env::var("API_KEY")).unwrap_or_default();
+    let base_url = env::var("TEST_BASE_URL").or_else(|_| env::var("BASE_URL")).unwrap_or_default();
+    let model = env::var("TEST_MODEL").or_else(|_| env::var("API_MODEL")).unwrap_or_default();
 
-    if api_key.is_none() || base_url.is_none() || model.is_none() {
-        println!("Skipping real pipeline test: API_KEY, BASE_URL, or API_MODEL not set");
+    if api_key.is_empty() || base_url.is_empty() || model.is_empty() {
+        println!("Skipping real pipeline test: API_KEY, BASE_URL, or API_MODEL not set or empty");
         return;
     }
 
     let client = GeminiClient::new(
-        api_key.unwrap(),
-        base_url.unwrap(),
-        model.unwrap(),
+        api_key,
+        base_url,
+        model,
     );
 
     // Use the test file
@@ -179,7 +179,7 @@ async fn test_real_pipeline() {
 
     // 1. Transcription
     println!("Testing real transcription...");
-    let result = client.analyze_audio("This is a test podcast about AI.", "", None, None, Some(&audio_base64)).await;
+    let result = client.analyze_audio("This is a test podcast about AI.", "", None, false, None, Some(&audio_base64)).await;
     assert!(result.is_ok(), "Transcription failed: {:?}", result.err());
     
     let transcript_json = result.unwrap();
@@ -198,6 +198,21 @@ async fn test_real_pipeline() {
     
     assert!(!segments.is_empty(), "Transcript should not be empty");
     println!("Transcription successful. Found {} segments.", segments.len());
+
+    // Load gold standard
+    let mut gold_standard_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    gold_standard_path.push("../dev-resources/test-data/gold_standard_transcript.json");
+    let gold_standard_str = std::fs::read_to_string(gold_standard_path).expect("Failed to read gold standard");
+    let gold_standard: Vec<TranscriptSegment> = serde_json::from_str(&gold_standard_str).expect("Failed to parse gold standard");
+
+    // Compare
+    let actual_text: String = segments.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join(" ");
+    let gold_text: String = gold_standard.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join(" ");
+    
+    let similarity = calculate_similarity(&actual_text, &gold_text);
+    println!("Transcript similarity: {:.2}", similarity);
+    
+    assert!(similarity > 0.8, "Transcript similarity too low: {:.2}", similarity);
 
     // 2. Translation
     println!("Testing real translation...");
@@ -233,4 +248,18 @@ async fn test_real_pipeline() {
     assert!(!clips.as_array().unwrap().is_empty(), "Should generate at least one clip");
     
     println!("Clip generation successful.");
+}
+
+fn calculate_similarity(s1: &str, s2: &str) -> f64 {
+    let s1_words: std::collections::HashSet<_> = s1.split_whitespace().map(|s| s.to_lowercase()).collect();
+    let s2_words: std::collections::HashSet<_> = s2.split_whitespace().map(|s| s.to_lowercase()).collect();
+    
+    let intersection = s1_words.intersection(&s2_words).count();
+    let union = s1_words.union(&s2_words).count();
+    
+    if union == 0 {
+        return 1.0;
+    }
+    
+    intersection as f64 / union as f64
 }
