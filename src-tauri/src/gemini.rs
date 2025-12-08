@@ -4,6 +4,22 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use log::{info, error, debug};
 
+struct OutputFormat;
+
+impl OutputFormat {
+    fn example() -> String {
+        let example = vec![
+            TranscriptSegment {
+                start: "00:00".to_string(),
+                end: "00:05".to_string(),
+                speaker: "Speaker 1".to_string(),
+                text: "This is an example sentence.".to_string(),
+            }
+        ];
+        serde_json::to_string(&example).unwrap_or_default()
+    }
+}
+
 #[derive(Clone)]
 pub struct GeminiClient {
     client: Client,
@@ -145,13 +161,14 @@ impl GeminiClient {
             })
         };
 
+        let base_url = self.base_url.trim_end_matches('/');
         let url = if is_google_api {
             format!(
                 "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, self.model, self.api_key
+                base_url, self.model, self.api_key
             )
         } else {
-            format!("{}/v1/chat/completions", self.base_url)
+            format!("{}/v1/chat/completions", base_url)
         };
 
         let mut request = self.client.post(&url).json(&payload);
@@ -188,6 +205,7 @@ impl GeminiClient {
         context: &str,
         glossary: &str,
         speaker_count: Option<u32>,
+        remove_filler_words: bool,
         audio_uri: Option<&str>,
         audio_base64: Option<&str>,
     ) -> Result<String> {
@@ -197,10 +215,16 @@ impl GeminiClient {
             system_prompt.push_str(&format!(" There are {} speakers in this audio. Please label them as Speaker 1, Speaker 2, etc.", count));
         }
 
-        let user_prompt = format!(
-            "Analyze the following audio.\nContext: {}\nGlossary: {}\n[WISH FOR TIMESTAMPS]: Please output the transcription in a strict JSON format with 'start', 'end', 'speaker', and 'text' fields. Ensure timestamps are in 'MM:SS' format.\n*Note: This prompt is exemplary; the model may hallucinate timestamp formats without few-shot examples. Please verify output.*",
+        let mut user_prompt = format!(
+            "Analyze the following audio.\nContext: {}\nGlossary: {}\n[WISH FOR TIMESTAMPS]: Please output the transcription in a strict JSON format with 'start', 'end', 'speaker', and 'text' fields. Ensure timestamps are in 'MM:SS' format.\n",
             context, glossary
         );
+
+        user_prompt.push_str(&format!("Example Output: {}\n", OutputFormat::example()));
+
+        if remove_filler_words {
+            user_prompt.push_str("IMPORTANT: Remove all filler words (um, uh, like, you know) and non-voice sounds (coughs, breaths) from the 'text' field. The transcript should be clean and ready for subtitles.\n");
+        }
 
         // Determine if this is a Google API or OpenAI-compatible API
         let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
@@ -268,15 +292,16 @@ impl GeminiClient {
             })
         };
 
+        let base_url = self.base_url.trim_end_matches('/');
         let url = if is_google_api {
             // Google uses query parameter for API key
             format!(
                 "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, self.model, self.api_key
+                base_url, self.model, self.api_key
             )
         } else {
             // OpenAI/LiteLLM use path-based endpoint
-            format!("{}/v1/chat/completions", self.base_url)
+            format!("{}/v1/chat/completions", base_url)
         };
 
         let mut request = self.client.post(&url).json(&payload);
@@ -379,13 +404,14 @@ impl GeminiClient {
             })
         };
 
+        let base_url = self.base_url.trim_end_matches('/');
         let url = if is_google_api {
             format!(
                 "{}/v1beta/models/{}:generateContent?key={}",
-                self.base_url, self.model, self.api_key
+                base_url, self.model, self.api_key
             )
         } else {
-            format!("{}/v1/chat/completions", self.base_url)
+            format!("{}/v1/chat/completions", base_url)
         };
 
         let mut request = self.client.post(&url).json(&payload);
