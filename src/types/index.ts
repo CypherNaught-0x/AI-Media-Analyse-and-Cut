@@ -23,3 +23,14 @@ export interface SilenceInterval {
   end: number;
   duration: number;
 }
+
+export interface SegmentOffset {
+  min_time: number;
+  offset: number;
+}
+
+export interface ProcessedAudio {
+  path: string;
+  silence_intervals: SilenceInterval[];
+  offsets: SegmentOffset[];
+}
