@@ -6,7 +6,7 @@ import { open, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import SubtitleExport from "../components/SubtitleExport.vue";
-import type { TranscriptSegment, AudioInfo, Clip, SilenceInterval, ProcessedAudio, SegmentOffset } from "../types";
+import type { TranscriptSegment, AudioInfo, Clip, ProcessedAudio, SegmentOffset } from "../types";
 import { useSettings } from "../composables/useSettings";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
