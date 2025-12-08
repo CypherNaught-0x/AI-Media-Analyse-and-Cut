@@ -42,19 +42,12 @@ A desktop application for intelligent video and audio segmentation using AI. Sup
 - [x] Context input field for content description
 - [x] Glossary input field for keyword descriptions
 - [x] Basic transcript parsing with timestamps
+- [x] **Speaker count configuration input**
+- [x] **Enhanced system prompt with speaker information**
+- [x] **Improved JSON parsing and validation**
 
 #### Missing Features
 
-- [ ] **Speaker count configuration input**
-  - Add UI field for number of speakers
-  - Pass to system prompt for better speaker annotation
-- [ ] **Enhanced system prompt with speaker information**
-  - Include speaker count in prompt
-  - Request clear speaker labels (e.g., Speaker 1, Speaker 2)
-- [ ] **Improved JSON parsing and validation**
-  - Validate timestamp format (MM:SS)
-  - Handle malformed responses gracefully
-  - Show parsing errors to user
 - [ ] **Error handling and retry logic**
   - Retry failed API calls
   - Better error messages
@@ -119,7 +112,7 @@ A desktop application for intelligent video and audio segmentation using AI. Sup
   - Real-time progress bar for cutting operations
   - Estimated time remaining
   - Cancel operation button
-- [ ] **Batch export**
+- [x] **Batch export**
   - Export all segments at once
   - Choose output directory
   - Naming convention (e.g., segment_001.mp4, segment_002.mp4)
@@ -258,10 +251,6 @@ A desktop application for intelligent video and audio segmentation using AI. Sup
 
 ## Next Steps (Prioritized)
 
-1. **Add speaker count input** - Quick win for better transcription
-2. **Implement segment editing UI** - Core functionality for user control
-3. **Short clips generation MVP** - High-value feature for social media users
-4. **Progress indicators** - Better UX for long operations
-5. **Research local transcription** - Evaluate ONNX integration feasibility
-6. **Batch processing** - Allow processing multiple files in queue
-7. **Platform export presets** - Simplify output for different social platforms
+1. **Research local transcription** - Evaluate ONNX integration feasibility
+1. **Batch processing** - Allow processing multiple files in queue
+1. **Platform export presets** - Simplify output for different social platforms
