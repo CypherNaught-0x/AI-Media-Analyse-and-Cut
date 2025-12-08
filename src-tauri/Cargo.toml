@@ -36,8 +36,12 @@ symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.16"
 tokenizers = "0.22"
 regex = "1.12.2"
+tauri-plugin-process = "2.3.1"
 
 [dev-dependencies]
 tempfile = "3.23.0"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
 
 
