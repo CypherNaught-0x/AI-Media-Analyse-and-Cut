@@ -8,6 +8,7 @@ use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use tauri::Emitter;
+#[allow(unused_imports)]
 use log::{info, warn, error};
 
 #[tauri::command]
@@ -152,15 +153,15 @@ async fn prepare_audio_for_ai(
 }
 
 mod alignment;
-mod gemini;
-mod silence;
+pub mod gemini;
+pub mod silence;
 pub mod time_utils;
 mod upload;
-mod video;
+pub mod video;
 
 use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
-use crate::silence::detect_silence;
+use crate::silence::{detect_silence, remove_silence};
 use crate::upload::upload_file_and_wait;
 use crate::video::{
     cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
@@ -381,6 +382,7 @@ pub fn run() {
             read_text_file,
             align_transcript,
             detect_silence,
+            remove_silence,
             translate_transcript,
             zip_logs
         ])
