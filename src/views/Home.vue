@@ -6,7 +6,7 @@ import { open, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import SubtitleExport from "../components/SubtitleExport.vue";
-import type { TranscriptSegment, AudioInfo, Clip, SilenceInterval } from "../types";
+import type { TranscriptSegment, AudioInfo, Clip, SilenceInterval, ProcessedAudio, SegmentOffset } from "../types";
 import { useSettings } from "../composables/useSettings";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
@@ -48,6 +48,39 @@ const currentLanguage = ref("Original");
 const targetLanguage = ref("");
 const isTranslating = ref(false);
 const showLanguageDropdown = ref(false);
+
+function parseTime(timeStr: string): number {
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+    } else if (parts.length === 2) {
+        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+    }
+    return parseFloat(timeStr);
+}
+
+function formatTime(seconds: number): string {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = (seconds % 60).toFixed(3);
+    if (h > 0) {
+        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.padStart(6, '0')}`;
+    }
+    return `${m.toString().padStart(2, '0')}:${s.padStart(6, '0')}`;
+}
+
+function adjustTimestamp(timeStr: string, offsets: SegmentOffset[]): string {
+    const t = parseTime(timeStr);
+    let offset = 0;
+    for (const seg of offsets) {
+        if (t >= seg.min_time) {
+            offset = seg.offset;
+        } else {
+            break;
+        }
+    }
+    return formatTime(t + offset);
+}
 
 const clips = ref<Clip[]>([]);
 const clipCount = ref(3);
@@ -259,10 +292,13 @@ async function processFile() {
         const audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { inputPath: inputPath.value });
         status.value = `Audio prepared: ${audioInfo.path} (${(audioInfo.size / 1024 / 1024).toFixed(2)} MB)`;
 
-        // 1b. Detect Silence
-        status.value = "Detecting silence...";
-        const silenceIntervals = await invoke<SilenceInterval[]>("detect_silence", { path: audioInfo.path });
-        console.log(`Found ${silenceIntervals.length} silence intervals.`);
+        // 1b. Remove Silence
+        status.value = "Removing silence...";
+        const processedAudio = await invoke<ProcessedAudio>("remove_silence", { path: audioInfo.path });
+        console.log(`Found ${processedAudio.silence_intervals.length} silence intervals.`);
+        
+        // Use processed audio for upload/analysis
+        const analysisAudioPath = processedAudio.path;
 
         const isGoogleApi = settings.value.baseUrl.includes('generativelanguage.googleapis.com');
         let uri: string | null = null;
@@ -270,22 +306,21 @@ async function processFile() {
 
         if (isGoogleApi) {
             // 2. Upload for Google API (only for large files)
-            if (audioInfo.size > 20 * 1024 * 1024) {
-                status.value = "Uploading file...";
-                uri = await invoke<string | null>("upload_file", {
-                    apiKey: settings.value.apiKey,
-                    baseUrl: settings.value.baseUrl,
-                    path: audioInfo.path
-                });
+            
+            status.value = "Uploading file...";
+            uri = await invoke<string | null>("upload_file", {
+                apiKey: settings.value.apiKey,
+                baseUrl: settings.value.baseUrl,
+                path: analysisAudioPath
+            });
 
-                if (uri) {
-                    status.value = "File uploaded successfully";
-                }
+            if (uri) {
+                status.value = "File uploaded successfully";
             }
         } else {
             // For non-Google APIs, read the file as base64
             status.value = "Encoding audio as base64...";
-            audioBase64 = await invoke<string>("read_file_as_base64", { path: audioInfo.path });
+            audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
             status.value = "Audio encoded successfully";
         }
 
@@ -308,20 +343,16 @@ async function processFile() {
             try {
                 const parsed = JSON.parse(jsonMatch[0]);
                 if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-                segments.value = parsed;
+                
+                // Adjust timestamps back to original timeline
+                const adjustedSegments = parsed.map((seg: any) => ({
+                    ...seg,
+                    start: adjustTimestamp(seg.start, processedAudio.offsets),
+                    end: adjustTimestamp(seg.end, processedAudio.offsets)
+                }));
+                
+                segments.value = adjustedSegments;
                 status.value = `Analysis complete. Found ${segments.value.length} segments.`;
-
-                // Filter silent segments
-                if (silenceIntervals.length > 0) {
-                    status.value = "Filtering silent segments...";
-                    const originalCount = segments.value.length;
-                    segments.value = filterSilentSegments(segments.value, silenceIntervals);
-                    const removedCount = originalCount - segments.value.length;
-                    if (removedCount > 0) {
-                        console.log(`Removed ${removedCount} silent segments.`);
-                        status.value = `Analysis complete. Found ${segments.value.length} segments (${removedCount} removed).`;
-                    }
-                }
 
                 await saveTranscript();
 
@@ -329,6 +360,13 @@ async function processFile() {
                 if (useAdvancedAlignment.value && segments.value.length > 0) {
                     status.value = "Aligning transcript with local model...";
                     try {
+                        // Use the processed audio for alignment since the transcript matches it?
+                        // No, the transcript now has ORIGINAL timestamps.
+                        // But align_transcript expects audio and transcript to match.
+                        // If we pass original audio and original timestamps, it should work.
+                        // But alignment might be confused by silence if the transcript doesn't have it?
+                        // Actually, if we use original audio, alignment is fine.
+                        
                         const alignedSegments = await invoke<TranscriptSegment[]>("align_transcript", {
                             audioPath: audioInfo.path,
                             transcript: segments.value
@@ -506,29 +544,6 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
     });
     
     await saveTranscript();
-}
-
-function filterSilentSegments(segments: TranscriptSegment[], silence: SilenceInterval[]): TranscriptSegment[] {
-    const parseTime = (t: string) => {
-        const parts = t.split(':').map(Number);
-        if (parts.length === 2) return parts[0] * 60 + parts[1];
-        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-        return 0;
-    };
-
-    return segments.filter(seg => {
-        const start = parseTime(seg.start);
-        const end = parseTime(seg.end);
-        
-        for (const s of silence) {
-            // If segment is fully contained within silence (with small tolerance)
-            if (start >= s.start && end <= s.end) {
-                console.log(`Removing silent segment: [${seg.start}-${seg.end}] "${seg.text}" (Silence: ${s.start}-${s.end})`);
-                return false;
-            }
-        }
-        return true;
-    });
 }
 
 function jumpTo(time: number) {
