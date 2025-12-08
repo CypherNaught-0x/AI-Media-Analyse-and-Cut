@@ -14,7 +14,7 @@
       {
         "title": "Media AI Cutter - Intelligent Video Segmentation & Processing",
         "width": 964,
-        "height": 764
+        "height": 876
       }
     ],
     "security": {
@@ -24,7 +24,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,7 +38,7 @@
       "endpoints": [
         "https://github.com/CypherNaught-0x/AI-Media-Analyse-and-Cut/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENDQzBDQTMxOTk4NzM2QTYKUldTbU5vZVpNY3JBek81cGhqbWJJby9QakZYTVM3UGhseVRDdkg5TERvVzVIMEdDd2trZURQVFIK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI2NUE2OEMzMjRBMDdGRDYKUldUV2Y2QWt3MmhhdGtDaG9PeE5udXVJd3BkeG9IaWRmNThxWnZIRDB0RU5OVWpBeVZxeG4xb28K"
     }
   }
 }

@@ -1,0 +1,110 @@
+[
+  {
+    "start": "00:00",
+    "end": "00:06",
+    "speaker": "Speaker 1",
+    "text": "Let's unpack this. We've got a fantastic deep dive today, and it's centered on a tool called AI Media Cutter."
+  },
+  {
+    "start": "00:06",
+    "end": "00:07",
+    "speaker": "Speaker 2",
+    "text": "Mhm."
+  },
+  {
+    "start": "00:07",
+    "end": "00:13",
+    "speaker": "Speaker 1",
+    "text": "It's an open-source project that's uh really trying to redefine video editing using AI."
+  },
+  {
+    "start": "00:13",
+    "end": "00:14",
+    "speaker": "Speaker 2",
+    "text": "It really is."
+  },
+  {
+    "start": "00:14",
+    "end": "00:25",
+    "speaker": "Speaker 1",
+    "text": "So our mission is to figure out how this thing, this desktop app, uses large language models to turn what is a really complex visual task into something you just do with text."
+  },
+  {
+    "start": "00:25",
+    "end": "00:33",
+    "speaker": "Speaker 2",
+    "text": "It's a huge shift. We're talking about using LLMs, you know, like Google Gemini or the OpenAI models, to edit based on meaning."
+  },
+  {
+    "start": "00:33",
+    "end": "00:35",
+    "speaker": "Speaker 2",
+    "text": "On the actual content."
+  },
+  {
+    "start": "00:35",
+    "end": "00:36",
+    "speaker": "Speaker 1",
+    "text": "Not just pixels on a timeline."
+  },
+  {
+    "start": "00:36",
+    "end": "00:45",
+    "speaker": "Speaker 2",
+    "text": "Exactly. It moves editing from this highly technical frame-by-frame skill to something that's more uh editorial."
+  },
+  {
+    "start": "00:45",
+    "end": "00:46",
+    "speaker": "Speaker 2",
+    "text": "It's all about the story in the text."
+  },
+  {
+    "start": "00:46",
+    "end": "00:52",
+    "speaker": "Speaker 1",
+    "text": "And that right there, that changes the whole game for creators. So here's the core of it, and what you really need to grasp, text-based editing."
+  },
+  {
+    "start": "00:52",
+    "end": "00:55",
+    "speaker": "Speaker 2",
+    "text": "Right. It starts with a very high accuracy AI transcription."
+  },
+  {
+    "start": "00:55",
+    "end": "01:01",
+    "speaker": "Speaker 1",
+    "text": "But the magic, the real trick, is that you suddenly find yourself just editing a document. You see a line you don't like, you delete the sentence."
+  },
+  {
+    "start": "01:01",
+    "end": "01:08",
+    "speaker": "Speaker 2",
+    "text": "And the video segment that corresponds to it is just gone. It's automatically and precisely cut out of the video file."
+  },
+  {
+    "start": "01:08",
+    "end": "01:09",
+    "speaker": "Speaker 1",
+    "text": "Which is incredible."
+  },
+  {
+    "start": "01:09",
+    "end": "01:11",
+    "speaker": "Speaker 2",
+    "text": "What's really fascinating is the efficiency you gain."
+  },
+  {
+    "start": "01:12",
+    "end": "01:12",
+    "speaker": "Speaker 1",
+    "text": "Yeah."
+  },
+  {
+    "start": "01:12",
+    "end": "01:14",
+    "speaker": "Speaker 2",
+    "text": "I mean, just think about long-form content."
+  }
+]
