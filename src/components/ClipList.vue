@@ -10,12 +10,13 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'export', payload: { clips: Clip[], includeSubtitles: boolean }): void;
+  (e: 'export', payload: { clips: Clip[], includeSubtitles: boolean, fastMode: boolean }): void;
   (e: 'openFolder'): void;
 }>();
 
 const selectedIndices = ref<Set<number>>(new Set());
 const includeSubtitles = ref(true);
+const fastMode = ref(true);
 
 const toggleSelection = (index: number) => {
     if (selectedIndices.value.has(index)) {
@@ -38,7 +39,7 @@ const handleExport = () => {
         ? props.clips.filter((_, i) => selectedIndices.value.has(i))
         : props.clips;
     
-    emit('export', { clips: clipsToExport, includeSubtitles: includeSubtitles.value });
+    emit('export', { clips: clipsToExport, includeSubtitles: includeSubtitles.value, fastMode: fastMode.value });
 };
 
 const selectionLabel = computed(() => {
@@ -64,6 +65,11 @@ const selectionLabel = computed(() => {
                     <input type="checkbox" v-model="includeSubtitles"
                         class="rounded bg-white/10 border-white/20 text-blue-500 focus:ring-blue-500/50" />
                     Auto-export Subtitles
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-sm text-gray-400 hover:text-gray-300" title="Use 'copy' codec for faster, lossless export (may be less precise)">
+                    <input type="checkbox" v-model="fastMode"
+                        class="rounded bg-white/10 border-white/20 text-blue-500 focus:ring-blue-500/50" />
+                    Fast Mode (Lossless)
                 </label>
             </div>
             <span v-if="selectedIndices.size > 0" class="text-xs text-blue-400 font-medium">
