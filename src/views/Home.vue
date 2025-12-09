@@ -95,12 +95,26 @@ const context = ref("");
 const lastExportPath = ref("");
 const useAdvancedAlignment = ref(false);
 
+const lastAnalyzedSettings = ref({
+    context: '',
+    glossary: '',
+    speakerCount: null as number | null,
+    removeFillerWords: false
+});
+
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
 const currentModelDisplay = computed(() => {
     if (!hasApiKey.value) return "No API Key configured";
     return `${settings.value.model}`;
 });
 const hasTranscript = computed(() => segments.value.length > 0);
+const settingsChanged = computed(() => {
+    return context.value !== lastAnalyzedSettings.value.context ||
+           settings.value.glossary !== lastAnalyzedSettings.value.glossary ||
+           speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
+           removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords;
+});
+
 const uniqueSpeakers = computed(() => {
     const s = new Set(segments.value.map(seg => seg.speaker));
     return Array.from(s).sort();
@@ -182,7 +196,25 @@ async function loadTranscript() {
             if (typeof parsed.context === 'string') {
                 context.value = parsed.context;
             }
-            status.value = "Loaded existing transcript and context.";
+            if (typeof parsed.glossary === 'string') {
+                settings.value.glossary = parsed.glossary;
+            }
+            if (typeof parsed.speakerCount === 'number' || parsed.speakerCount === null) {
+                speakerCount.value = parsed.speakerCount;
+            }
+            if (typeof parsed.removeFillerWords === 'boolean') {
+                removeFillerWords.value = parsed.removeFillerWords;
+            }
+            
+            // Update last analyzed settings
+            lastAnalyzedSettings.value = {
+                context: context.value,
+                glossary: settings.value.glossary,
+                speakerCount: speakerCount.value,
+                removeFillerWords: removeFillerWords.value
+            };
+            
+            status.value = "Loaded existing transcript and settings.";
         }
     } catch (e) {
         // Ignore error if file doesn't exist
@@ -196,7 +228,10 @@ async function saveTranscript() {
     try {
         const data = {
             segments: segments.value,
-            context: context.value
+            context: context.value,
+            glossary: settings.value.glossary,
+            speakerCount: speakerCount.value,
+            removeFillerWords: removeFillerWords.value
         };
         await invoke("write_text_file", { 
             path: transcriptPath, 
@@ -356,6 +391,14 @@ async function processFile() {
                 
                 segments.value = adjustedSegments;
                 status.value = `Analysis complete. Found ${segments.value.length} segments.`;
+
+                // Update last analyzed settings
+                lastAnalyzedSettings.value = {
+                    context: context.value,
+                    glossary: settings.value.glossary,
+                    speakerCount: speakerCount.value,
+                    removeFillerWords: removeFillerWords.value
+                };
 
                 await saveTranscript();
 
@@ -691,16 +734,10 @@ function goToSettings() {
 
                 <!-- Action Buttons -->
                 <div class="flex gap-4 mb-6">
-                    <button @click="processFile" :disabled="isProcessing || !hasApiKey || hasTranscript"
+                    <button @click="processFile" :disabled="isProcessing || !hasApiKey || (hasTranscript && !settingsChanged)"
                         class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2">
                         <SpinnerIcon v-if="isProcessing" class="animate-spin h-5 w-5 text-white" />
-                        {{ isProcessing ? 'Processing...' : (hasTranscript ? 'Transcript Loaded' : 'Analyze Media') }}
-                    </button>
-
-                    <button @click="cutVideo" :disabled="segments.length === 0 || isProcessing"
-                        class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0"
-                        title="Export the video with the current cuts applied">
-                        Export Video
+                        {{ isProcessing ? 'Processing...' : (hasTranscript && !settingsChanged ? 'Transcript Loaded' : (hasTranscript ? 'Re-analyze Media' : 'Analyze Media')) }}
                     </button>
                 </div>
             </div>
@@ -771,6 +808,12 @@ function goToSettings() {
                             </div>
 
                             <div class="w-px h-6 bg-white/10 mx-1"></div>
+
+                            <button @click="cutVideo" :disabled="segments.length === 0 || isProcessing"
+                                class="px-4 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="Export the video with the current cuts applied">
+                                Export Video
+                            </button>
 
                             <SubtitleExport :segments="displaySegments" :inputPath="inputPath" :language="currentLanguage" />
                         </div>
