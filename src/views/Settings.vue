@@ -286,21 +286,6 @@ function cancel() {
                     <p v-else class="text-xs text-gray-500 mt-1">{{ endpointInfo }}</p>
                 </div>
 
-                <!-- Troubleshooting -->
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                        Troubleshooting
-                    </label>
-                    <div class="flex gap-3">
-                        <button @click="exportLogs"
-                            class="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-2xl border border-gray-600 hover:border-gray-500 transition-all shadow-lg hover:shadow-xl active:scale-95">
-                            Export Logs
-                        </button>
-                    </div>
-                    <p class="text-xs text-gray-500 mt-2">Export application logs for debugging purposes.</p>
-                </div>
-
                 <!-- Application Info -->
                 <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
                     <label
@@ -319,6 +304,21 @@ function cancel() {
                             {{ isCheckingUpdate ? 'Checking...' : 'Check for Updates' }}
                         </button>
                     </div>
+                </div>
+
+                <!-- Troubleshooting -->
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                        Troubleshooting
+                    </label>
+                    <div class="flex gap-3">
+                        <button @click="exportLogs"
+                            class="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-2xl border border-gray-600 hover:border-gray-500 transition-all shadow-lg hover:shadow-xl active:scale-95">
+                            Export Logs
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">Export application logs for debugging purposes.</p>
                 </div>
 
                 <!-- Action Buttons -->
