@@ -2,6 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import Editor from '../Editor.vue';
 import type { TranscriptSegment } from '../../types';
+import { ask } from '@tauri-apps/plugin-dialog';
+
+// Mock Tauri dialog plugin
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  ask: vi.fn(() => Promise.resolve(true)),
+}));
 
 describe('Editor.vue', () => {
   const mockSegments: TranscriptSegment[] = [
@@ -75,9 +81,6 @@ describe('Editor.vue', () => {
   });
 
   it('deletes a segment', async () => {
-    // Mock window.confirm
-    window.confirm = vi.fn(() => true);
-
     const wrapper = mount(Editor, {
       props: {
         segments: mockSegments,
@@ -87,7 +90,7 @@ describe('Editor.vue', () => {
     const deleteButton = wrapper.findAll('button').find(b => b.text() === 'Del');
     await deleteButton!.trigger('click');
 
-    expect(window.confirm).toHaveBeenCalled();
+    expect(ask).toHaveBeenCalled();
     expect(wrapper.emitted('update:segments')).toBeTruthy();
     const updatedSegments = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
     expect(updatedSegments).toHaveLength(1);
