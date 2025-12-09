@@ -6,14 +6,17 @@ import { open, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import SubtitleExport from "../components/SubtitleExport.vue";
+import FileSelector from "../components/FileSelector.vue";
+import AnalysisSettings from "../components/AnalysisSettings.vue";
+import ClipGenerator from "../components/ClipGenerator.vue";
+import ClipList from "../components/ClipList.vue";
+import StatusBar from "../components/StatusBar.vue";
 import type { TranscriptSegment, AudioInfo, Clip, ProcessedAudio, SegmentOffset } from "../types";
 import { useSettings } from "../composables/useSettings";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
-import VideoFileIcon from '../assets/icons/video-file.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
 import UserIcon from '../assets/icons/user.svg?component';
-import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import TranslateIcon from '../assets/icons/translate.svg?component';
 import CheckIcon from '../assets/icons/check.svg?component';
 import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
@@ -135,31 +138,6 @@ const displaySegments = computed({
         }
     }
 });
-
-const contextTextarea = ref<HTMLTextAreaElement | null>(null);
-const glossaryTextarea = ref<HTMLTextAreaElement | null>(null);
-
-function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
-    if (!textarea) return;
-
-    const startY = e.clientY;
-    const startHeight = textarea.offsetHeight;
-
-    function onMouseMove(e: MouseEvent) {
-        const newHeight = startHeight + (e.clientY - startY);
-        if (newHeight > 60) { // Minimum height
-            textarea!.style.height = `${newHeight}px`;
-        }
-    }
-
-    function onMouseUp() {
-        document.removeEventListener('mousemove', onMouseMove);
-        document.removeEventListener('mouseup', onMouseUp);
-    }
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-}
 
 onMounted(async () => {
     const history = localStorage.getItem('executionHistory');
@@ -318,23 +296,6 @@ async function translateTranscript() {
     }
 }
 
-async function selectFile() {
-    try {
-        const selected = await open({
-            multiple: false,
-            filters: [{
-                name: 'Media',
-                extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'm4v', 'mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma']
-            }]
-        });
-
-        if (selected && typeof selected === 'string') {
-            inputPath.value = selected;
-        }
-    } catch (e) {
-        console.error("Failed to open dialog:", e);
-    }
-}
 
 function estimateTime(type: 'analysis' | 'generation', inputSize: number): number {
     const relevant = executionHistory.value.filter(h => h.type === type);
@@ -704,6 +665,9 @@ function goToSettings() {
 <template>
     <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30">
         <div class="max-w-5xl mx-auto">
+            <h1 class="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                Media AI Cutter
+            </h1>
             <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
 
                 <!-- Settings Display -->
@@ -724,74 +688,15 @@ function goToSettings() {
                 </div>
 
                 <!-- File Selection Section -->
-                <div class="mb-8">
-                    <label class="block text-sm font-medium text-gray-400 mb-3 uppercase tracking-wider">Source Media</label>
-                    <div class="flex gap-3">
-                        <div class="flex-1 relative group">
-                            <input v-model="inputPath" type="text"
-                                class="w-full p-4 pl-12 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 focus:bg-black/30 outline-none transition-all text-gray-300 placeholder-gray-600 font-mono text-sm"
-                                placeholder="Select a media file..." readonly />
-                            <div class="absolute left-4 top-4 text-gray-500">
-                                <VideoFileIcon class="h-5 w-5" />
-                            </div>
-                        </div>
-                        <button @click="selectFile"
-                            class="px-8 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 transition-all transform active:scale-95">
-                            Browse
-                        </button>
-                    </div>
-                </div>
+                <FileSelector v-model="inputPath" />
 
                 <!-- Analysis Settings -->
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                    <div class="md:col-span-2">
-                        <label class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Context</label>
-                        <div class="relative">
-                            <textarea ref="contextTextarea" v-model="context" rows="2"
-                                class="w-full p-4 pb-8 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-colors text-gray-300 placeholder-gray-600 resize-none"
-                                placeholder="Describe the video content to help the AI... Especially for translation"></textarea>
-                            <div @mousedown.prevent="startResize($event, contextTextarea)"
-                                class="absolute bottom-0 left-0 right-0 h-6 cursor-ns-resize flex items-center justify-center hover:bg-white/5 rounded-b-2xl transition-colors group">
-                                <div class="w-12 h-1 bg-white/10 rounded-full group-hover:bg-white/20 transition-colors"></div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Glossary</label>
-                        <div class="relative">
-                            <textarea ref="glossaryTextarea" v-model="settings.glossary" rows="2"
-                                class="w-full p-4 pb-8 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 resize-none"
-                                placeholder="Specific terms, names, acronyms..."></textarea>
-                            <div @mousedown.prevent="startResize($event, glossaryTextarea)"
-                                class="absolute bottom-0 left-0 right-0 h-6 cursor-ns-resize flex items-center justify-center hover:bg-white/5 rounded-b-2xl transition-colors group">
-                                <div class="w-12 h-1 bg-white/10 rounded-full group-hover:bg-white/20 transition-colors"></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div>
-                        <label class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Speakers</label>
-                        <div class="relative">
-                            <input v-model.number="speakerCount" type="number" min="1"
-                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                                placeholder="Auto-detect" />
-                            <div class="absolute right-4 top-4 text-gray-600 text-xs pointer-events-none select-none">Optional</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Advanced Options -->
-                <div class="mb-8 flex items-center gap-4">
-                    <div class="flex items-center gap-3 p-4 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/30 transition-colors" @click="removeFillerWords = !removeFillerWords">
-                        <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none"
-                            :class="removeFillerWords ? 'bg-blue-600' : 'bg-gray-700'">
-                            <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                :class="removeFillerWords ? 'translate-x-6' : 'translate-x-1'" />
-                        </div>
-                        <span class="text-sm font-medium text-gray-300">Remove Filler Words</span>
-                    </div>
-                </div>
+                <AnalysisSettings
+                    v-model:context="context"
+                    v-model:glossary="settings.glossary"
+                    v-model:speakerCount="speakerCount"
+                    v-model:removeFillerWords="removeFillerWords"
+                />
 
                 <!-- Action Buttons -->
                 <div class="flex gap-4 mb-6">
@@ -930,96 +835,33 @@ function goToSettings() {
                         </h2>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                        <div class="group">
-                            <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Count</label>
-                            <input v-model.number="clipCount" type="number" min="1" max="10"
-                                class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white text-center" />
-                        </div>
-                        <div class="group">
-                            <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Min Sec</label>
-                            <input v-model.number="clipMinDuration" type="number" min="5"
-                                class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white text-center" />
-                        </div>
-                        <div class="group">
-                            <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Max Sec</label>
-                            <input v-model.number="clipMaxDuration" type="number" min="10"
-                                class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white text-center" />
-                        </div>
-                    </div>
+                    <ClipGenerator
+                        v-model:count="clipCount"
+                        v-model:minDuration="clipMinDuration"
+                        v-model:maxDuration="clipMaxDuration"
+                        v-model:topic="clipTopic"
+                        v-model:splicing="allowSplicing"
+                        :isProcessing="isProcessing"
+                        @generate="generateClips"
+                    />
 
-                    <div class="mb-6">
-                        <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Topic (Optional)</label>
-                        <input v-model="clipTopic" type="text"
-                            class="w-full p-4 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white placeholder-gray-600"
-                            placeholder="e.g. 'Funny moments', 'Technical explanation', 'Rants'..." />
-                    </div>
-
-                    <div class="mb-8 flex items-center justify-between p-4 bg-black/20 rounded-xl border border-white/5">
-                        <div>
-                            <h3 class="text-sm font-semibold text-gray-300">Smart Splicing</h3>
-                            <p class="text-xs text-gray-500">Allow AI to combine non-contiguous segments into one clip</p>
-                        </div>
-                        <button 
-                            @click="allowSplicing = !allowSplicing"
-                            class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-pink-500 focus:ring-offset-2 focus:ring-offset-gray-900"
-                            :class="allowSplicing ? 'bg-pink-600' : 'bg-gray-700'"
-                        >
-                            <span class="sr-only">Enable smart splicing</span>
-                            <span
-                                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                :class="allowSplicing ? 'translate-x-6' : 'translate-x-1'"
-                            />
-                        </button>
-                    </div>
-
-                    <button @click="generateClips" :disabled="isProcessing"
-                        class="w-full mb-8 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0">
-                        {{ isProcessing ? 'Processing...' : 'Generate Clips' }}
-                    </button>
-
-                    <div v-if="clips.length > 0" class="space-y-4">
-                        <div v-for="(clip, index) in clips" :key="index"
-                            class="p-6 bg-black/20 rounded-2xl border border-white/5 hover:border-pink-500/30 transition-colors">
-                            <div class="flex justify-between items-start mb-3">
-                                <h3 class="font-bold text-lg text-pink-400">{{ clip.title }}</h3>
-                                <div class="flex flex-col items-end gap-1">
-                                    <span v-for="(seg, i) in clip.segments" :key="i" class="px-2 py-1 rounded bg-white/5 text-xs text-gray-400 font-mono">
-                                        {{ seg.start }} - {{ seg.end }}
-                                    </span>
-                                </div>
-                            </div>
-                            <p class="text-gray-300 text-sm leading-relaxed">{{ clip.reason }}</p>
-                        </div>
-
-                        <div class="flex gap-4 mt-6">
-                            <button @click="exportClips" :disabled="isProcessing"
-                                class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all">
-                                Export All Clips
-                            </button>
-                            <button v-if="lastExportPath" @click="openExportFolder"
-                                class="px-6 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-2xl border border-gray-700 transition-all" title="Open Folder">
-                                <FolderOpenIcon class="h-6 w-6" />
-                            </button>
-                        </div>
-                    </div>
+                    <ClipList
+                        :clips="clips"
+                        :lastExportPath="lastExportPath"
+                        :isProcessing="isProcessing"
+                        @export="exportClips"
+                        @openFolder="openExportFolder"
+                    />
                 </div>
             </transition>
         </div>
     </div>
     <!-- Status Bar (Outside main container to ensure fixed positioning works) -->
-    <div class="fixed bottom-0 left-0 right-0 p-4 bg-black/50 backdrop-blur-md border-t border-white/10 flex items-center justify-between z-50">
-        <div class="max-w-5xl mx-auto w-full flex flex-col gap-2">
-            <div v-if="progressPercentage !== null" class="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                <div class="bg-blue-500 h-full transition-all duration-300 ease-out" :style="{ width: `${progressPercentage}%` }"></div>
-            </div>
-            <div class="flex items-center gap-3">
-                <div class="w-2 h-2 rounded-full"
-                    :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
-                <span class="text-sm font-mono text-gray-400 truncate">{{ status }}</span>
-            </div>
-        </div>
-    </div>
+    <StatusBar
+        :status="status"
+        :isProcessing="isProcessing"
+        :progressPercentage="progressPercentage"
+    />
 </template>
 
 <style scoped>
