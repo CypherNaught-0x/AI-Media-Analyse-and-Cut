@@ -306,6 +306,7 @@ async fn export_clips(
     input_path: String,
     segments: Vec<ClipSegment>,
     output_dir: String,
+    fast_mode: bool,
 ) -> Result<(), String> {
     use crate::time_utils::parse_timestamp_to_seconds_raw;
 
@@ -323,7 +324,7 @@ async fn export_clips(
 
     let total_duration: f64 = clip_durations.iter().sum();
 
-    export_clips_fn(&input, &segments, &output, move |clip_idx, total_clips, time| {
+    export_clips_fn(&input, &segments, &output, fast_mode, move |clip_idx, total_clips, time| {
         let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
         
         // Sum duration of previous clips

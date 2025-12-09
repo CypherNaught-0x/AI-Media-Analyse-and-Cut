@@ -582,9 +582,10 @@ async function generateClips() {
     }
 }
 
-async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean }) {
+async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean, fastMode: boolean }) {
     const clipsToExport = payload?.clips || clips.value;
     const includeSubtitles = payload?.includeSubtitles || false;
+    const fastMode = payload?.fastMode || false;
 
     if (clipsToExport.length === 0) return;
     
@@ -619,7 +620,8 @@ async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean 
         await invoke("export_clips", {
             inputPath: inputPath.value,
             segments: clipSegments,
-            outputDir
+            outputDir,
+            fastMode
         });
 
         if (includeSubtitles) {
