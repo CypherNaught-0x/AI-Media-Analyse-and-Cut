@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event';
-import { open, ask } from '@tauri-apps/plugin-dialog';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import SubtitleExport from "../components/SubtitleExport.vue";
