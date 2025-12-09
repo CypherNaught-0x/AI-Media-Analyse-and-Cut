@@ -5,6 +5,8 @@ export interface LLMSettings {
   apiKey: string;
   model: string;
   glossary: string;
+  preClipPadding: number;
+  postClipPadding: number;
 }
 
 export interface ModelFetchState {
@@ -18,8 +20,10 @@ const MODEL_FETCH_STATE_KEY = 'model-fetch-state';
 const defaultSettings: LLMSettings = {
   baseUrl: 'https://generativelanguage.googleapis.com',
   apiKey: '',
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   glossary: '',
+  preClipPadding: 0.0,
+  postClipPadding: 0.0,
 };
 
 // Load from localStorage
