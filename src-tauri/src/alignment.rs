@@ -123,11 +123,10 @@ impl ParakeetModel {
         })
     }
 
-    // Note: The user asked to "align AI transcript with local timestamps".
+    // Note:
     // The local model generates its own transcript and timestamps.
     // Ideally, we would align the *original* text to these timestamps, but
-    // simply returning the high-quality local transcript is often what is meant
-    // by "using a local model for alignment" in this context (replacing the API result with local result).
+    // simply returning the high-quality local transcript is easier for now.
     // If strict alignment of the *original* text is required, we'd need DTW.
     // For now, we return the local transcript segments.
 
