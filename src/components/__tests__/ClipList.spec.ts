@@ -41,6 +41,7 @@ describe('ClipList.vue', () => {
     const eventArgs = wrapper.emitted('export')![0][0] as any;
     expect(eventArgs.clips).toHaveLength(1); // Default is all
     expect(eventArgs.includeSubtitles).toBe(true);
+    expect(eventArgs.fastMode).toBe(true);
   });
 
   it('selects clips and exports only selected', async () => {
