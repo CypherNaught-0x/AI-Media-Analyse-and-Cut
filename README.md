@@ -22,7 +22,31 @@
 
 ## Installation
 
+### Download & Install
+
+You can download the latest version for Windows and MacOS from the releases page:
+
+👉 **[Download Latest Release](https://github.com/CypherNaught-0x/AI-Media-Analyse-and-Cut/releases/latest)**
+
+#### Windows
+
+1. Download the `.msi` installer (e.g., `ai-media-cutter_x.x.x_x64_en-US.msi`).
+2. Run the installer.
+3. **SmartScreen Warning**: You may see a "Windows protected your PC" popup because the app is not signed.
+   * Click **"More info"**.
+   * Click **"Run anyway"**.
+
+#### MacOS
+
+1. Download the `.dmg` file (e.g., `ai-media-cutter_x.x.x_aarch64.dmg` for Apple Silicon or `_x64.dmg` for Intel).
+2. Drag the app to your **Applications** folder.
+3. **"Unidentified Developer" Warning**:
+   * **Right-click** the app in Finder and select **Open**.
+   * Click **Open** in the dialog.
+   * *Alternatively*: Go to **System Settings > Privacy & Security** and click **Open Anyway**.
+
 ### Prerequisites
+
 *   **FFmpeg**: The application requires FFmpeg for media processing. It will attempt to download it automatically on first run, or you can install it manually and add it to your PATH.
 
 ### Building from Source
@@ -67,13 +91,8 @@ The integration tests include:
 *   **Mock Tests**: Verify the application logic against simulated API responses.
 *   **Real Pipeline Tests**: Run the full transcription, translation, and clip generation pipeline against a real API.
 
-To run the **Real Pipeline Tests**, you need to configure the following environment variables (or create a `.env` file in `src-tauri/`):
+To run the **Real Pipeline Tests**, you need to configure the following environment variables (or create a `.env` file in `src-tauri/`). See `.env.example` for values.
 
-```env
-API_KEY=your_api_key
-BASE_URL=https://generativelanguage.googleapis.com
-API_MODEL=gemini-1.5-flash
-```
 
 If these variables are not set, the real pipeline tests will be skipped automatically.
 
