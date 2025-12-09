@@ -113,6 +113,31 @@ use std::path::PathBuf;
 struct AudioInfo {
     path: String,
     size: u64,
+    duration: f64,
+}
+
+fn get_media_duration(input_path: &str) -> Option<f64> {
+    let output = std::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(input_path)
+        .output()
+        .ok()?;
+        
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(pos) = stderr.find("Duration: ") {
+        let s = &stderr[pos + 10..];
+        if let Some(end) = s.find(',') {
+            let duration_str = &s[..end];
+            let parts: Vec<&str> = duration_str.split(':').collect();
+            if parts.len() == 3 {
+                let hours: f64 = parts[0].parse().ok()?;
+                let minutes: f64 = parts[1].parse().ok()?;
+                let seconds: f64 = parts[2].parse().ok()?;
+                return Some(hours * 3600.0 + minutes * 60.0 + seconds);
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -120,12 +145,15 @@ async fn prepare_audio_for_ai(
     window: tauri::Window,
     input_path: String,
 ) -> Result<AudioInfo, String> {
+    use crate::time_utils::parse_timestamp_to_seconds_raw;
+
     let input = PathBuf::from(&input_path);
     if !input.exists() {
         return Err("Input file does not exist".to_string());
     }
 
     let output_path = input.with_extension("ogg");
+    let duration = get_media_duration(input.to_str().unwrap());
 
     // ffmpeg -i input.mp4 -vn -c:a libvorbis -q:a 4 output.ogg
     FfmpegCommand::new()
@@ -138,7 +166,22 @@ async fn prepare_audio_for_ai(
         .map_err(|e| e.to_string())?
         .for_each(|event| {
             if let FfmpegEvent::Progress(progress) = event {
-                let _ = window.emit("progress", progress.time);
+                let current_seconds = parse_timestamp_to_seconds_raw(&progress.time).unwrap_or(0.0);
+                let percentage = if let Some(d) = duration {
+                    if d > 0.0 {
+                        Some((current_seconds / d) * 100.0)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                let payload = serde_json::json!({
+                    "time": progress.time,
+                    "percentage": percentage
+                });
+                let _ = window.emit("progress", payload);
             }
         });
 
@@ -149,6 +192,7 @@ async fn prepare_audio_for_ai(
     Ok(AudioInfo {
         path: output_path.to_string_lossy().to_string(),
         size,
+        duration: duration.unwrap_or(0.0),
     })
 }
 
@@ -229,10 +273,29 @@ async fn cut_video(
     segments: Vec<Segment>,
     output_path: String,
 ) -> Result<(), String> {
+    use crate::time_utils::parse_timestamp_to_seconds_raw;
+
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_path);
+
+    let total_duration: f64 = segments.iter().map(|s| {
+        let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
+        let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
+        end - start
+    }).sum();
+
     cut_video_fn(&input, &segments, &output, move |time| {
-        let _ = window.emit("progress", time);
+        let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+        let percentage = if total_duration > 0.0 {
+            (current / total_duration) * 100.0
+        } else {
+            0.0
+        };
+        let payload = serde_json::json!({
+            "time": time,
+            "percentage": percentage
+        });
+        let _ = window.emit("progress", payload);
     })
     .map_err(|e| e.to_string())
 }
@@ -243,11 +306,45 @@ async fn export_clips(
     input_path: String,
     segments: Vec<ClipSegment>,
     output_dir: String,
+    fast_mode: bool,
 ) -> Result<(), String> {
+    use crate::time_utils::parse_timestamp_to_seconds_raw;
+
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_dir);
-    export_clips_fn(&input, &segments, &output, move |time| {
-        let _ = window.emit("progress", time);
+
+    // Calculate duration for each clip
+    let clip_durations: Vec<f64> = segments.iter().map(|c| {
+        c.segments.iter().map(|s| {
+            let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
+            let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
+            end - start
+        }).sum()
+    }).collect();
+
+    let total_duration: f64 = clip_durations.iter().sum();
+
+    export_clips_fn(&input, &segments, &output, fast_mode, move |clip_idx, total_clips, time| {
+        let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+        
+        // Sum duration of previous clips
+        let previous_duration: f64 = clip_durations.iter().take(clip_idx).sum();
+        
+        let total_current = previous_duration + current_clip_time;
+        
+        let percentage = if total_duration > 0.0 {
+            ((total_current / total_duration) * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+        
+        let payload = serde_json::json!({
+            "time": time,
+            "percentage": percentage,
+            "current_clip": clip_idx + 1,
+            "total_clips": total_clips
+        });
+        let _ = window.emit("progress", payload);
     })
     .map_err(|e| e.to_string())
 }
