@@ -52,6 +52,8 @@ const errorDetails = ref({
     rawResponse: "",
     parseError: ""
 });
+const progressPercentage = ref<number | null>(null);
+const executionHistory = ref<{type: string, inputSize: number, duration: number, timestamp: number}[]>([]);
 const inputPath = ref("");
 const segments = ref<TranscriptSegment[]>([]);
 const translations = ref<Record<string, TranscriptSegment[]>>({});
@@ -131,12 +133,32 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
 }
 
 onMounted(async () => {
+    const history = localStorage.getItem('executionHistory');
+    if (history) {
+        try {
+            executionHistory.value = JSON.parse(history);
+        } catch (e) {
+            console.error("Failed to parse execution history", e);
+        }
+    }
+
     try {
         const res = await invoke<string>("init_ffmpeg");
         status.value = res;
         
-        await listen<string>('progress', (event) => {
-            status.value = `Processing... ${event.payload}`;
+        await listen<any>('progress', (event) => {
+            const payload = event.payload;
+            if (typeof payload === 'number') {
+                 status.value = `Processing... ${payload.toFixed(1)}s`;
+            } else if (typeof payload === 'object') {
+                 if (payload.percentage !== undefined) {
+                     progressPercentage.value = payload.percentage;
+                     status.value = `Processing... ${payload.percentage.toFixed(1)}%`;
+                 }
+                 if (payload.message) {
+                     status.value = payload.message;
+                 }
+            }
         });
     } catch (e) {
         status.value = `Error initializing FFmpeg: ${e}`;
@@ -307,6 +329,24 @@ async function selectFile() {
     }
 }
 
+function estimateTime(type: 'analysis' | 'generation', inputSize: number): number {
+    const relevant = executionHistory.value.filter(h => h.type === type);
+    if (relevant.length === 0) {
+        // Default estimates
+        if (type === 'analysis') return inputSize * 0.1; // e.g. 10% of audio duration
+        if (type === 'generation') return inputSize * 0.005; // e.g. 5ms per char
+        return 30;
+    }
+    const rate = relevant.reduce((acc, h) => acc + (h.duration / h.inputSize), 0) / relevant.length;
+    return inputSize * rate;
+}
+
+function logExecution(type: 'analysis' | 'generation', inputSize: number, duration: number) {
+    executionHistory.value.push({ type, inputSize, duration, timestamp: Date.now() });
+    if (executionHistory.value.length > 20) executionHistory.value.shift();
+    localStorage.setItem('executionHistory', JSON.stringify(executionHistory.value));
+}
+
 async function processFile() {
     if (!inputPath.value || !hasApiKey.value) {
         status.value = "Please provide file path and API key.";
@@ -314,6 +354,7 @@ async function processFile() {
     }
 
     isProcessing.value = true;
+    progressPercentage.value = null;
     status.value = "Preparing audio...";
     segments.value = [];
 
@@ -355,7 +396,10 @@ async function processFile() {
         }
 
         // 3. Analyze
-        status.value = "Analyzing with AI...";
+        const estimatedTime = estimateTime('analysis', audioInfo.duration);
+        status.value = `Analyzing with AI... (Est. ${estimatedTime.toFixed(0)}s)`;
+        const startTime = Date.now();
+
         const response = await invoke<string>("analyze_audio", {
             apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
@@ -367,6 +411,9 @@ async function processFile() {
             audioUri: uri,
             audioBase64: audioBase64
         });
+
+        const duration = (Date.now() - startTime) / 1000;
+        logExecution('analysis', audioInfo.duration, duration);
 
         // 4. Parse Response
         const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -439,6 +486,7 @@ async function processFile() {
         status.value = `Error: ${e}`;
     } finally {
         isProcessing.value = false;
+        progressPercentage.value = null;
     }
 }
 
@@ -447,6 +495,7 @@ async function cutVideo() {
 
     status.value = "Cutting media...";
     isProcessing.value = true;
+    progressPercentage.value = null;
 
     try {
         const cutSegments = segments.value.map(s => ({ start: s.start, end: s.end }));
@@ -463,6 +512,112 @@ async function cutVideo() {
         status.value = `Error cutting media: ${e}`;
     } finally {
         isProcessing.value = false;
+        progressPercentage.value = null;
+    }
+}
+
+async function generateClips() {
+    if (segments.value.length === 0) return;
+    
+    status.value = "Generating clips...";
+    isProcessing.value = true;
+    progressPercentage.value = null;
+    
+    try {
+        const transcript = segments.value
+            .map(s => `[${s.start}-${s.end}] ${s.speaker}: ${s.text}`)
+            .join("\n");
+            
+        const estimatedTime = estimateTime('generation', transcript.length);
+        status.value = `Generating clips... (Est. ${estimatedTime.toFixed(0)}s)`;
+        const startTime = Date.now();
+
+        const response = await invoke<string>("generate_clips", {
+            apiKey: settings.value.apiKey,
+            baseUrl: settings.value.baseUrl,
+            model: settings.value.model,
+            transcript,
+            count: clipCount.value,
+            minDuration: clipMinDuration.value,
+            maxDuration: clipMaxDuration.value,
+            topic: clipTopic.value || null,
+            splicing: allowSplicing.value
+        });
+
+        const duration = (Date.now() - startTime) / 1000;
+        logExecution('generation', transcript.length, duration);
+        
+        const jsonMatch = response.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+            try {
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (!Array.isArray(parsed)) throw new Error("Response is not an array");
+                
+                // Normalize clips to always have 'segments'
+                clips.value = parsed.map((c: any) => {
+                    if (c.segments) return c;
+                    // Backward compatibility for AI response without segments
+                    return {
+                        ...c,
+                        segments: [{ start: c.start, end: c.end }]
+                    };
+                });
+                
+                status.value = `Found ${clips.value.length} clips.`;
+            } catch (e) {
+                console.error("JSON Parse Error", e);
+                status.value = "Failed to parse clips from AI response. Check console for details.";
+            }
+        } else {
+            status.value = "Failed to find JSON in AI response.";
+            console.error(response);
+        }
+    } catch (e) {
+        status.value = `Error generating clips: ${e}`;
+    } finally {
+        isProcessing.value = false;
+        progressPercentage.value = null;
+    }
+}
+
+async function exportClips() {
+    if (clips.value.length === 0) return;
+    
+    status.value = "Exporting clips...";
+    isProcessing.value = true;
+    progressPercentage.value = null;
+    
+    try {
+        // Robust extension replacement
+        const outputDir = inputPath.value.replace(/\.[^/\\.]+$/, "") + "_clips";
+        const clipSegments = clips.value.map(c => ({ 
+            segments: c.segments,
+            label: c.title,
+            reason: c.reason
+        }));
+        
+        console.log({outputDir});
+        
+        status.value = `Exporting to ${outputDir}...`;
+        await invoke("export_clips", {
+            inputPath: inputPath.value,
+            segments: clipSegments,
+            outputDir
+        });
+        
+        lastExportPath.value = outputDir;
+        status.value = `Clips exported to ${outputDir}`;
+    } catch (e) {
+        status.value = `Error exporting clips: ${e}`;
+    } finally {
+        isProcessing.value = false;
+        progressPercentage.value = null;
+    }
+}
+
+async function openExportFolder() {
+    if (lastExportPath.value) {
+        await invoke("open_folder", { path: lastExportPath.value });
     }
 }
 
@@ -800,10 +955,15 @@ function updateProcessing(processing: boolean) {
     </div>
     <!-- Status Bar (Outside main container to ensure fixed positioning works) -->
     <div class="fixed bottom-0 left-0 right-0 p-4 bg-black/50 backdrop-blur-md border-t border-white/10 flex items-center justify-between z-50">
-        <div class="max-w-5xl mx-auto w-full flex items-center gap-3">
-            <div class="w-2 h-2 rounded-full"
-                :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
-            <span class="text-sm font-mono text-gray-400 truncate">{{ status }}</span>
+        <div class="max-w-5xl mx-auto w-full flex flex-col gap-2">
+            <div v-if="progressPercentage !== null" class="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                <div class="bg-blue-500 h-full transition-all duration-300 ease-out" :style="{ width: `${progressPercentage}%` }"></div>
+            </div>
+            <div class="flex items-center gap-3">
+                <div class="w-2 h-2 rounded-full"
+                    :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
+                <span class="text-sm font-mono text-gray-400 truncate">{{ status }}</span>
+            </div>
         </div>
     </div>
 
