@@ -16,6 +16,7 @@ export interface Clip {
 export interface AudioInfo {
   path: string;
   size: number;
+  duration: number;
 }
 
 export interface SilenceInterval {
