@@ -125,6 +125,7 @@ pub fn export_clips<F>(
     input_path: &Path,
     segments: &[ClipSegment],
     output_dir: &Path,
+    fast_mode: bool,
     on_progress: F,
 ) -> Result<()>
 where
@@ -169,12 +170,17 @@ where
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
             let mut last_error = None;
-            FfmpegCommand::new()
-                .input(input_path.to_str().unwrap())
-                .args(&[
-                    "-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac",
-                ])
-                .output(output_path.to_str().unwrap())
+            
+            let mut cmd = FfmpegCommand::new();
+            cmd.input(input_path.to_str().unwrap());
+            
+            if fast_mode {
+                cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c", "copy"]);
+            } else {
+                cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac"]);
+            }
+
+            cmd.output(output_path.to_str().unwrap())
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
                 .iter()
