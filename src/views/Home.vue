@@ -551,8 +551,20 @@ async function exportClips() {
     try {
         // Robust extension replacement
         const outputDir = inputPath.value.replace(/\.[^/\\.]+$/, "") + "_clips";
+        
+        const prePadding = settings.value.preClipPadding || 0;
+        const postPadding = settings.value.postClipPadding || 0;
+        const maxDuration = videoRef.value?.duration || Infinity;
+
         const clipSegments = clips.value.map(c => ({ 
-            segments: c.segments,
+            segments: c.segments.map(s => {
+                const start = Math.max(0, parseTime(s.start) - prePadding);
+                const end = Math.min(maxDuration, parseTime(s.end) + postPadding);
+                return {
+                    start: formatTime(start),
+                    end: formatTime(end)
+                };
+            }),
             label: c.title,
             reason: c.reason
         }));
