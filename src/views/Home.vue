@@ -602,7 +602,7 @@ function goToSettings() {
         <div class="max-w-5xl mx-auto">
             <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
 
-                <!-- LLM Configuration Display -->
+                <!-- Settings Display -->
                 <div class="mb-8 flex items-center justify-between bg-black/20 p-4 rounded-2xl border border-white/5">
                     <div class="flex items-center gap-4">
                         <div class="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
@@ -615,7 +615,7 @@ function goToSettings() {
                     </div>
                     <button @click="goToSettings"
                         class="px-6 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10">
-                        Configure
+                        Settings
                     </button>
                 </div>
 
@@ -632,7 +632,7 @@ function goToSettings() {
                             </div>
                         </div>
                         <button @click="selectFile"
-                            class="px-8 py-4 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 transition-all transform active:scale-95">
+                            class="px-8 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 transition-all transform active:scale-95">
                             Browse
                         </button>
                     </div>
