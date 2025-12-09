@@ -13,6 +13,7 @@ import ClipList from "../components/ClipList.vue";
 import StatusBar from "../components/StatusBar.vue";
 import type { TranscriptSegment, AudioInfo, Clip, ProcessedAudio, SegmentOffset } from "../types";
 import { useSettings } from "../composables/useSettings";
+import { generateSubtitleContent } from "../utils/subtitle";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -160,7 +161,13 @@ onMounted(async () => {
             } else if (typeof payload === 'object') {
                  if (payload.percentage !== undefined) {
                      progressPercentage.value = payload.percentage;
-                     status.value = `Processing... ${payload.percentage.toFixed(1)}%`;
+                     let statusMsg = `Processing... ${payload.percentage.toFixed(1)}%`;
+                     
+                     if (payload.current_clip && payload.total_clips) {
+                         statusMsg = `Exporting clip ${payload.current_clip}/${payload.total_clips} (${payload.percentage.toFixed(1)}%)`;
+                     }
+                     
+                     status.value = statusMsg;
                  }
                  if (payload.message) {
                      status.value = payload.message;
@@ -296,6 +303,28 @@ async function translateTranscript() {
     }
 }
 
+let progressInterval: number | null = null;
+
+function startSimulatedProgress(estimatedSeconds: number) {
+    if (progressInterval) clearInterval(progressInterval);
+    progressPercentage.value = 0;
+    const startTime = Date.now();
+    
+    progressInterval = window.setInterval(() => {
+        const elapsed = (Date.now() - startTime) / 1000;
+        const p = (elapsed / estimatedSeconds) * 100;
+        // Cap at 99% so it doesn't look finished until it actually is
+        progressPercentage.value = Math.min(p, 99);
+    }, 100);
+}
+
+function stopSimulatedProgress() {
+    if (progressInterval) {
+        clearInterval(progressInterval);
+        progressInterval = null;
+    }
+    progressPercentage.value = 100;
+}
 
 function estimateTime(type: 'analysis' | 'generation', inputSize: number): number {
     const relevant = executionHistory.value.filter(h => h.type === type);
@@ -368,17 +397,23 @@ async function processFile() {
         status.value = `Analyzing with AI... (Est. ${estimatedTime.toFixed(0)}s)`;
         const startTime = Date.now();
 
-        const response = await invoke<string>("analyze_audio", {
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            model: settings.value.model,
-            context: context.value,
-            glossary: settings.value.glossary,
-            speakerCount: speakerCount.value,
-            removeFillerWords: removeFillerWords.value,
-            audioUri: uri,
-            audioBase64: audioBase64
-        });
+        startSimulatedProgress(estimatedTime);
+        let response: string;
+        try {
+            response = await invoke<string>("analyze_audio", {
+                apiKey: settings.value.apiKey,
+                baseUrl: settings.value.baseUrl,
+                model: settings.value.model,
+                context: context.value,
+                glossary: settings.value.glossary,
+                speakerCount: speakerCount.value,
+                removeFillerWords: removeFillerWords.value,
+                audioUri: uri,
+                audioBase64: audioBase64
+            });
+        } finally {
+            stopSimulatedProgress();
+        }
 
         const duration = (Date.now() - startTime) / 1000;
         logExecution('analysis', audioInfo.duration, duration);
@@ -493,17 +528,23 @@ async function generateClips() {
         status.value = `Generating clips... (Est. ${estimatedTime.toFixed(0)}s)`;
         const startTime = Date.now();
 
-        const response = await invoke<string>("generate_clips", {
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            model: settings.value.model,
-            transcript,
-            count: clipCount.value,
-            minDuration: clipMinDuration.value,
-            maxDuration: clipMaxDuration.value,
-            topic: clipTopic.value || null,
-            splicing: allowSplicing.value
-        });
+        startSimulatedProgress(estimatedTime);
+        let response: string;
+        try {
+            response = await invoke<string>("generate_clips", {
+                apiKey: settings.value.apiKey,
+                baseUrl: settings.value.baseUrl,
+                model: settings.value.model,
+                transcript,
+                count: clipCount.value,
+                minDuration: clipMinDuration.value,
+                maxDuration: clipMaxDuration.value,
+                topic: clipTopic.value || null,
+                splicing: allowSplicing.value
+            });
+        } finally {
+            stopSimulatedProgress();
+        }
 
         const duration = (Date.now() - startTime) / 1000;
         logExecution('generation', transcript.length, duration);
@@ -541,8 +582,11 @@ async function generateClips() {
     }
 }
 
-async function exportClips() {
-    if (clips.value.length === 0) return;
+async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean }) {
+    const clipsToExport = payload?.clips || clips.value;
+    const includeSubtitles = payload?.includeSubtitles || false;
+
+    if (clipsToExport.length === 0) return;
     
     status.value = "Exporting clips...";
     isProcessing.value = true;
@@ -556,7 +600,7 @@ async function exportClips() {
         const postPadding = settings.value.postClipPadding || 0;
         const maxDuration = videoRef.value?.duration || Infinity;
 
-        const clipSegments = clips.value.map(c => ({ 
+        const clipSegments = clipsToExport.map(c => ({ 
             segments: c.segments.map(s => {
                 const start = Math.max(0, parseTime(s.start) - prePadding);
                 const end = Math.min(maxDuration, parseTime(s.end) + postPadding);
@@ -577,6 +621,65 @@ async function exportClips() {
             segments: clipSegments,
             outputDir
         });
+
+        if (includeSubtitles) {
+            status.value = "Generating subtitles...";
+            for (let i = 0; i < clipSegments.length; i++) {
+                const clip = clipSegments[i];
+                
+                // Reconstruct filename logic from Rust
+                const suffix = clip.label
+                    ? clip.label.replace(/[^a-zA-Z0-9-_]/g, "")
+                    : "";
+                const indexStr = (i + 1).toString().padStart(3, '0');
+                const filename = suffix ? `clip_${indexStr}_${suffix}.srt` : `clip_${indexStr}.srt`;
+                const outputPath = `${outputDir}\\${filename}`; // Assuming Windows based on context, but should use path separator
+
+                // Generate transcript for this clip
+                const clipTranscript: TranscriptSegment[] = [];
+                let currentOffset = 0;
+
+                for (const seg of clip.segments) {
+                    const segStart = parseTime(seg.start);
+                    const segEnd = parseTime(seg.end);
+                    const duration = segEnd - segStart;
+
+                    // Find overlapping segments in full transcript
+                    const overlapping = segments.value.filter(t => {
+                        const tStart = parseTime(t.start);
+                        const tEnd = parseTime(t.end);
+                        // Intersection > 0
+                        return Math.max(tStart, segStart) < Math.min(tEnd, segEnd);
+                    });
+
+                    for (const t of overlapping) {
+                        const tStart = parseTime(t.start);
+                        const tEnd = parseTime(t.end);
+                        
+                        const effStart = Math.max(tStart, segStart);
+                        const effEnd = Math.min(tEnd, segEnd);
+                        
+                        if (effEnd > effStart) {
+                            const relStart = currentOffset + (effStart - segStart);
+                            const relEnd = currentOffset + (effEnd - segStart);
+                            
+                            clipTranscript.push({
+                                start: formatTime(relStart),
+                                end: formatTime(relEnd),
+                                text: t.text,
+                                speaker: t.speaker
+                            });
+                        }
+                    }
+                    currentOffset += duration;
+                }
+
+                if (clipTranscript.length > 0) {
+                    const srtContent = generateSubtitleContent(clipTranscript, 'srt');
+                    await invoke("write_text_file", { path: outputPath, content: srtContent });
+                }
+            }
+        }
         
         lastExportPath.value = outputDir;
         status.value = `Clips exported to ${outputDir}`;

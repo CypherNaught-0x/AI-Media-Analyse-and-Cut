@@ -312,22 +312,36 @@ async fn export_clips(
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_dir);
 
-    let total_duration: f64 = segments.iter().flat_map(|c| &c.segments).map(|s| {
-        let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
-        let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
-        end - start
-    }).sum();
+    // Calculate duration for each clip
+    let clip_durations: Vec<f64> = segments.iter().map(|c| {
+        c.segments.iter().map(|s| {
+            let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
+            let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
+            end - start
+        }).sum()
+    }).collect();
 
-    export_clips_fn(&input, &segments, &output, move |time| {
-        let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+    let total_duration: f64 = clip_durations.iter().sum();
+
+    export_clips_fn(&input, &segments, &output, move |clip_idx, total_clips, time| {
+        let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+        
+        // Sum duration of previous clips
+        let previous_duration: f64 = clip_durations.iter().take(clip_idx).sum();
+        
+        let total_current = previous_duration + current_clip_time;
+        
         let percentage = if total_duration > 0.0 {
-            (current / total_duration) * 100.0
+            ((total_current / total_duration) * 100.0).min(100.0)
         } else {
             0.0
         };
+        
         let payload = serde_json::json!({
             "time": time,
-            "percentage": percentage
+            "percentage": percentage,
+            "current_clip": clip_idx + 1,
+            "total_clips": total_clips
         });
         let _ = window.emit("progress", payload);
     })
