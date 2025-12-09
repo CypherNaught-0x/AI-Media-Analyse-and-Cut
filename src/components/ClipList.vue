@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import type { Clip } from '../types';
 
