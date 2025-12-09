@@ -121,9 +121,9 @@ const displaySegments = computed({
 });
 
 const contextTextarea = ref<HTMLTextAreaElement | null>(null);
+const glossaryTextarea = ref<HTMLTextAreaElement | null>(null);
 
-function startResize(e: MouseEvent) {
-    const textarea = contextTextarea.value;
+function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
     if (!textarea) return;
 
     const startY = e.clientY;
@@ -646,7 +646,7 @@ function goToSettings() {
                             <textarea ref="contextTextarea" v-model="context" rows="2"
                                 class="w-full p-4 pb-8 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-colors text-gray-300 placeholder-gray-600 resize-none"
                                 placeholder="Describe the video content to help the AI... Especially for translation"></textarea>
-                            <div @mousedown.prevent="startResize"
+                            <div @mousedown.prevent="startResize($event, contextTextarea)"
                                 class="absolute bottom-0 left-0 right-0 h-6 cursor-ns-resize flex items-center justify-center hover:bg-white/5 rounded-b-2xl transition-colors group">
                                 <div class="w-12 h-1 bg-white/10 rounded-full group-hover:bg-white/20 transition-colors"></div>
                             </div>
@@ -655,9 +655,15 @@ function goToSettings() {
                     
                     <div>
                         <label class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Glossary</label>
-                        <textarea v-model="settings.glossary" rows="2"
-                            class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 resize-none"
-                            placeholder="Specific terms, names, acronyms..."></textarea>
+                        <div class="relative">
+                            <textarea ref="glossaryTextarea" v-model="settings.glossary" rows="2"
+                                class="w-full p-4 pb-8 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 resize-none"
+                                placeholder="Specific terms, names, acronyms..."></textarea>
+                            <div @mousedown.prevent="startResize($event, glossaryTextarea)"
+                                class="absolute bottom-0 left-0 right-0 h-6 cursor-ns-resize flex items-center justify-center hover:bg-white/5 rounded-b-2xl transition-colors group">
+                                <div class="w-12 h-1 bg-white/10 rounded-full group-hover:bg-white/20 transition-colors"></div>
+                            </div>
+                        </div>
                     </div>
 
                     <div>
