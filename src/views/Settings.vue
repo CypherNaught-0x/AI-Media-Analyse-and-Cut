@@ -1,20 +1,27 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 
 const router = useRouter();
-const { settings, updateSettings } = useSettings();
+const { settings, updateSettings, modelFetchState, updateModelFetchState } = useSettings();
 
 const localBaseUrl = ref(settings.value.baseUrl);
 const localApiKey = ref(settings.value.apiKey);
 const localModel = ref(settings.value.model);
-const availableModels = ref<string[]>([]);
+const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const isFetchingModels = ref(false);
 const fetchError = ref('');
 const showManualInput = ref(false);
+
+// Check if the current model is not in the available models list
+const modelNotInList = computed(() => {
+    if (availableModels.value.length === 0) return false;
+    if (modelFetchState.value.supportsModelFetch === false) return false;
+    return !availableModels.value.includes(localModel.value);
+});
 
 const hasChanges = computed(() => {
     return (
@@ -42,15 +49,22 @@ const normalizeBaseUrl = (url: string): string => {
     return normalized;
 };
 
-async function fetchModels() {
+async function fetchModels(silent = false) {
     if (!localApiKey.value) {
-        fetchError.value = 'Please enter an API key first';
+        if (!silent) {
+            fetchError.value = 'Please enter an API key first';
+        }
         return;
     }
 
     isFetchingModels.value = true;
     fetchError.value = '';
-    showManualInput.value = false;
+    if (!silent) {
+        showManualInput.value = false;
+    }
+
+    // Preserve current model selection
+    const currentModel = localModel.value;
 
     try {
         const normalizedUrl = normalizeBaseUrl(localBaseUrl.value);
@@ -71,33 +85,49 @@ async function fetchModels() {
         const response = await fetch(modelsUrl, { headers });
 
         if (!response.ok) {
+            // Check for 404 - endpoint doesn't support model listing
+            if (response.status === 404) {
+                updateModelFetchState({ supportsModelFetch: false, availableModels: [] });
+                availableModels.value = [];
+                if (!silent) {
+                    fetchError.value = 'This endpoint does not support model listing';
+                }
+                return;
+            }
             throw new Error(`Failed to fetch models: ${response.statusText}`);
         }
 
         const data = await response.json();
+        let fetchedModels: string[] = [];
 
         if (data.models && Array.isArray(data.models)) {
-            availableModels.value = data.models
+            fetchedModels = data.models
                 .map((m: any) => m.name?.replace('models/', '') || m.name)
                 .filter(Boolean);
-
-            if (availableModels.value.length === 0) {
-                throw new Error('No models found');
-            }
         } else if (data.data && Array.isArray(data.data)) {
-            availableModels.value = data.data
+            fetchedModels = data.data
                 .map((m: any) => m.id)
                 .filter(Boolean);
-
-            if (availableModels.value.length === 0) {
-                throw new Error('No models found');
-            }
         } else {
             throw new Error('Invalid response format');
         }
+
+        if (fetchedModels.length === 0) {
+            throw new Error('No models found');
+        }
+
+        availableModels.value = fetchedModels;
+        updateModelFetchState({ supportsModelFetch: true, availableModels: fetchedModels });
+
+        // Restore model selection (it stays as-is, just ensuring dropdown has it)
+        localModel.value = currentModel;
     } catch (e) {
-        fetchError.value = `Error: ${e}`;
-        showManualInput.value = true;
+        if (!silent) {
+            fetchError.value = `Error: ${e}`;
+            showManualInput.value = true;
+        }
+        // On error, set supportsModelFetch to false and provide fallback models
+        updateModelFetchState({ supportsModelFetch: false });
         if (isGoogleApi.value) {
             availableModels.value = [
                 'gemini-2.0-flash',
@@ -110,10 +140,19 @@ async function fetchModels() {
                 'gpt-3.5-turbo',
             ];
         }
+        // Restore model selection
+        localModel.value = currentModel;
     } finally {
         isFetchingModels.value = false;
     }
 }
+
+// Auto-fetch models on mount if API key is present
+onMounted(() => {
+    if (localApiKey.value && modelFetchState.value.supportsModelFetch !== false) {
+        fetchModels(true);
+    }
+});
 
 async function exportLogs() {
     try {
@@ -194,17 +233,33 @@ function cancel() {
                         Model
                     </label>
                     <div class="flex gap-3 mb-2">
-                        <select v-if="!showManualInput" v-model="localModel"
-                            class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300">
-                            <option v-if="availableModels.length === 0" :value="localModel">{{ localModel }}</option>
-                            <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
-                        </select>
-                        <input v-else v-model="localModel" type="text"
-                            class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                            placeholder="Enter model name manually" />
-                        <button @click="fetchModels" :disabled="isFetchingModels || !localApiKey"
-                            class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95">
-                            {{ isFetchingModels ? 'Fetching...' : 'Fetch Models' }}
+                        <div class="flex-1 relative">
+                            <select v-if="!showManualInput" v-model="localModel"
+                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300"
+                                :class="{ 'pr-12': modelNotInList }">
+                                <option v-if="availableModels.length === 0 || !availableModels.includes(localModel)" :value="localModel">{{ localModel }}</option>
+                                <option v-for="model in availableModels" :key="model" :value="model">{{ model }}</option>
+                            </select>
+                            <input v-else v-model="localModel" type="text"
+                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                                placeholder="Enter model name manually" />
+                            <!-- Warning indicator when model is not in the available list -->
+                            <div v-if="modelNotInList && !showManualInput"
+                                class="absolute right-4 top-1/2 -translate-y-1/2 group/tooltip">
+                                <svg class="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+                                </svg>
+                                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-gray-800 text-xs text-amber-300 rounded-lg whitespace-nowrap opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none border border-amber-500/30">
+                                    Model not found in available models list
+                                </div>
+                            </div>
+                        </div>
+                        <button @click="fetchModels()" :disabled="isFetchingModels || !localApiKey"
+                            class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95 flex items-center gap-2">
+                            <svg v-if="!isFetchingModels" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            {{ isFetchingModels ? 'Fetching...' : 'Refresh Models' }}
                         </button>
                     </div>
                     <div class="flex items-center gap-2 mb-1">
