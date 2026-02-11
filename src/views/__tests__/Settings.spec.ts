@@ -3,6 +3,15 @@ import { mount, flushPromises } from '@vue/test-utils';
 import Settings from '../Settings.vue';
 import { createRouter, createWebHistory } from 'vue-router';
 
+// Mock Tauri APIs
+vi.mock('@tauri-apps/api/app', () => ({
+  getVersion: vi.fn(() => Promise.resolve('1.0.0')),
+}));
+
+vi.mock('@tauri-apps/plugin-updater', () => ({
+  check: vi.fn(() => Promise.resolve({ available: false })),
+}));
+
 // Mock useSettings
 const updateSettingsMock = vi.fn();
 vi.mock('../../composables/useSettings', () => ({
@@ -12,6 +21,8 @@ vi.mock('../../composables/useSettings', () => ({
         apiKey: 'test-api-key',
         baseUrl: 'https://test.url',
         model: 'test-model',
+        preClipPadding: 0,
+        postClipPadding: 0,
       },
     },
     updateSettings: updateSettingsMock,

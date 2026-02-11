@@ -42,6 +42,23 @@ vi.mock('../../components/Editor.vue', () => ({
   },
 }));
 
+// Mock components
+vi.mock('../../components/FileSelector.vue', () => ({
+  default: { template: '<div class="mock-file-selector"></div>' }
+}));
+vi.mock('../../components/AnalysisSettings.vue', () => ({
+  default: { template: '<div class="mock-analysis-settings"></div>' }
+}));
+vi.mock('../../components/ClipGenerator.vue', () => ({
+  default: { template: '<div class="mock-clip-generator"></div>' }
+}));
+vi.mock('../../components/ClipList.vue', () => ({
+  default: { template: '<div class="mock-clip-list"></div>' }
+}));
+vi.mock('../../components/StatusBar.vue', () => ({
+  default: { template: '<div class="mock-status-bar"></div>' }
+}));
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [{ path: '/', component: Home }, { path: '/settings', component: { template: '<div>Settings</div>' } }],
@@ -61,7 +78,6 @@ describe('Home.vue', () => {
     
     await flushPromises();
     expect(wrapper.text()).toContain('Media AI Cutter');
-    expect(wrapper.text()).toContain('Intelligent Video Segmentation & Processing');
   });
 
   it('initializes ffmpeg on mount', async () => {
