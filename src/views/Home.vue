@@ -6,14 +6,17 @@ import { open, ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import Editor from "../components/Editor.vue";
 import SubtitleExport from "../components/SubtitleExport.vue";
-import type { TranscriptSegment, AudioInfo, Clip, ProcessedAudio, SegmentOffset } from "../types";
+import ViralClipsGenerator from "../components/ViralClipsGenerator.vue";
+import PodcastGenerator from "../components/PodcastGenerator.vue";
+import ErrorOverlay from "../components/ErrorOverlay.vue";
+import type { TranscriptSegment, AudioInfo, ProcessedAudio } from "../types";
 import { useSettings } from "../composables/useSettings";
+import { parseTime, adjustTimestamp } from "../composables/useTimeFormat";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import VideoFileIcon from '../assets/icons/video-file.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
 import UserIcon from '../assets/icons/user.svg?component';
-import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import TranslateIcon from '../assets/icons/translate.svg?component';
 import CheckIcon from '../assets/icons/check.svg?component';
 import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
@@ -59,48 +62,8 @@ const showLanguageDropdown = ref(false);
 const removeFillerWords = ref(false);
 const videoRef = ref<HTMLVideoElement | null>(null);
 
-function parseTime(timeStr: string): number {
-    const parts = timeStr.split(':');
-    if (parts.length === 3) {
-        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
-    } else if (parts.length === 2) {
-        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-    }
-    return parseFloat(timeStr);
-}
-
-function formatTime(seconds: number): string {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = (seconds % 60).toFixed(3);
-    if (h > 0) {
-        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.padStart(6, '0')}`;
-    }
-    return `${m.toString().padStart(2, '0')}:${s.padStart(6, '0')}`;
-}
-
-function adjustTimestamp(timeStr: string, offsets: SegmentOffset[]): string {
-    const t = parseTime(timeStr);
-    let offset = 0;
-    for (const seg of offsets) {
-        if (t >= seg.min_time) {
-            offset = seg.offset;
-        } else {
-            break;
-        }
-    }
-    return formatTime(t + offset);
-}
-
-const clips = ref<Clip[]>([]);
-const clipCount = ref(3);
-const clipMinDuration = ref(10);
-const clipMaxDuration = ref(120);
-const clipTopic = ref("");
-const allowSplicing = ref(false);
 const speakerCount = ref<number | null>(null);
 const context = ref("");
-const lastExportPath = ref("");
 const useAdvancedAlignment = ref(false);
 
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
@@ -170,7 +133,6 @@ watch(inputPath, () => {
     segments.value = [];
     translations.value = {};
     currentLanguage.value = "Original";
-    clips.value = [];
     loadTranscript();
 });
 
@@ -290,27 +252,6 @@ function showError(message: string, rawResponse: string, parseError: string = ""
 
 function dismissError() {
     showErrorOverlay.value = false;
-}
-
-async function copyErrorDetails() {
-    const details = `Error: ${errorDetails.value.message}
-
-Parse Error: ${errorDetails.value.parseError || "N/A"}
-
-Raw AI Response:
-${errorDetails.value.rawResponse}
-
----
-Timestamp: ${new Date().toISOString()}
-Model: ${settings.value.model}
-Base URL: ${settings.value.baseUrl}`;
-
-    try {
-        await navigator.clipboard.writeText(details);
-        status.value = "Error details copied to clipboard.";
-    } catch (e) {
-        console.error("Failed to copy:", e);
-    }
 }
 
 async function selectFile() {
@@ -482,107 +423,6 @@ async function cutVideo() {
     }
 }
 
-async function generateClips() {
-    if (segments.value.length === 0) return;
-    
-    status.value = "Generating clips...";
-    isProcessing.value = true;
-    
-    try {
-        const transcript = segments.value
-            .map(s => `[${s.start}-${s.end}] ${s.speaker}: ${s.text}`)
-            .join("\n");
-            
-        const response = await invoke<string>("generate_clips", {
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            model: settings.value.model,
-            transcript,
-            count: clipCount.value,
-            minDuration: clipMinDuration.value,
-            maxDuration: clipMaxDuration.value,
-            topic: clipTopic.value || null,
-            splicing: allowSplicing.value
-        });
-        
-        const jsonMatch = response.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-            try {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-                
-                // Normalize clips to always have 'segments'
-                clips.value = parsed.map((c: any) => {
-                    if (c.segments) return c;
-                    // Backward compatibility for AI response without segments
-                    return {
-                        ...c,
-                        segments: [{ start: c.start, end: c.end }]
-                    };
-                });
-                
-                status.value = `Found ${clips.value.length} clips.`;
-            } catch (e) {
-                console.error("JSON Parse Error", e);
-                showError(
-                    "Failed to parse clips from AI response.",
-                    response,
-                    e instanceof Error ? e.message : String(e)
-                );
-            }
-        } else {
-            console.error(response);
-            showError(
-                "Failed to find JSON in AI response.",
-                response
-            );
-        }
-    } catch (e) {
-        status.value = `Error generating clips: ${e}`;
-    } finally {
-        isProcessing.value = false;
-    }
-}
-
-async function exportClips() {
-    if (clips.value.length === 0) return;
-    
-    status.value = "Exporting clips...";
-    isProcessing.value = true;
-    
-    try {
-        // Robust extension replacement
-        const outputDir = inputPath.value.replace(/\.[^/\\.]+$/, "") + "_clips";
-        const clipSegments = clips.value.map(c => ({ 
-            segments: c.segments,
-            label: c.title,
-            reason: c.reason
-        }));
-        
-        console.log({outputDir});
-        
-        status.value = `Exporting to ${outputDir}...`;
-        await invoke("export_clips", {
-            inputPath: inputPath.value,
-            segments: clipSegments,
-            outputDir
-        });
-        
-        lastExportPath.value = outputDir;
-        status.value = `Clips exported to ${outputDir}`;
-    } catch (e) {
-        status.value = `Error exporting clips: ${e}`;
-    } finally {
-        isProcessing.value = false;
-    }
-}
-
-async function openExportFolder() {
-    if (lastExportPath.value) {
-        await invoke("open_folder", { path: lastExportPath.value });
-    }
-}
-
 async function renameSpeaker(oldName: string, newName: string, inputElement: HTMLInputElement) {
     const trimmedNewName = newName.trim();
     if (oldName === trimmedNewName || !trimmedNewName) {
@@ -660,6 +500,14 @@ function onTimeUpdate() {
 
 function goToSettings() {
     router.push('/settings');
+}
+
+function updateStatus(message: string) {
+    status.value = message;
+}
+
+function updateProcessing(processing: boolean) {
+    isProcessing.value = processing;
 }
 </script>
 
@@ -876,90 +724,28 @@ function goToSettings() {
                 </div>
             </transition>
 
-            <!-- Short Clips Section -->
+            <!-- Viral Clips Generator -->
             <transition name="fade">
-                <div v-if="segments.length > 0"
-                    class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl">
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-2xl font-bold text-white">
-                            Viral Clips Generator
-                        </h2>
-                    </div>
+                <ViralClipsGenerator
+                    v-if="segments.length > 0"
+                    :segments="segments"
+                    :inputPath="inputPath"
+                    class="mb-8"
+                    @update:status="updateStatus"
+                    @update:processing="updateProcessing"
+                />
+            </transition>
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                        <div class="group">
-                            <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Count</label>
-                            <input v-model.number="clipCount" type="number" min="1" max="10"
-                                class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white text-center" />
-                        </div>
-                        <div class="group">
-                            <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Min Sec</label>
-                            <input v-model.number="clipMinDuration" type="number" min="5"
-                                class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white text-center" />
-                        </div>
-                        <div class="group">
-                            <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Max Sec</label>
-                            <input v-model.number="clipMaxDuration" type="number" min="10"
-                                class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white text-center" />
-                        </div>
-                    </div>
-
-                    <div class="mb-6">
-                        <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">Topic (Optional)</label>
-                        <input v-model="clipTopic" type="text"
-                            class="w-full p-4 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white placeholder-gray-600"
-                            placeholder="e.g. 'Funny moments', 'Technical explanation', 'Rants'..." />
-                    </div>
-
-                    <div class="mb-8 flex items-center justify-between p-4 bg-black/20 rounded-xl border border-white/5">
-                        <div>
-                            <h3 class="text-sm font-semibold text-gray-300">Smart Splicing</h3>
-                            <p class="text-xs text-gray-500">Allow AI to combine non-contiguous segments into one clip</p>
-                        </div>
-                        <button 
-                            @click="allowSplicing = !allowSplicing"
-                            class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-pink-500 focus:ring-offset-2 focus:ring-offset-gray-900"
-                            :class="allowSplicing ? 'bg-pink-600' : 'bg-gray-700'"
-                        >
-                            <span class="sr-only">Enable smart splicing</span>
-                            <span
-                                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                :class="allowSplicing ? 'translate-x-6' : 'translate-x-1'"
-                            />
-                        </button>
-                    </div>
-
-                    <button @click="generateClips" :disabled="isProcessing"
-                        class="w-full mb-8 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0">
-                        {{ isProcessing ? 'Processing...' : 'Generate Clips' }}
-                    </button>
-
-                    <div v-if="clips.length > 0" class="space-y-4">
-                        <div v-for="(clip, index) in clips" :key="index"
-                            class="p-6 bg-black/20 rounded-2xl border border-white/5 hover:border-pink-500/30 transition-colors">
-                            <div class="flex justify-between items-start mb-3">
-                                <h3 class="font-bold text-lg text-pink-400">{{ clip.title }}</h3>
-                                <div class="flex flex-col items-end gap-1">
-                                    <span v-for="(seg, i) in clip.segments" :key="i" class="px-2 py-1 rounded bg-white/5 text-xs text-gray-400 font-mono">
-                                        {{ seg.start }} - {{ seg.end }}
-                                    </span>
-                                </div>
-                            </div>
-                            <p class="text-gray-300 text-sm leading-relaxed">{{ clip.reason }}</p>
-                        </div>
-
-                        <div class="flex gap-4 mt-6">
-                            <button @click="exportClips" :disabled="isProcessing"
-                                class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all">
-                                Export All Clips
-                            </button>
-                            <button v-if="lastExportPath" @click="openExportFolder"
-                                class="px-6 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-2xl border border-gray-700 transition-all" title="Open Folder">
-                                <FolderOpenIcon class="h-6 w-6" />
-                            </button>
-                        </div>
-                    </div>
-                </div>
+            <!-- Podcast Generator -->
+            <transition name="fade">
+                <PodcastGenerator
+                    v-if="segments.length > 0"
+                    :segments="segments"
+                    :inputPath="inputPath"
+                    class="mb-20"
+                    @update:status="updateStatus"
+                    @update:processing="updateProcessing"
+                />
             </transition>
         </div>
     </div>
@@ -973,64 +759,14 @@ function goToSettings() {
     </div>
 
     <!-- Error Overlay -->
-    <transition name="fade">
-        <div v-if="showErrorOverlay" class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-            <div class="w-full max-w-3xl max-h-[80vh] bg-gray-900 rounded-2xl border border-red-500/30 shadow-2xl shadow-red-500/10 flex flex-col overflow-hidden">
-                <!-- Header -->
-                <div class="flex items-center justify-between p-6 border-b border-white/10 bg-red-500/10">
-                    <div class="flex items-center gap-3">
-                        <div class="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
-                            <svg class="w-6 h-6 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                            </svg>
-                        </div>
-                        <div>
-                            <h2 class="text-xl font-bold text-red-400">AI Response Error</h2>
-                            <p class="text-sm text-gray-400">{{ errorDetails.message }}</p>
-                        </div>
-                    </div>
-                    <button @click="dismissError" class="p-2 hover:bg-white/10 rounded-lg transition-colors">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                    </button>
-                </div>
-
-                <!-- Content -->
-                <div class="flex-1 overflow-y-auto p-6 space-y-4">
-                    <!-- Parse Error -->
-                    <div v-if="errorDetails.parseError" class="bg-black/30 rounded-xl p-4 border border-white/5">
-                        <h3 class="text-sm font-semibold text-gray-300 mb-2 uppercase tracking-wider">Parse Error</h3>
-                        <code class="text-sm text-red-300 font-mono">{{ errorDetails.parseError }}</code>
-                    </div>
-
-                    <!-- Raw Response -->
-                    <div class="bg-black/30 rounded-xl p-4 border border-white/5">
-                        <h3 class="text-sm font-semibold text-gray-300 mb-2 uppercase tracking-wider">Raw AI Response</h3>
-                        <pre class="text-xs text-gray-400 font-mono whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto bg-black/50 rounded-lg p-4">{{ errorDetails.rawResponse }}</pre>
-                    </div>
-                </div>
-
-                <!-- Footer -->
-                <div class="p-6 border-t border-white/10 bg-black/30 flex items-center justify-between gap-4">
-                    <p class="text-xs text-gray-500">Copy this information when reporting issues.</p>
-                    <div class="flex gap-3">
-                        <button @click="dismissError"
-                            class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10">
-                            Dismiss
-                        </button>
-                        <button @click="copyErrorDetails"
-                            class="px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl transition-all flex items-center gap-2">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                            </svg>
-                            Copy All
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </transition>
+    <ErrorOverlay
+        :show="showErrorOverlay"
+        :message="errorDetails.message"
+        :rawResponse="errorDetails.rawResponse"
+        :parseError="errorDetails.parseError"
+        @dismiss="dismissError"
+        @update:status="updateStatus"
+    />
 </template>
 
 <style scoped>

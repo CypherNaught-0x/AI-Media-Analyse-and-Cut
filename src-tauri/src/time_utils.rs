@@ -1,5 +1,38 @@
 use anyhow::{anyhow, Result};
 
+/// Simple time parser for MM:SS or HH:MM:SS format
+/// Returns seconds as f64
+pub fn parse_time(time_str: &str) -> f64 {
+    let parts: Vec<&str> = time_str.split(':').collect();
+    match parts.len() {
+        3 => {
+            let h: f64 = parts[0].parse().unwrap_or(0.0);
+            let m: f64 = parts[1].parse().unwrap_or(0.0);
+            let s: f64 = parts[2].parse().unwrap_or(0.0);
+            h * 3600.0 + m * 60.0 + s
+        }
+        2 => {
+            let m: f64 = parts[0].parse().unwrap_or(0.0);
+            let s: f64 = parts[1].parse().unwrap_or(0.0);
+            m * 60.0 + s
+        }
+        1 => parts[0].parse().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// Format seconds to time string (MM:SS.mmm or HH:MM:SS.mmm)
+pub fn format_time(seconds: f64) -> String {
+    let h = (seconds / 3600.0).floor() as i32;
+    let m = ((seconds % 3600.0) / 60.0).floor() as i32;
+    let s = seconds % 60.0;
+    if h > 0 {
+        format!("{:02}:{:02}:{:06.3}", h, m, s)
+    } else {
+        format!("{:02}:{:06.3}", m, s)
+    }
+}
+
 /// Raw timestamp parser without correction logic - used internally.
 /// Replicates the logic from the provided Python snippet.
 pub fn parse_timestamp_to_seconds_raw(ts: &str) -> Result<f64> {
