@@ -436,7 +436,7 @@ async fn export_podcast(
             let _ = window.emit("progress", time);
         },
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e: anyhow::Error| e.to_string())
 }
 
 #[tauri::command]
@@ -454,7 +454,7 @@ async fn export_podcast_clips(
     export_podcast_clips_fn(&input, &segments, start_padding, end_padding, &output, move |time| {
         let _ = window.emit("progress", time);
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e: anyhow::Error| e.to_string())
 }
 
 #[tauri::command]
