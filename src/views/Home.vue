@@ -16,8 +16,9 @@ import ClipGenerator from "../components/ClipGenerator.vue";
 import ClipList from "../components/ClipList.vue";
 import StatusBar from "../components/StatusBar.vue";
 import { useSettings } from "../composables/useSettings";
-import { parseTime, adjustTimestamp } from "../composables/useTimeFormat";
+import { parseTime, adjustTimestamp, formatTime } from "../composables/useTimeFormat";
 import { generateSubtitleContent } from "../utils/subtitle";
+import type { Clip } from "../types";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -72,6 +73,13 @@ const videoRef = ref<HTMLVideoElement | null>(null);
 const speakerCount = ref<number | null>(null);
 const context = ref("");
 const useAdvancedAlignment = ref(false);
+const clipCount = ref(3);
+const clipMinDuration = ref(10);
+const clipMaxDuration = ref(120);
+const clipTopic = ref("");
+const allowSplicing = ref(false);
+const clips = ref<Clip[]>([]);
+const lastExportPath = ref("");
 
 const lastAnalyzedSettings = ref({
     context: '',
@@ -297,22 +305,6 @@ function dismissError() {
     showErrorOverlay.value = false;
 }
 
-async function selectFile() {
-    try {
-        const selected = await open({
-            multiple: false,
-            filters: [{
-                name: 'Media',
-                extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'wmv', 'm4v', 'mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a', 'wma']
-            }]
-        });
-
-        if (selected && typeof selected === 'string') {
-            inputPath.value = selected;
-        }
-    } catch (e) {
-        console.error("Failed to open dialog:", e);
-    }
 let progressInterval: number | null = null;
 
 function startSimulatedProgress(estimatedSeconds: number) {
@@ -989,6 +981,11 @@ function updateProcessing(processing: boolean) {
                     @update:status="updateStatus"
                     @update:processing="updateProcessing"
                 />
+            </transition>
+
+            <!-- Clip Generator -->
+            <transition name="fade">
+                <div v-if="segments.length > 0" class="mb-20">
                     <ClipGenerator
                         v-model:count="clipCount"
                         v-model:minDuration="clipMinDuration"
