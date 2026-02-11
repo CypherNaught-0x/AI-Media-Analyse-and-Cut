@@ -26,3 +26,4 @@ dist-ssr
 # Dev Files
 test_podcast_full.m4a
 .env
+package-lock.json
