@@ -125,10 +125,11 @@ pub fn export_clips<F>(
     input_path: &Path,
     segments: &[ClipSegment],
     output_dir: &Path,
+    fast_mode: bool,
     on_progress: F,
 ) -> Result<()>
 where
-    F: Fn(String) + Send + Sync + 'static + Clone,
+    F: Fn(usize, usize, String) + Send + Sync + 'static + Clone,
 {
     if output_dir.exists() {
         if !output_dir.is_dir() {
@@ -145,6 +146,8 @@ where
 
     info!("Starting export_clips: input={:?}, output_dir={:?}, segments={}", input_path, output_dir, segments.len());
 
+    let total_clips = segments.len();
+
     for (i, segment) in segments.iter().enumerate() {
         let output_filename = build_clip_output_filename(i, segment);
         let output_path = output_dir.join(&output_filename);
@@ -160,23 +163,30 @@ where
             let _ = std::fs::write(&metadata_filename, content);
         }
 
+        let cb = on_progress.clone();
+
         // 2. Cut Video
         // If single segment, use simple cut. If multiple, use cut_video logic (concat).
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
             let mut last_error = None;
-            FfmpegCommand::new()
-                .input(input_path.to_str().unwrap())
-                .args(&[
-                    "-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac",
-                ])
-                .output(output_path.to_str().unwrap())
+            
+            let mut cmd = FfmpegCommand::new();
+            cmd.input(input_path.to_str().unwrap());
+            
+            if fast_mode {
+                cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c", "copy"]);
+            } else {
+                cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac"]);
+            }
+
+            cmd.output(output_path.to_str().unwrap())
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
                 .iter()
                 .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
                 .for_each(|event| match event {
-                    FfmpegEvent::Progress(p) => on_progress(p.time),
+                    FfmpegEvent::Progress(p) => cb(i, total_clips, p.time),
                     FfmpegEvent::Log(_level, msg) => {
                         debug!("[FFmpeg Log] {}", msg);
                     }
@@ -197,9 +207,8 @@ where
             }
         } else {
             // Use existing cut_video logic which handles concat
-            let cb = on_progress.clone();
             cut_video(input_path, &segment.segments, &output_path, move |time| {
-                cb(time);
+                cb(i, total_clips, time);
             })?;
         }
     }

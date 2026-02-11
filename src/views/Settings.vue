@@ -4,6 +4,10 @@ import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import { getVersion } from '@tauri-apps/api/app';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import Toast from '../components/Toast.vue';
 
 const router = useRouter();
 const { settings, updateSettings, modelFetchState, updateModelFetchState } = useSettings();
@@ -12,6 +16,8 @@ const localBaseUrl = ref(settings.value.baseUrl);
 const localApiKey = ref(settings.value.apiKey);
 const localModel = ref(settings.value.model);
 const availableModels = ref<string[]>(modelFetchState.value.availableModels);
+const localPreClipPadding = ref(settings.value.preClipPadding || 0);
+const localPostClipPadding = ref(settings.value.postClipPadding || 0);
 const isFetchingModels = ref(false);
 const fetchError = ref('');
 const showManualInput = ref(false);
@@ -23,11 +29,129 @@ const modelNotInList = computed(() => {
     return !availableModels.value.includes(localModel.value);
 });
 
+const appVersion = ref('');
+const updateStatus = ref('');
+const isCheckingUpdate = ref(false);
+const updateAvailable = ref(false);
+const newVersion = ref('');
+const toastVisible = ref(false);
+const toastMessage = ref('');
+const toastTone = ref<'info' | 'success' | 'error'>('info');
+const toastProgress = ref<number | null>(null);
+const toastActionLabel = ref('');
+const downloadedBytes = ref(0);
+const totalBytes = ref(0);
+let pendingRelaunch = false;
+
+function showToast(message: string, tone: 'info' | 'success' | 'error' = 'info') {
+    toastMessage.value = message;
+    toastTone.value = tone;
+    toastVisible.value = true;
+}
+
+function hideToast() {
+    toastVisible.value = false;
+    toastActionLabel.value = '';
+    toastProgress.value = null;
+}
+
+async function handleToastAction() {
+    if (pendingRelaunch) {
+        await relaunch();
+    }
+}
+
+onMounted(async () => {
+    try {
+        appVersion.value = await getVersion();
+    } catch (e) {
+        console.error('Failed to get app version:', e);
+        appVersion.value = 'Unknown';
+    }
+});
+
+async function checkForUpdates() {
+    isCheckingUpdate.value = true;
+    updateStatus.value = 'Checking for updates...';
+    updateAvailable.value = false;
+    
+    try {
+        const update = await check();
+        if (update) {
+            updateAvailable.value = true;
+            newVersion.value = update.version;
+            updateStatus.value = `Update available: v${update.version}`;
+            
+            const confirmed = await confirm(`Update to v${update.version} is available.\n\nRelease notes:\n${update.body}\n\nDo you want to download and install it now?`);
+            
+            if (confirmed) {
+                updateStatus.value = 'Downloading and installing update...';
+                pendingRelaunch = false;
+                toastActionLabel.value = '';
+                showToast('Downloading update...', 'info');
+                toastProgress.value = 0;
+                downloadedBytes.value = 0;
+                totalBytes.value = 0;
+                
+                try {
+                    await update.downloadAndInstall((event) => {
+                        switch (event.event) {
+                            case 'Started':
+                                totalBytes.value = event.data.contentLength || 0;
+                                toastMessage.value = 'Downloading update...';
+                                toastProgress.value = 0;
+                                downloadedBytes.value = 0;
+                                break;
+                            case 'Progress': {
+                                const chunkLength = event.data.chunkLength || 0;
+                                downloadedBytes.value += chunkLength;
+                                if (totalBytes.value > 0) {
+                                    const nextValue = Math.min(100, (downloadedBytes.value / totalBytes.value) * 100);
+                                    toastProgress.value = Math.max(toastProgress.value || 0, nextValue);
+                                } else {
+                                    toastProgress.value = null;
+                                }
+                                break;
+                            }
+                            case 'Finished':
+                                toastMessage.value = 'Installing update...';
+                                toastProgress.value = null;
+                                break;
+                        }
+                    });
+                } catch (e) {
+                    console.error('Failed to download and install update:', e);
+                    updateStatus.value = `Update failed: ${e}`;
+                    showToast('Update failed to download or install.', 'error');
+                    return;
+                }
+
+                updateStatus.value = 'Update installed. Restart to apply changes.';
+                pendingRelaunch = true;
+                toastActionLabel.value = 'Restart now';
+                showToast('Update installed. Restart to apply changes.', 'success');
+            } else {
+                updateStatus.value = 'Update cancelled.';
+            }
+        } else {
+            updateStatus.value = 'You are on the latest version.';
+        }
+    } catch (e) {
+        console.error('Failed to check for updates:', e);
+        updateStatus.value = `Error checking for updates: ${e}`;
+        showToast('Update check failed. Try again later.', 'error');
+    } finally {
+        isCheckingUpdate.value = false;
+    }
+}
+
 const hasChanges = computed(() => {
     return (
         localBaseUrl.value !== settings.value.baseUrl ||
         localApiKey.value !== settings.value.apiKey ||
-        localModel.value !== settings.value.model
+        localModel.value !== settings.value.model ||
+        localPreClipPadding.value !== (settings.value.preClipPadding || 0) ||
+        localPostClipPadding.value !== (settings.value.postClipPadding || 0)
     );
 });
 
@@ -180,6 +304,8 @@ function saveSettings() {
         baseUrl: normalizedUrl,
         apiKey: localApiKey.value,
         model: localModel.value,
+        preClipPadding: localPreClipPadding.value,
+        postClipPadding: localPostClipPadding.value,
     });
     router.push('/');
 }
@@ -272,6 +398,49 @@ function cancel() {
                     <p v-else class="text-xs text-gray-500 mt-1">{{ endpointInfo }}</p>
                 </div>
 
+                <!-- Clip Settings -->
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider">
+                        Clip Settings
+                    </label>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-2">Pre-Clip Padding (seconds)</label>
+                            <input v-model.number="localPreClipPadding" type="number" step="0.1" min="0"
+                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                                placeholder="0.0" />
+                            <p class="text-xs text-gray-500 mt-2">Added before the start of each clip</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-2">Post-Clip Padding (seconds)</label>
+                            <input v-model.number="localPostClipPadding" type="number" step="0.1" min="0"
+                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                                placeholder="0.0" />
+                            <p class="text-xs text-gray-500 mt-2">Added after the end of each clip</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Application Info -->
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                        Application Info
+                    </label>
+                    <div class="flex items-center justify-between bg-black/20 p-4 rounded-2xl border border-white/10">
+                        <div>
+                            <p class="text-gray-300 font-medium">Version: <span class="text-white">{{ appVersion }}</span></p>
+                            <p v-if="updateStatus" class="text-xs mt-1" :class="updateAvailable ? 'text-green-400' : 'text-gray-400'">
+                                {{ updateStatus }}
+                            </p>
+                        </div>
+                        <button @click="checkForUpdates" :disabled="isCheckingUpdate"
+                            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-95">
+                            {{ isCheckingUpdate ? 'Checking...' : 'Check for Updates' }}
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Troubleshooting -->
                 <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
                     <label
@@ -301,4 +470,13 @@ function cancel() {
             </div>
         </div>
     </div>
+    <Toast
+        :show="toastVisible"
+        :message="toastMessage"
+        :tone="toastTone"
+        :progress="toastProgress"
+        :action-label="toastActionLabel"
+        @dismiss="hideToast"
+        @action="handleToastAction"
+    />
 </template>
