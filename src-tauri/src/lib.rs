@@ -154,6 +154,8 @@ async fn prepare_audio_for_ai(
 
 mod alignment;
 pub mod gemini;
+pub mod podcast;
+pub mod retry;
 pub mod silence;
 pub mod time_utils;
 mod upload;
@@ -161,6 +163,10 @@ pub mod video;
 
 use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
+use crate::podcast::{
+    calculate_segments_duration as calc_duration, export_podcast as export_podcast_fn,
+    export_podcast_clips as export_podcast_clips_fn, PodcastSegment,
+};
 use crate::silence::{detect_silence, remove_silence};
 use crate::upload::upload_file_and_wait;
 use crate::video::{
@@ -361,6 +367,101 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), Stri
     Ok(())
 }
 
+#[tauri::command]
+async fn generate_podcast(
+    api_key: String,
+    base_url: String,
+    model: String,
+    transcript: String,
+    min_duration: u32,
+    max_duration: u32,
+    context: Option<String>,
+) -> Result<String, String> {
+    let client = GeminiClient::new(api_key, base_url, model);
+    client
+        .generate_podcast(&transcript, min_duration, max_duration, context)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn refine_podcast(
+    api_key: String,
+    base_url: String,
+    model: String,
+    original_transcript: String,
+    current_script: String,
+    current_duration: f64,
+    target_min: u32,
+    target_max: u32,
+) -> Result<String, String> {
+    let client = GeminiClient::new(api_key, base_url, model);
+    client
+        .refine_podcast(
+            &original_transcript,
+            &current_script,
+            current_duration,
+            target_min,
+            target_max,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_podcast(
+    window: tauri::Window,
+    input_path: String,
+    segments: Vec<PodcastSegment>,
+    intro_path: Option<String>,
+    outro_path: Option<String>,
+    start_padding: f64,
+    end_padding: f64,
+    output_path: String,
+) -> Result<(), String> {
+    let input = PathBuf::from(input_path);
+    let output = PathBuf::from(output_path);
+    let intro = intro_path.map(PathBuf::from);
+    let outro = outro_path.map(PathBuf::from);
+
+    export_podcast_fn(
+        &input,
+        &segments,
+        intro.as_deref(),
+        outro.as_deref(),
+        start_padding,
+        end_padding,
+        &output,
+        move |time| {
+            let _ = window.emit("progress", time);
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_podcast_clips(
+    window: tauri::Window,
+    input_path: String,
+    segments: Vec<PodcastSegment>,
+    start_padding: f64,
+    end_padding: f64,
+    output_dir: String,
+) -> Result<(), String> {
+    let input = PathBuf::from(input_path);
+    let output = PathBuf::from(output_dir);
+
+    export_podcast_clips_fn(&input, &segments, start_padding, end_padding, &output, move |time| {
+        let _ = window.emit("progress", time);
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn calculate_segments_duration(segments: Vec<PodcastSegment>) -> f64 {
+    calc_duration(&segments)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -386,7 +487,12 @@ pub fn run() {
             detect_silence,
             remove_silence,
             translate_transcript,
-            zip_logs
+            zip_logs,
+            generate_podcast,
+            refine_podcast,
+            export_podcast,
+            export_podcast_clips,
+            calculate_segments_duration
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
