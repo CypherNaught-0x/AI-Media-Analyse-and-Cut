@@ -184,11 +184,11 @@ impl ParakeetModel {
         let lens_tensor = Value::from_array(([batch], vec![audio_len as i64]))?;
 
         let mut fe_inputs: HashMap<String, Value> = HashMap::new();
-        for input in &self.feature_extractor_session.inputs {
-            if input.name.contains("waveforms") && !input.name.contains("lens") {
-                fe_inputs.insert(input.name.clone(), audio_tensor.clone().into_dyn());
-            } else if input.name.contains("lens") {
-                fe_inputs.insert(input.name.clone(), lens_tensor.clone().into_dyn());
+        for input in self.feature_extractor_session.inputs() {
+            if input.name().contains("waveforms") && !input.name().contains("lens") {
+                fe_inputs.insert(input.name().to_string(), audio_tensor.clone().into_dyn());
+            } else if input.name().contains("lens") {
+                fe_inputs.insert(input.name().to_string(), lens_tensor.clone().into_dyn());
             }
         }
 
@@ -226,12 +226,12 @@ impl ParakeetModel {
 
         // 2. Encoder
         let mut enc_inputs: HashMap<String, Value> = HashMap::new();
-        for input in &self.encoder_session.inputs {
-            if input.name.contains("len") {
+        for input in self.encoder_session.inputs() {
+            if input.name().contains("len") {
                 let l = Value::from_array(([batch], vec![t_len]))?;
-                enc_inputs.insert(input.name.clone(), l.into_dyn());
+                enc_inputs.insert(input.name().to_string(), l.into_dyn());
             } else {
-                enc_inputs.insert(input.name.clone(), features_tensor.clone().into_dyn());
+                enc_inputs.insert(input.name().to_string(), features_tensor.clone().into_dyn());
             }
         }
 
