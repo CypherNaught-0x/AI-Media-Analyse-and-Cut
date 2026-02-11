@@ -69,17 +69,6 @@ describe('Home.vue', () => {
     vi.clearAllMocks();
   });
 
-  it('renders correctly', async () => {
-    const wrapper = mount(Home, {
-      global: {
-        plugins: [router],
-      },
-    });
-    
-    await flushPromises();
-    expect(wrapper.text()).toContain('Media AI Cutter');
-  });
-
   it('initializes ffmpeg on mount', async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     mount(Home, {

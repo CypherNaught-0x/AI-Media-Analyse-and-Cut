@@ -799,9 +799,6 @@ function updateProcessing(processing: boolean) {
 <template>
     <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30">
         <div class="max-w-5xl mx-auto">
-            <h1 class="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
-                Media AI Cutter
-            </h1>
             <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
 
                 <!-- Settings Display -->
