@@ -163,25 +163,39 @@ pub async fn remove_silence(path: String, min_duration: Option<f64>) -> Result<P
 
     info!("Running FFmpeg to remove silence...");
     
+    let mut last_error = None;
+
     FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
         .args(&[
             "-y",
             "-filter_complex", &filter_complex,
             "-map", "[outa]",
-            "-c:a", "libvorbis",
-            "-q:a", "4",
+            "-c:a", "libopus",
+            "-b:a", "96k",
         ])
         .output(output_path.to_str().unwrap())
         .spawn()
         .map_err(|e| e.to_string())?
         .iter()
         .map_err(|e| e.to_string())?
-        .for_each(|event| {
-             if let FfmpegEvent::Log(_, msg) = event {
-                 debug!("[FFmpeg Remove Silence] {}", msg);
-             }
+        .for_each(|event| match event {
+            FfmpegEvent::Log(_, msg) => {
+                debug!("[FFmpeg Remove Silence] {}", msg);
+            }
+            FfmpegEvent::Error(err) => {
+                last_error = Some(err);
+            }
+            _ => {}
         });
+
+    if !output_path.exists() {
+        let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
+        return Err(format!(
+            "FFmpeg failed to create output file: {:?}. Error: {}",
+            output_path, msg
+        ));
+    }
 
     info!("Silence removed. New file: {:?}", output_path);
 
@@ -306,4 +320,3 @@ mod tests {
         // std::fs::remove_file(processed.path).unwrap();
     }
 }
-
