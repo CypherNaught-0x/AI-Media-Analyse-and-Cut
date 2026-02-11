@@ -1,7 +1,7 @@
 {
   "name": "ai-media-cutter",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest",
     "version:bump": "node scripts/bump-version.js",
-    "publish:tag": "git tag v$npm_package_version && git push --follow-tags"
+    "publish:tag": "git tag app-v$npm_package_version && git push --follow-tags"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",
