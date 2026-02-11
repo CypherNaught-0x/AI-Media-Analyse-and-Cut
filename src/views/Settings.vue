@@ -7,6 +7,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import Toast from '../components/Toast.vue';
 
 const router = useRouter();
 const { settings, updateSettings, modelFetchState, updateModelFetchState } = useSettings();
@@ -33,6 +34,32 @@ const updateStatus = ref('');
 const isCheckingUpdate = ref(false);
 const updateAvailable = ref(false);
 const newVersion = ref('');
+const toastVisible = ref(false);
+const toastMessage = ref('');
+const toastTone = ref<'info' | 'success' | 'error'>('info');
+const toastProgress = ref<number | null>(null);
+const toastActionLabel = ref('');
+const downloadedBytes = ref(0);
+const totalBytes = ref(0);
+let pendingRelaunch = false;
+
+function showToast(message: string, tone: 'info' | 'success' | 'error' = 'info') {
+    toastMessage.value = message;
+    toastTone.value = tone;
+    toastVisible.value = true;
+}
+
+function hideToast() {
+    toastVisible.value = false;
+    toastActionLabel.value = '';
+    toastProgress.value = null;
+}
+
+async function handleToastAction() {
+    if (pendingRelaunch) {
+        await relaunch();
+    }
+}
 
 onMounted(async () => {
     try {
@@ -59,27 +86,50 @@ async function checkForUpdates() {
             
             if (confirmed) {
                 updateStatus.value = 'Downloading and installing update...';
-                let downloaded = 0;
-                let contentLength = 0;
+                pendingRelaunch = false;
+                toastActionLabel.value = '';
+                showToast('Downloading update...', 'info');
+                toastProgress.value = 0;
+                downloadedBytes.value = 0;
+                totalBytes.value = 0;
                 
-                await update.downloadAndInstall((event) => {
-                    switch (event.event) {
-                        case 'Started':
-                            contentLength = event.data.contentLength || 0;
-                            console.log(`started downloading ${contentLength} bytes`);
-                            break;
-                        case 'Progress':
-                            downloaded += event.data.chunkLength;
-                            console.log(`downloaded ${downloaded} from ${contentLength}`);
-                            break;
-                        case 'Finished':
-                            console.log('download finished');
-                            break;
-                    }
-                });
-                
-                updateStatus.value = 'Update installed. Restarting...';
-                await relaunch();
+                try {
+                    await update.downloadAndInstall((event) => {
+                        switch (event.event) {
+                            case 'Started':
+                                totalBytes.value = event.data.contentLength || 0;
+                                toastMessage.value = 'Downloading update...';
+                                toastProgress.value = 0;
+                                downloadedBytes.value = 0;
+                                break;
+                            case 'Progress': {
+                                const chunkLength = event.data.chunkLength || 0;
+                                downloadedBytes.value += chunkLength;
+                                if (totalBytes.value > 0) {
+                                    const nextValue = Math.min(100, (downloadedBytes.value / totalBytes.value) * 100);
+                                    toastProgress.value = Math.max(toastProgress.value || 0, nextValue);
+                                } else {
+                                    toastProgress.value = null;
+                                }
+                                break;
+                            }
+                            case 'Finished':
+                                toastMessage.value = 'Installing update...';
+                                toastProgress.value = null;
+                                break;
+                        }
+                    });
+                } catch (e) {
+                    console.error('Failed to download and install update:', e);
+                    updateStatus.value = `Update failed: ${e}`;
+                    showToast('Update failed to download or install.', 'error');
+                    return;
+                }
+
+                updateStatus.value = 'Update installed. Restart to apply changes.';
+                pendingRelaunch = true;
+                toastActionLabel.value = 'Restart now';
+                showToast('Update installed. Restart to apply changes.', 'success');
             } else {
                 updateStatus.value = 'Update cancelled.';
             }
@@ -89,6 +139,7 @@ async function checkForUpdates() {
     } catch (e) {
         console.error('Failed to check for updates:', e);
         updateStatus.value = `Error checking for updates: ${e}`;
+        showToast('Update check failed. Try again later.', 'error');
     } finally {
         isCheckingUpdate.value = false;
     }
@@ -419,4 +470,13 @@ function cancel() {
             </div>
         </div>
     </div>
+    <Toast
+        :show="toastVisible"
+        :message="toastMessage"
+        :tone="toastTone"
+        :progress="toastProgress"
+        :action-label="toastActionLabel"
+        @dismiss="hideToast"
+        @action="handleToastAction"
+    />
 </template>
