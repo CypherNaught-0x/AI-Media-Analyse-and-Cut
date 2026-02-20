@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 import { useSettings } from '../composables/useSettings';
 
 const { settings } = useSettings();
@@ -35,6 +37,26 @@ Base URL: ${settings.value.baseUrl}`;
     emit('update:status', "Error details copied to clipboard.");
   } catch (e) {
     console.error("Failed to copy:", e);
+  }
+}
+
+async function exportLogs() {
+  try {
+    const path = await save({
+      filters: [{
+        name: 'Zip Files',
+        extensions: ['zip']
+      }],
+      defaultPath: 'ai-media-cutter-logs.zip'
+    });
+
+    if (!path) return;
+
+    await invoke('zip_logs', { targetPath: path });
+    emit('update:status', 'Logs exported successfully.');
+  } catch (e) {
+    console.error("Failed to export logs:", e);
+    emit('update:status', `Failed to export logs: ${e}`);
   }
 }
 </script>
@@ -80,11 +102,18 @@ Base URL: ${settings.value.baseUrl}`;
 
         <!-- Footer -->
         <div class="p-6 border-t border-white/10 bg-black/30 flex items-center justify-between gap-4">
-          <p class="text-xs text-gray-500">Copy this information when reporting issues.</p>
+          <p class="text-xs text-gray-500">Export logs and copy this information when reporting issues.</p>
           <div class="flex gap-3">
             <button @click="emit('dismiss')"
               class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10">
               Dismiss
+            </button>
+            <button @click="exportLogs"
+              class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10 flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M7 10l5 5m0 0l5-5m-5 5V3" />
+              </svg>
+              Export Logs
             </button>
             <button @click="copyErrorDetails"
               class="px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl transition-all flex items-center gap-2">
