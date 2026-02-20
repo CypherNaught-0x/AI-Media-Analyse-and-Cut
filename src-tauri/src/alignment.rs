@@ -8,7 +8,7 @@ use ort::{
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use symphonia::core::audio::AudioBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -167,6 +167,7 @@ impl ParakeetModel {
             pos += chunk_size - overlap;
         }
 
+        let segments = merge_chunk_overlap_segments(segments, overlap as f32 / sr);
         let text = segments
             .iter()
             .map(|s| s.text.as_str())
@@ -330,6 +331,211 @@ impl ParakeetModel {
         }
         Ok(decoded)
     }
+}
+
+#[derive(Debug, Clone)]
+struct TokenWord {
+    raw: String,
+    normalized: String,
+}
+
+fn normalize_word(word: &str) -> String {
+    let mut normalized = String::new();
+
+    for ch in word.chars() {
+        if ch.is_alphanumeric() || ch == '\'' {
+            for lower in ch.to_lowercase() {
+                normalized.push(lower);
+            }
+        }
+    }
+
+    normalized
+}
+
+fn tokenize_words(text: &str) -> Vec<TokenWord> {
+    text.split_whitespace()
+        .filter_map(|raw| {
+            let normalized = normalize_word(raw);
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(TokenWord {
+                    raw: raw.to_string(),
+                    normalized,
+                })
+            }
+        })
+        .collect()
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+
+    if a_chars.is_empty() {
+        return b_chars.len();
+    }
+    if b_chars.is_empty() {
+        return a_chars.len();
+    }
+
+    let mut previous: Vec<usize> = (0..=b_chars.len()).collect();
+
+    for (i, a_char) in a_chars.iter().enumerate() {
+        let mut current = vec![i + 1; b_chars.len() + 1];
+        for (j, b_char) in b_chars.iter().enumerate() {
+            let cost = usize::from(a_char != b_char);
+            current[j + 1] = (current[j] + 1)
+                .min(previous[j + 1] + 1)
+                .min(previous[j] + cost);
+        }
+        previous = current;
+    }
+
+    previous[b_chars.len()]
+}
+
+fn are_words_similar(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+
+    let a_len = a.chars().count();
+    let b_len = b.chars().count();
+    let max_len = a_len.max(b_len);
+
+    if max_len < 3 {
+        return false;
+    }
+
+    if a_len >= 4 && b_len >= 4 && (a.starts_with(b) || b.starts_with(a)) {
+        return true;
+    }
+
+    let dist = levenshtein_distance(a, b);
+    let similarity = 1.0 - (dist as f32 / max_len as f32);
+    similarity >= 0.75
+}
+
+fn fuzzy_suffix_prefix_overlap_words(
+    left: &[TokenWord],
+    right: &[TokenWord],
+    min_overlap_words: usize,
+) -> usize {
+    let max_overlap = left.len().min(right.len()).min(40);
+    if max_overlap < min_overlap_words {
+        return 0;
+    }
+
+    for overlap_size in (min_overlap_words..=max_overlap).rev() {
+        let left_slice = &left[left.len() - overlap_size..];
+        let right_slice = &right[..overlap_size];
+
+        let matches = left_slice
+            .iter()
+            .zip(right_slice.iter())
+            .filter(|(l, r)| are_words_similar(&l.normalized, &r.normalized))
+            .count();
+
+        if (matches as f32 / overlap_size as f32) >= 0.8 {
+            return overlap_size;
+        }
+    }
+
+    0
+}
+
+fn trim_prefix_words(text: &str, words_to_trim: usize) -> String {
+    let words = tokenize_words(text);
+    words
+        .iter()
+        .skip(words_to_trim)
+        .map(|w| w.raw.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn are_near_duplicate_texts(a: &str, b: &str) -> bool {
+    let a_words = tokenize_words(a);
+    let b_words = tokenize_words(b);
+
+    if a_words.len() < 4 || b_words.len() < 4 {
+        return false;
+    }
+
+    let a_set: HashSet<String> = a_words.iter().map(|w| w.normalized.clone()).collect();
+    let b_set: HashSet<String> = b_words.iter().map(|w| w.normalized.clone()).collect();
+
+    if a_set.is_empty() || b_set.is_empty() {
+        return false;
+    }
+
+    let common = a_set.intersection(&b_set).count();
+    let containment = common as f32 / a_set.len().min(b_set.len()) as f32;
+    containment >= 0.9
+}
+
+fn is_merge_boundary(
+    previous: &TranscriptionSegment,
+    current: &TranscriptionSegment,
+    overlap_seconds: f32,
+) -> bool {
+    let distance = if current.start > previous.end {
+        current.start - previous.end
+    } else {
+        previous.end - current.start
+    };
+
+    distance <= overlap_seconds + 1.0
+}
+
+fn merge_chunk_overlap_segments(
+    segments: Vec<TranscriptionSegment>,
+    overlap_seconds: f32,
+) -> Vec<TranscriptionSegment> {
+    let mut merged: Vec<TranscriptionSegment> = Vec::with_capacity(segments.len());
+
+    for mut current in segments {
+        if current.text.trim().is_empty() {
+            continue;
+        }
+
+        if let Some(previous) = merged.last_mut() {
+            if is_merge_boundary(previous, &current, overlap_seconds) {
+                let previous_words = tokenize_words(&previous.text);
+                let current_words = tokenize_words(&current.text);
+                let overlap_words =
+                    fuzzy_suffix_prefix_overlap_words(&previous_words, &current_words, 4);
+
+                if overlap_words > 0 {
+                    let trimmed = trim_prefix_words(&current.text, overlap_words);
+                    if trimmed.trim().is_empty() {
+                        continue;
+                    }
+
+                    let duration = (current.end - current.start).max(0.0);
+                    if duration > 0.0 && !current_words.is_empty() {
+                        let ratio =
+                            (overlap_words as f32 / current_words.len() as f32).clamp(0.0, 1.0);
+                        current.start += (overlap_seconds * ratio).min(duration);
+                    }
+
+                    if current.start < previous.end && previous.end < current.end {
+                        current.start = previous.end;
+                    }
+
+                    current.text = trimmed;
+                } else if are_near_duplicate_texts(&previous.text, &current.text) {
+                    continue;
+                }
+            }
+        }
+
+        merged.push(current);
+    }
+
+    merged
 }
 
 fn tokens_to_text(token_ids: &[usize], vocab: &VocabInfo) -> String {
@@ -563,6 +769,62 @@ mod tests {
 
         let text = tokens_to_text(&[0, 1], &vocab);
         assert_eq!(text, "Hello World");
+    }
+
+    #[test]
+    fn test_fuzzy_suffix_prefix_overlap_allows_minor_variations() {
+        let left = tokenize_words("This is really important for every team");
+        let right = tokenize_words("really importan for every team to know");
+        let overlap = fuzzy_suffix_prefix_overlap_words(&left, &right, 4);
+        assert_eq!(overlap, 5);
+    }
+
+    #[test]
+    fn test_merge_chunk_overlap_segments_trims_duplicate_prefix() {
+        let segments = vec![
+            TranscriptionSegment {
+                start: 0.0,
+                end: 30.0,
+                text: "Intro section and this is really important for every team".to_string(),
+            },
+            TranscriptionSegment {
+                start: 27.0,
+                end: 57.0,
+                text: "really importan for every team to understand and apply daily".to_string(),
+            },
+        ];
+
+        let merged = merge_chunk_overlap_segments(segments, 3.0);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(
+            merged[0].text,
+            "Intro section and this is really important for every team"
+        );
+        assert_eq!(merged[1].text, "to understand and apply daily");
+        assert!((merged[1].start - 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_merge_chunk_overlap_segments_drops_near_duplicate_chunk() {
+        let segments = vec![
+            TranscriptionSegment {
+                start: 0.0,
+                end: 30.0,
+                text: "We covered the roadmap and then discussed release planning".to_string(),
+            },
+            TranscriptionSegment {
+                start: 27.0,
+                end: 57.0,
+                text: "We covered roadmap and then discussed the release planning".to_string(),
+            },
+        ];
+
+        let merged = merge_chunk_overlap_segments(segments, 3.0);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].text,
+            "We covered the roadmap and then discussed release planning"
+        );
     }
 
     #[test]
