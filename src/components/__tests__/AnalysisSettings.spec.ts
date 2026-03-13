@@ -10,6 +10,7 @@ describe('AnalysisSettings.vue', () => {
         glossary: 'test glossary',
         speakerCount: 2,
         removeFillerWords: false,
+        trimSilence: true,
       },
     });
     
@@ -25,6 +26,7 @@ describe('AnalysisSettings.vue', () => {
         glossary: '',
         speakerCount: null,
         removeFillerWords: false,
+        trimSilence: true,
       },
     });
 
@@ -37,7 +39,10 @@ describe('AnalysisSettings.vue', () => {
     await wrapper.find('input[type="number"]').setValue(3);
     expect(wrapper.emitted('update:speakerCount')![0]).toEqual([3]);
     
-    await wrapper.find('.cursor-pointer').trigger('click');
+    await wrapper.findAll('.cursor-pointer')[0].trigger('click');
     expect(wrapper.emitted('update:removeFillerWords')![0]).toEqual([true]);
+
+    await wrapper.findAll('.cursor-pointer')[1].trigger('click');
+    expect(wrapper.emitted('update:trimSilence')![0]).toEqual([false]);
   });
 });
