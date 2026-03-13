@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { ref } from 'vue';
 import Settings from '../Settings.vue';
 import { createRouter, createWebHistory } from 'vue-router';
 
@@ -14,18 +15,25 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
 
 // Mock useSettings
 const updateSettingsMock = vi.fn();
+const updateModelFetchStateMock = vi.fn();
+const settingsRef = ref({
+  apiKey: 'test-api-key',
+  baseUrl: 'https://test.url',
+  model: 'test-model',
+  glossary: '',
+  preClipPadding: 0,
+  postClipPadding: 0,
+});
+const modelFetchStateRef = ref({
+  availableModels: [],
+  supportsModelFetch: true,
+});
 vi.mock('../../composables/useSettings', () => ({
   useSettings: () => ({
-    settings: {
-      value: {
-        apiKey: 'test-api-key',
-        baseUrl: 'https://test.url',
-        model: 'test-model',
-        preClipPadding: 0,
-        postClipPadding: 0,
-      },
-    },
+    settings: settingsRef,
     updateSettings: updateSettingsMock,
+    modelFetchState: modelFetchStateRef,
+    updateModelFetchState: updateModelFetchStateMock,
   }),
 }));
 
@@ -37,6 +45,18 @@ const router = createRouter({
 describe('Settings.vue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    settingsRef.value = {
+      apiKey: 'test-api-key',
+      baseUrl: 'https://test.url',
+      model: 'test-model',
+      glossary: '',
+      preClipPadding: 0,
+      postClipPadding: 0,
+    };
+    modelFetchStateRef.value = {
+      availableModels: [],
+      supportsModelFetch: true,
+    };
     globalThis.fetch = vi.fn();
   });
 
@@ -66,12 +86,16 @@ describe('Settings.vue', () => {
 
     // Trigger fetch models
     // We need to make sure the button is enabled (apiKey is present in mock)
-    const fetchButton = wrapper.findAll('button').find(b => b.text() === 'Fetch Models');
+    const fetchButton = wrapper.findAll('button').find(b => b.text() === 'Refresh Models');
     await fetchButton!.trigger('click');
     
     await flushPromises();
 
     expect(globalThis.fetch).toHaveBeenCalled();
+    expect(updateModelFetchStateMock).toHaveBeenCalledWith({
+      supportsModelFetch: true,
+      availableModels: ['gemini-pro'],
+    });
   });
 
   it('saves settings', async () => {

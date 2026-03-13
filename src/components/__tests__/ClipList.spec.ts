@@ -42,6 +42,7 @@ describe('ClipList.vue', () => {
     expect(eventArgs.clips).toHaveLength(1); // Default is all
     expect(eventArgs.includeSubtitles).toBe(true);
     expect(eventArgs.fastMode).toBe(true);
+    expect(eventArgs.trimBoundarySilence).toBe(false);
   });
 
   it('selects clips and exports only selected', async () => {
@@ -64,5 +65,23 @@ describe('ClipList.vue', () => {
     const eventArgs = wrapper.emitted('export')![0][0] as any;
     expect(eventArgs.clips).toHaveLength(1);
     expect(eventArgs.clips[0].title).toBe('Clip 2');
+  });
+
+  it('includes silence trimming when the toggle is enabled', async () => {
+    const wrapper = mount(ClipList, {
+      props: {
+        clips,
+        lastExportPath: '',
+        isProcessing: false,
+      },
+    });
+
+    await wrapper.get('[data-testid=\"trim-boundary-silence\"]').setValue(true);
+
+    const exportButton = wrapper.findAll('button')[0];
+    await exportButton.trigger('click');
+
+    const eventArgs = wrapper.emitted('export')![0][0] as any;
+    expect(eventArgs.trimBoundarySilence).toBe(true);
   });
 });
