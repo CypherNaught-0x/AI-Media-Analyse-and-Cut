@@ -254,13 +254,19 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
             request = request.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
-        let response = request.send().await?;
+        let response = request
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Request to '{}' failed: {}", url, e))?;
 
         if !response.status().is_success() {
             return Err(anyhow::anyhow!("API failed: {}", response.text().await?));
         }
 
-        let res_json: Value = response.json().await?;
+        let res_json: Value = response
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse response from '{}': {}", url, e))?;
 
         // Extract text from response (handle both Google and OpenAI formats)
         let text = if is_google_api {

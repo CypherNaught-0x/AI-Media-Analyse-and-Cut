@@ -9,7 +9,7 @@ import SubtitleExport from "../components/SubtitleExport.vue";
 import ViralClipsGenerator from "../components/ViralClipsGenerator.vue";
 import PodcastGenerator from "../components/PodcastGenerator.vue";
 import ErrorOverlay from "../components/ErrorOverlay.vue";
-import type { TranscriptSegment, AudioInfo, ProcessedAudio } from "../types";
+import type { TranscriptSegment, AudioInfo, ProcessedAudio, SilenceInterval, ClipExportPayload, Clip } from "../types";
 import FileSelector from "../components/FileSelector.vue";
 import AnalysisSettings from "../components/AnalysisSettings.vue";
 import ClipGenerator from "../components/ClipGenerator.vue";
@@ -18,7 +18,7 @@ import StatusBar from "../components/StatusBar.vue";
 import { useSettings } from "../composables/useSettings";
 import { parseTime, adjustTimestamp, formatTime } from "../composables/useTimeFormat";
 import { generateSubtitleContent } from "../utils/subtitle";
-import type { Clip } from "../types";
+import { trimClipBoundarySilence } from "../utils/clipSilence";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -68,6 +68,7 @@ const targetLanguage = ref("");
 const isTranslating = ref(false);
 const showLanguageDropdown = ref(false);
 const removeFillerWords = ref(false);
+const trimSilence = ref(true);
 const videoRef = ref<HTMLVideoElement | null>(null);
 
 const speakerCount = ref<number | null>(null);
@@ -80,12 +81,14 @@ const clipTopic = ref("");
 const allowSplicing = ref(false);
 const clips = ref<Clip[]>([]);
 const lastExportPath = ref("");
+const clipExportSilenceCache = ref<{ path: string; intervals: SilenceInterval[] } | null>(null);
 
 const lastAnalyzedSettings = ref({
     context: '',
     glossary: '',
     speakerCount: null as number | null,
-    removeFillerWords: false
+    removeFillerWords: false,
+    trimSilence: true
 });
 
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
@@ -98,7 +101,8 @@ const settingsChanged = computed(() => {
     return context.value !== lastAnalyzedSettings.value.context ||
            settings.value.glossary !== lastAnalyzedSettings.value.glossary ||
            speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
-           removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords;
+           removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords ||
+           trimSilence.value !== lastAnalyzedSettings.value.trimSilence;
 });
 
 const uniqueSpeakers = computed(() => {
@@ -191,13 +195,17 @@ async function loadTranscript() {
             if (typeof parsed.removeFillerWords === 'boolean') {
                 removeFillerWords.value = parsed.removeFillerWords;
             }
+            if (typeof parsed.trimSilence === 'boolean') {
+                trimSilence.value = parsed.trimSilence;
+            }
             
             // Update last analyzed settings
             lastAnalyzedSettings.value = {
                 context: context.value,
                 glossary: settings.value.glossary,
                 speakerCount: speakerCount.value,
-                removeFillerWords: removeFillerWords.value
+                removeFillerWords: removeFillerWords.value,
+                trimSilence: trimSilence.value
             };
             
             status.value = "Loaded existing transcript and settings.";
@@ -217,7 +225,8 @@ async function saveTranscript() {
             context: context.value,
             glossary: settings.value.glossary,
             speakerCount: speakerCount.value,
-            removeFillerWords: removeFillerWords.value
+            removeFillerWords: removeFillerWords.value,
+            trimSilence: trimSilence.value
         };
         await invoke("write_text_file", { 
             path: transcriptPath, 
@@ -358,14 +367,40 @@ async function processFile() {
     segments.value = [];
 
     try {
-        // 1. Prepare Audio
-        const audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { inputPath: inputPath.value });
+        const failStage = (stage: string, error: unknown) => {
+            const details = error instanceof Error ? error.message : String(error);
+            const message = `${stage} failed.`;
+            showError(message, details);
+            status.value = `${message} ${details}`;
+            throw new Error(message);
+        };
+
+        let audioInfo: AudioInfo;
+        try {
+            audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { inputPath: inputPath.value });
+        } catch (error) {
+            failStage("Audio preparation", error);
+            return;
+        }
         status.value = `Audio prepared: ${audioInfo.path} (${(audioInfo.size / 1024 / 1024).toFixed(2)} MB)`;
 
-        // 1b. Remove Silence
-        status.value = "Removing silence...";
-        const processedAudio = await invoke<ProcessedAudio>("remove_silence", { path: audioInfo.path });
-        console.log(`Found ${processedAudio.silence_intervals.length} silence intervals.`);
+        let processedAudio: ProcessedAudio;
+        if (trimSilence.value) {
+            status.value = "Removing silence...";
+            try {
+                processedAudio = await invoke<ProcessedAudio>("remove_silence", { path: audioInfo.path });
+            } catch (error) {
+                failStage("Silence removal", error);
+                return;
+            }
+            console.log(`Found ${processedAudio.silence_intervals.length} silence intervals.`);
+        } else {
+            processedAudio = {
+                path: audioInfo.path,
+                silence_intervals: [],
+                offsets: [{ min_time: 0.0, offset: 0.0 }]
+            };
+        }
         
         // Use processed audio for upload/analysis
         const analysisAudioPath = processedAudio.path;
@@ -378,11 +413,16 @@ async function processFile() {
             // 2. Upload for Google API (only for large files)
             
             status.value = "Uploading file...";
-            uri = await invoke<string | null>("upload_file", {
-                apiKey: settings.value.apiKey,
-                baseUrl: settings.value.baseUrl,
-                path: analysisAudioPath
-            });
+            try {
+                uri = await invoke<string | null>("upload_file", {
+                    apiKey: settings.value.apiKey,
+                    baseUrl: settings.value.baseUrl,
+                    path: analysisAudioPath
+                });
+            } catch (error) {
+                failStage("Audio upload", error);
+                return;
+            }
 
             if (uri) {
                 status.value = "File uploaded successfully";
@@ -390,7 +430,12 @@ async function processFile() {
         } else {
             // For non-Google APIs, read the file as base64
             status.value = "Encoding audio as base64...";
-            audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
+            try {
+                audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
+            } catch (error) {
+                failStage("Audio encoding", error);
+                return;
+            }
             status.value = "Audio encoded successfully";
         }
 
@@ -402,17 +447,22 @@ async function processFile() {
         startSimulatedProgress(estimatedTime);
         let response: string;
         try {
-            response = await invoke<string>("analyze_audio", {
-                apiKey: settings.value.apiKey,
-                baseUrl: settings.value.baseUrl,
-                model: settings.value.model,
-                context: context.value,
-                glossary: settings.value.glossary,
-                speakerCount: speakerCount.value,
-                removeFillerWords: removeFillerWords.value,
-                audioUri: uri,
-                audioBase64: audioBase64
-            });
+            try {
+                response = await invoke<string>("analyze_audio", {
+                    apiKey: settings.value.apiKey,
+                    baseUrl: settings.value.baseUrl,
+                    model: settings.value.model,
+                    context: context.value,
+                    glossary: settings.value.glossary,
+                    speakerCount: speakerCount.value,
+                    removeFillerWords: removeFillerWords.value,
+                    audioUri: uri,
+                    audioBase64: audioBase64
+                });
+            } catch (error) {
+                failStage("AI analysis request", error);
+                return;
+            }
         } finally {
             stopSimulatedProgress();
         }
@@ -442,7 +492,8 @@ async function processFile() {
                     context: context.value,
                     glossary: settings.value.glossary,
                     speakerCount: speakerCount.value,
-                    removeFillerWords: removeFillerWords.value
+                    removeFillerWords: removeFillerWords.value,
+                    trimSilence: trimSilence.value
                 };
 
                 await saveTranscript();
@@ -488,7 +539,14 @@ async function processFile() {
         }
 
     } catch (e) {
-        status.value = `Error: ${e}`;
+        const message = e instanceof Error ? e.message : String(e);
+        if (!showErrorOverlay.value) {
+            showError(
+                "Analysis failed before transcription completed.",
+                message
+            );
+        }
+        status.value = message;
     } finally {
         isProcessing.value = false;
         progressPercentage.value = null;
@@ -591,10 +649,22 @@ async function generateClips() {
     }
 }
 
-async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean, fastMode: boolean }) {
+async function getClipExportSilenceIntervals(): Promise<SilenceInterval[]> {
+    if (clipExportSilenceCache.value?.path === inputPath.value) {
+        return clipExportSilenceCache.value.intervals;
+    }
+
+    status.value = "Detecting clip boundary silence...";
+    const intervals = await invoke<SilenceInterval[]>("detect_silence", { path: inputPath.value });
+    clipExportSilenceCache.value = { path: inputPath.value, intervals };
+    return intervals;
+}
+
+async function exportClips(payload?: ClipExportPayload) {
     const clipsToExport = payload?.clips || clips.value;
     const includeSubtitles = payload?.includeSubtitles || false;
     const fastMode = payload?.fastMode || false;
+    const trimBoundarySilence = payload?.trimBoundarySilence || false;
 
     if (clipsToExport.length === 0) return;
     
@@ -610,7 +680,7 @@ async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean,
         const postPadding = settings.value.postClipPadding || 0;
         const maxDuration = videoRef.value?.duration || Infinity;
 
-        const clipSegments = clipsToExport.map(c => ({ 
+        let clipSegments = clipsToExport.map(c => ({ 
             segments: c.segments.map(s => {
                 const start = Math.max(0, parseTime(s.start) - prePadding);
                 const end = Math.min(maxDuration, parseTime(s.end) + postPadding);
@@ -622,6 +692,19 @@ async function exportClips(payload?: { clips: Clip[], includeSubtitles: boolean,
             label: c.title,
             reason: c.reason
         }));
+
+        if (trimBoundarySilence) {
+            try {
+                const silenceIntervals = await getClipExportSilenceIntervals();
+                clipSegments = clipSegments.map((clip) => ({
+                    ...clip,
+                    segments: trimClipBoundarySilence(clip.segments, silenceIntervals),
+                }));
+            } catch (e) {
+                console.warn("Failed to detect silence for clip export", e);
+                status.value = "Silence detection failed, exporting without boundary trimming...";
+            }
+        }
         
         console.log({outputDir});
         
@@ -827,6 +910,7 @@ function updateProcessing(processing: boolean) {
                     v-model:glossary="settings.glossary"
                     v-model:speakerCount="speakerCount"
                     v-model:removeFillerWords="removeFillerWords"
+                    v-model:trimSilence="trimSilence"
                 />
 
                 <!-- Action Buttons -->

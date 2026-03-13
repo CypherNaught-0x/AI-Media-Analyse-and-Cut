@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { TranscriptSegment, Clip } from '../types';
+import type { TranscriptSegment, Clip, SilenceInterval } from '../types';
 import { useSettings } from '../composables/useSettings';
+import { trimClipBoundarySilence } from '../utils/clipSilence';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 
@@ -28,6 +29,8 @@ const clipTopic = ref("");
 const allowSplicing = ref(false);
 const lastExportPath = ref("");
 const isProcessing = ref(false);
+const trimBoundarySilence = ref(false);
+const silenceIntervalsCache = ref<SilenceInterval[] | null>(null);
 
 function showError(message: string, rawResponse: string, parseError: string = "") {
   // Emit to parent for now - can be improved later
@@ -109,11 +112,26 @@ async function exportClips() {
   try {
     // Robust extension replacement
     const outputDir = props.inputPath.replace(/\.[^/\\.]+$/, "") + "_clips";
-    const clipSegments = clips.value.map(c => ({
+    let clipSegments = clips.value.map(c => ({
       segments: c.segments,
       label: c.title,
       reason: c.reason
     }));
+
+    if (trimBoundarySilence.value) {
+      emit('update:status', "Detecting clip boundary silence...");
+
+      if (!silenceIntervalsCache.value) {
+        silenceIntervalsCache.value = await invoke<SilenceInterval[]>("detect_silence", {
+          path: props.inputPath,
+        });
+      }
+
+      clipSegments = clipSegments.map((clip) => ({
+        ...clip,
+        segments: trimClipBoundarySilence(clip.segments, silenceIntervalsCache.value ?? []),
+      }));
+    }
 
     emit('update:status', `Exporting to ${outputDir}...`);
     await invoke("export_clips", {
@@ -196,6 +214,12 @@ async function openExportFolder() {
     </button>
 
     <div v-if="clips.length > 0" class="space-y-4">
+      <label class="flex items-center gap-2 cursor-pointer text-sm text-gray-400 hover:text-gray-300">
+        <input v-model="trimBoundarySilence" type="checkbox"
+          class="rounded bg-white/10 border-white/20 text-pink-500 focus:ring-pink-500/50" />
+        Trim Start/End Silence on Export
+      </label>
+
       <div v-for="(clip, index) in clips" :key="index"
         class="p-6 bg-black/20 rounded-2xl border border-white/5 hover:border-pink-500/30 transition-colors">
         <div class="flex justify-between items-start mb-3">

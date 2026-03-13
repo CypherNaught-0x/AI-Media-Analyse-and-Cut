@@ -13,6 +13,13 @@ export interface Clip {
   end?: string;   // Deprecated, kept for backward compatibility
 }
 
+export interface ClipExportPayload {
+  clips: Clip[];
+  includeSubtitles: boolean;
+  fastMode: boolean;
+  trimBoundarySilence: boolean;
+}
+
 export interface AudioInfo {
   path: string;
   size: number;

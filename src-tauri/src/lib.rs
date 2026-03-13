@@ -7,9 +7,58 @@ fn greet(name: &str) -> String {
 use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
+use ffmpeg_sidecar::paths::{ffmpeg_path, sidecar_path};
 use tauri::Emitter;
 #[allow(unused_imports)]
 use log::{info, warn, error};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+fn describe_ffmpeg_lookup() -> String {
+    let resolved_path = ffmpeg_path();
+    let sidecar = sidecar_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "<unavailable>".to_string());
+
+    format!(
+        "FFmpeg executable was not found. Expected either a sidecar binary at '{}' or an 'ffmpeg' executable on PATH (resolved command path: '{}').",
+        sidecar,
+        resolved_path.display()
+    )
+}
+
+pub(crate) fn format_ffmpeg_spawn_error(
+    operation: &str,
+    input_path: &Path,
+    output_path: Option<&Path>,
+    err: &std::io::Error,
+) -> String {
+    let mut message = if err.kind() == ErrorKind::NotFound {
+        format!(
+            "Failed to {}. {} Input media exists at '{}'.",
+            operation,
+            describe_ffmpeg_lookup(),
+            input_path.display()
+        )
+    } else {
+        format!(
+            "Failed to {} for input '{}': {}",
+            operation,
+            input_path.display(),
+            err
+        )
+    };
+
+    if let Some(output_path) = output_path {
+        message.push_str(&format!(" Output path was '{}'.", output_path.display()));
+    }
+
+    message
+}
+
+pub(crate) fn format_path_io_error(operation: &str, path: &Path, err: &std::io::Error) -> String {
+    format!("Failed to {} at '{}': {}", operation, path.display(), err)
+}
 
 #[tauri::command]
 async fn init_ffmpeg() -> Result<String, String> {
@@ -102,12 +151,14 @@ async fn init_ffmpeg() -> Result<String, String> {
         }
     }
 
-    Ok("FFmpeg downloaded but verification failed. Please restart the app.".to_string())
+    Err(format!(
+        "FFmpeg initialization failed. {} You can restart the app, or install FFmpeg manually and ensure it is available on PATH.",
+        describe_ffmpeg_lookup()
+    ))
 }
 
 use ffmpeg_sidecar::command::FfmpegCommand;
 use serde::Serialize;
-use std::path::PathBuf;
 
 #[derive(Serialize)]
 struct AudioInfo {
@@ -117,7 +168,7 @@ struct AudioInfo {
 }
 
 fn get_media_duration(input_path: &str) -> Option<f64> {
-    let output = std::process::Command::new("ffmpeg")
+    let output = std::process::Command::new(ffmpeg_path())
         .arg("-i")
         .arg(input_path)
         .output()
@@ -154,39 +205,62 @@ async fn prepare_audio_for_ai(
 
     let output_path = input.with_extension("ogg");
     let duration = get_media_duration(input.to_str().unwrap());
+    let mut last_error = None;
 
-    // ffmpeg -i input.mp4 -vn -c:a libvorbis -q:a 4 output.ogg
+    // Normalize input to OGG/Opus for downstream silence removal and AI upload.
     FfmpegCommand::new()
         .input(input.to_str().unwrap())
-        .args(&["-vn", "-c:a", "libvorbis", "-q:a", "4"])
+        .args(&["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
         .output(output_path.to_str().unwrap())
         .spawn()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format_ffmpeg_spawn_error("prepare audio for AI analysis", &input, Some(&output_path), &e))?
         .iter()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed while reading FFmpeg output during audio preparation for '{}': {}", input.display(), e))?
         .for_each(|event| {
-            if let FfmpegEvent::Progress(progress) = event {
-                let current_seconds = parse_timestamp_to_seconds_raw(&progress.time).unwrap_or(0.0);
-                let percentage = if let Some(d) = duration {
-                    if d > 0.0 {
-                        Some((current_seconds / d) * 100.0)
+            match event {
+                FfmpegEvent::Progress(progress) => {
+                    let current_seconds = parse_timestamp_to_seconds_raw(&progress.time).unwrap_or(0.0);
+                    let percentage = if let Some(d) = duration {
+                        if d > 0.0 {
+                            Some((current_seconds / d) * 100.0)
+                        } else {
+                            None
+                        }
                     } else {
                         None
+                    };
+                    
+                    let payload = serde_json::json!({
+                        "time": progress.time,
+                        "percentage": percentage
+                    });
+                    let _ = window.emit("progress", payload);
+                }
+                FfmpegEvent::Error(err) => {
+                    last_error = Some(err);
+                }
+                FfmpegEvent::Log(level, msg) => {
+                    if matches!(level, ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal) {
+                        last_error = Some(msg);
                     }
-                } else {
-                    None
-                };
-                
-                let payload = serde_json::json!({
-                    "time": progress.time,
-                    "percentage": percentage
-                });
-                let _ = window.emit("progress", payload);
+                }
+                _ => {}
             }
         });
 
+    if !output_path.exists() {
+        let msg = last_error.unwrap_or_else(|| "FFmpeg finished without creating the output file".to_string());
+        return Err(format!(
+            "Audio preparation failed for '{}' -> '{}': {}",
+            input.display(),
+            output_path.display(),
+            msg
+        ));
+    }
+
     // Check size
-    let metadata = std::fs::metadata(&output_path).map_err(|e| e.to_string())?;
+    let metadata = std::fs::metadata(&output_path)
+        .map_err(|e| format_path_io_error("read generated audio file metadata", &output_path, &e))?;
     let size = metadata.len();
 
     Ok(AudioInfo {
@@ -243,7 +317,7 @@ async fn upload_file(
     let path_buf = PathBuf::from(path);
     upload_file_and_wait(&api_key, &base_url, &path_buf)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("Failed to upload audio file '{}' to '{}': {}", path_buf.display(), base_url, e))
 }
 
 #[tauri::command]
@@ -258,7 +332,7 @@ async fn analyze_audio(
     audio_uri: Option<String>,
     audio_base64: Option<String>,
 ) -> Result<String, String> {
-    let client = GeminiClient::new(api_key, base_url, model);
+    let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     client
         .analyze_audio(
             &context,
@@ -269,7 +343,7 @@ async fn analyze_audio(
             audio_base64.as_deref(),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("AI analysis request to '{}' with model '{}' failed: {}", base_url, model, e))
 }
 
 #[tauri::command]
@@ -361,7 +435,7 @@ async fn read_file_as_base64(path: String) -> Result<String, String> {
 
     let content = tokio::fs::read(&path)
         .await
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+        .map_err(|e| format!("Failed to read audio file '{}' for base64 encoding: {}", path, e))?;
 
     Ok(general_purpose::STANDARD.encode(content))
 }

@@ -6,6 +6,7 @@ const props = defineProps<{
   glossary: string;
   speakerCount: number | null;
   removeFillerWords: boolean;
+  trimSilence: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -13,6 +14,7 @@ const emit = defineEmits<{
   (e: 'update:glossary', value: string): void;
   (e: 'update:speakerCount', value: number | null): void;
   (e: 'update:removeFillerWords', value: boolean): void;
+  (e: 'update:trimSilence', value: boolean): void;
 }>();
 
 const contextTextarea = ref<HTMLTextAreaElement | null>(null);
@@ -89,6 +91,14 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
                     :class="removeFillerWords ? 'translate-x-6' : 'translate-x-1'" />
             </div>
             <span class="text-sm font-medium text-gray-300">Remove Filler Words</span>
+        </div>
+        <div class="flex items-center gap-3 p-4 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/30 transition-colors" @click="$emit('update:trimSilence', !trimSilence)">
+            <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none"
+                :class="trimSilence ? 'bg-blue-600' : 'bg-gray-700'">
+                <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                    :class="trimSilence ? 'translate-x-6' : 'translate-x-1'" />
+            </div>
+            <span class="text-sm font-medium text-gray-300">Trim Silence</span>
         </div>
     </div>
 </template>

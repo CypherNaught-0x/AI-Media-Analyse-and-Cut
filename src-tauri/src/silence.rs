@@ -4,6 +4,7 @@ use log::{debug, info};
 use regex::Regex;
 use serde::Serialize;
 use std::path::PathBuf;
+use crate::{format_ffmpeg_spawn_error, format_path_io_error};
 
 #[derive(Serialize, Debug, Clone)]
 pub struct SilenceInterval {
@@ -43,9 +44,9 @@ async fn detect_silence_internal(path: &str, min_duration: f64) -> Result<Vec<Si
         .input(input_path.to_str().unwrap())
         .args(&["-af", &format!("silencedetect=noise=-30dB:d={}", min_duration), "-f", "null", "-"])
         .spawn()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format_ffmpeg_spawn_error("detect silence", &input_path, None, &e))?
         .iter()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed while reading FFmpeg output during silence detection for '{}': {}", input_path.display(), e))?;
 
     let mut intervals = Vec::new();
     let mut current_start = None;
@@ -176,9 +177,9 @@ pub async fn remove_silence(path: String, min_duration: Option<f64>) -> Result<P
         ])
         .output(output_path.to_str().unwrap())
         .spawn()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format_ffmpeg_spawn_error("remove silence", &input_path, Some(&output_path), &e))?
         .iter()
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed while reading FFmpeg output during silence removal for '{}': {}", input_path.display(), e))?
         .for_each(|event| match event {
             FfmpegEvent::Log(_, msg) => {
                 debug!("[FFmpeg Remove Silence] {}", msg);
@@ -216,7 +217,7 @@ async fn probe_duration(path: &str) -> Result<f64, String> {
         .arg("-i")
         .arg(path)
         .output()
-        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+        .map_err(|e| format_path_io_error("run ffmpeg for duration probing", &PathBuf::from(path), &e))?;
         
     let stderr = String::from_utf8_lossy(&output.stderr);
     
