@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
-import type { Clip } from '../types';
+import type { Clip, ClipExportPayload } from '../types';
 
 const props = defineProps<{
   clips: Clip[];
@@ -10,13 +10,14 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'export', payload: { clips: Clip[], includeSubtitles: boolean, fastMode: boolean }): void;
+  (e: 'export', payload: ClipExportPayload): void;
   (e: 'openFolder'): void;
 }>();
 
 const selectedIndices = ref<Set<number>>(new Set());
 const includeSubtitles = ref(true);
 const fastMode = ref(true);
+const trimBoundarySilence = ref(false);
 
 const toggleSelection = (index: number) => {
     if (selectedIndices.value.has(index)) {
@@ -39,7 +40,12 @@ const handleExport = () => {
         ? props.clips.filter((_, i) => selectedIndices.value.has(i))
         : props.clips;
     
-    emit('export', { clips: clipsToExport, includeSubtitles: includeSubtitles.value, fastMode: fastMode.value });
+    emit('export', {
+        clips: clipsToExport,
+        includeSubtitles: includeSubtitles.value,
+        fastMode: fastMode.value,
+        trimBoundarySilence: trimBoundarySilence.value
+    });
 };
 
 const selectionLabel = computed(() => {
@@ -70,6 +76,11 @@ const selectionLabel = computed(() => {
                     <input type="checkbox" v-model="fastMode"
                         class="rounded bg-white/10 border-white/20 text-blue-500 focus:ring-blue-500/50" />
                     Fast Mode (Lossless)
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-sm text-gray-400 hover:text-gray-300" title="Trim only silence that touches the clip start or end">
+                    <input data-testid="trim-boundary-silence" type="checkbox" v-model="trimBoundarySilence"
+                        class="rounded bg-white/10 border-white/20 text-blue-500 focus:ring-blue-500/50" />
+                    Trim Start/End Silence
                 </label>
             </div>
             <span v-if="selectedIndices.size > 0" class="text-xs text-blue-400 font-medium">
@@ -104,6 +115,7 @@ const selectionLabel = computed(() => {
                 class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all flex items-center justify-center gap-2">
                 <span>{{ selectionLabel }}</span>
                 <span v-if="includeSubtitles" class="text-xs bg-black/20 px-2 py-0.5 rounded text-gray-300">+ Subs</span>
+                <span v-if="trimBoundarySilence" class="text-xs bg-black/20 px-2 py-0.5 rounded text-gray-300">+ Trim</span>
             </button>
             <button v-if="lastExportPath" @click="$emit('openFolder')"
                 class="px-6 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-2xl border border-gray-700 transition-all" title="Open Folder">
