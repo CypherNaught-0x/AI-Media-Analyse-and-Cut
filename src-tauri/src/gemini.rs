@@ -1,22 +1,24 @@
 use crate::retry::{retry_with_backoff, RetryConfig, RetryableError};
 use crate::video::TranscriptSegment;
 use anyhow::Result;
-use reqwest::Client;
+use log::{debug, error, info};
+use reqwest::{
+    header::{ACCEPT, ACCEPT_ENCODING},
+    Client, RequestBuilder,
+};
 use serde_json::{json, Value};
-use log::{info, error, debug};
 
 struct OutputFormat;
+const RAW_RESPONSE_PREVIEW_LIMIT: usize = 4_000;
 
 impl OutputFormat {
     fn example() -> String {
-        let example = vec![
-            TranscriptSegment {
-                start: "00:00".to_string(),
-                end: "00:05".to_string(),
-                speaker: "Speaker 1".to_string(),
-                text: "This is an example sentence.".to_string(),
-            }
-        ];
+        let example = vec![TranscriptSegment {
+            start: "00:00".to_string(),
+            end: "00:05".to_string(),
+            speaker: "Speaker 1".to_string(),
+            text: "This is an example sentence.".to_string(),
+        }];
         serde_json::to_string(&example).unwrap_or_default()
     }
 }
@@ -45,7 +47,11 @@ impl GeminiClient {
         target_language: String,
         context: String,
     ) -> Result<String> {
-        info!("Starting translation of {} segments to {}", transcript.len(), target_language);
+        info!(
+            "Starting translation of {} segments to {}",
+            transcript.len(),
+            target_language
+        );
         let chunk_size = 20;
         let chunks: Vec<Vec<TranscriptSegment>> =
             transcript.chunks(chunk_size).map(|c| c.to_vec()).collect();
@@ -60,13 +66,14 @@ impl GeminiClient {
             handles.push(tokio::spawn(async move {
                 match client
                     .translate_chunk(chunk, target_language, context, i)
-                    .await {
-                        Ok(res) => Ok(res),
-                        Err(e) => {
-                            error!("Translation chunk #{} failed: {}", i, e);
-                            Err(e)
-                        }
+                    .await
+                {
+                    Ok(res) => Ok(res),
+                    Err(e) => {
+                        error!("Translation chunk #{} failed: {}", i, e);
+                        Err(e)
                     }
+                }
             }));
         }
 
@@ -100,7 +107,11 @@ impl GeminiClient {
         context: String,
         chunk_index: usize,
     ) -> Result<String> {
-        debug!("Translating chunk #{} ({} segments)", chunk_index, chunk.len());
+        debug!(
+            "Translating chunk #{} ({} segments)",
+            chunk_index,
+            chunk.len()
+        );
         let transcript_json = serde_json::to_string(&chunk)?;
 
         let system_prompt = "You are a professional translator. Your task is to translate the text content of a transcript while preserving the structure and timestamps exactly.";
@@ -155,7 +166,8 @@ impl GeminiClient {
 
         user_prompt.push_str(&format!("Example Output: {}\n", OutputFormat::example()));
 
-        user_prompt.push_str(r#"
+        user_prompt.push_str(
+            r#"
 SUBTITLE LENGTH GUIDELINES (IMPORTANT):
 - Each text segment should be concise and readable as subtitles
 - Aim for maximum 84 characters per segment (42 chars per line × 2 lines)
@@ -163,7 +175,8 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
 - Each segment should be comfortable to read within its duration
 - Avoid wall-of-text segments that would be difficult to read quickly
 - Natural breaks: end segments at sentence boundaries, clause breaks, or natural speech pauses
-"#);
+"#,
+        );
 
         if remove_filler_words {
             user_prompt.push_str("IMPORTANT: Remove all filler words (um, uh, like, you know) and non-voice sounds (coughs, breaths) from the 'text' field. The transcript should be clean and ready for subtitles.\n");
@@ -254,33 +267,12 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
             request = request.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
-        let response = request
-            .send()
+        let res_json = execute_json_request(request, &url)
             .await
-            .map_err(|e| anyhow::anyhow!("Request to '{}' failed: {}", url, e))?;
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("API failed: {}", response.text().await?));
-        }
-
-        let res_json: Value = response
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse response from '{}': {}", url, e))?;
-
-        // Extract text from response (handle both Google and OpenAI formats)
-        let text = if is_google_api {
-            res_json["candidates"][0]["content"]["parts"][0]["text"]
-                .as_str()
-                .unwrap_or("No text response")
-                .to_string()
-        } else {
-            // OpenAI format
-            res_json["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("No text response")
-                .to_string()
-        };
+        let text = extract_text_from_response(&res_json, is_google_api)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         Ok(text)
     }
@@ -369,25 +361,12 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
             request = request.header("Authorization", format!("Bearer {}", self.api_key));
         }
 
-        let response = request.send().await?;
+        let res_json = execute_json_request(request, &url)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!("API failed: {}", response.text().await?));
-        }
-
-        let res_json: Value = response.json().await?;
-
-        let text = if is_google_api {
-            res_json["candidates"][0]["content"]["parts"][0]["text"]
-                .as_str()
-                .unwrap_or("No text response")
-                .to_string()
-        } else {
-            res_json["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("No text response")
-                .to_string()
-        };
+        let text = extract_text_from_response(&res_json, is_google_api)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         Ok(text)
     }
@@ -607,27 +586,8 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
                     request = request.header("Authorization", format!("Bearer {}", api_key));
                 }
 
-                let response = request.send().await.map_err(RetryableError::from)?;
-
-                if !response.status().is_success() {
-                    let status = response.status().as_u16();
-                    let text = response.text().await.unwrap_or_default();
-                    return Err(RetryableError::Http { status, message: text });
-                }
-
-                let res_json: Value = response.json().await.map_err(RetryableError::from)?;
-
-                let text = if is_google_api {
-                    res_json["candidates"][0]["content"]["parts"][0]["text"]
-                        .as_str()
-                        .unwrap_or("No text response")
-                        .to_string()
-                } else {
-                    res_json["choices"][0]["message"]["content"]
-                        .as_str()
-                        .unwrap_or("No text response")
-                        .to_string()
-                };
+                let res_json = execute_json_request(request, &url).await?;
+                let text = extract_text_from_response(&res_json, is_google_api)?;
 
                 Ok::<String, RetryableError>(text)
             },
@@ -641,4 +601,150 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
             Err(retry_err) => Err(anyhow::anyhow!("{}", retry_err)),
         }
     }
+}
+
+fn build_json_request(request: RequestBuilder) -> RequestBuilder {
+    request
+        .header(ACCEPT, "application/json")
+        // Compression issues on some OpenAI-compatible gateways surface as
+        // "error decoding response body". Prefer plain responses when possible.
+        .header(ACCEPT_ENCODING, "identity")
+}
+
+async fn execute_json_request(
+    request: RequestBuilder,
+    url: &str,
+) -> std::result::Result<Value, RetryableError> {
+    let response = build_json_request(request)
+        .send()
+        .await
+        .map_err(RetryableError::from)?;
+
+    let status = response.status();
+    let headers = format!("{:?}", response.headers());
+
+    debug!("AI response status from '{}': {}", url, status);
+    debug!("AI response headers from '{}': {}", url, headers);
+
+    let body = response.bytes().await.map_err(|err| {
+        error!(
+            "Failed to read AI response body from '{}': {}. Headers: {}",
+            url, err, headers
+        );
+        RetryableError::from(err)
+    })?;
+
+    let raw_body = String::from_utf8_lossy(&body).into_owned();
+    debug!("Raw AI response body from '{}': {}", url, raw_body);
+
+    if !status.is_success() {
+        error!(
+            "AI request to '{}' failed with status {}. Raw response body: {}",
+            url, status, raw_body
+        );
+        return Err(RetryableError::Http {
+            status: status.as_u16(),
+            message: raw_body,
+        });
+    }
+
+    serde_json::from_slice(&body).map_err(|err| {
+        let preview = preview_for_error(&raw_body);
+        error!(
+            "Failed to parse AI response JSON from '{}': {}. Raw response body: {}",
+            url, err, raw_body
+        );
+        RetryableError::Permanent(format!(
+            "Failed to parse response from '{}': {}. Raw body preview: {}",
+            url, err, preview
+        ))
+    })
+}
+
+fn extract_text_from_response(
+    res_json: &Value,
+    is_google_api: bool,
+) -> std::result::Result<String, RetryableError> {
+    if is_google_api {
+        extract_google_text(res_json)
+    } else {
+        extract_openai_text(res_json)
+    }
+}
+
+fn extract_google_text(res_json: &Value) -> std::result::Result<String, RetryableError> {
+    let parts = res_json["candidates"][0]["content"]["parts"]
+        .as_array()
+        .ok_or_else(|| {
+            RetryableError::Permanent(format!(
+                "Missing Google response text parts. Raw JSON preview: {}",
+                preview_for_error(&res_json.to_string())
+            ))
+        })?;
+
+    let text = parts
+        .iter()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("");
+
+    if text.is_empty() {
+        return Err(RetryableError::Permanent(format!(
+            "Google response contained no text parts. Raw JSON preview: {}",
+            preview_for_error(&res_json.to_string())
+        )));
+    }
+
+    Ok(text)
+}
+
+fn extract_openai_text(res_json: &Value) -> std::result::Result<String, RetryableError> {
+    let message = &res_json["choices"][0]["message"]["content"];
+
+    if let Some(text) = message.as_str() {
+        return Ok(text.to_string());
+    }
+
+    if let Some(parts) = message.as_array() {
+        let text = parts
+            .iter()
+            .filter_map(extract_openai_content_part_text)
+            .collect::<Vec<_>>()
+            .join("");
+
+        if !text.is_empty() {
+            return Ok(text);
+        }
+    }
+
+    if let Some(text) = message["text"].as_str() {
+        return Ok(text.to_string());
+    }
+
+    Err(RetryableError::Permanent(format!(
+        "OpenAI-compatible response contained no readable message content. Raw JSON preview: {}",
+        preview_for_error(&res_json.to_string())
+    )))
+}
+
+fn extract_openai_content_part_text(part: &Value) -> Option<String> {
+    if let Some(text) = part["text"].as_str() {
+        return Some(text.to_string());
+    }
+
+    if let Some(text) = part["text"]["value"].as_str() {
+        return Some(text.to_string());
+    }
+
+    None
+}
+
+fn preview_for_error(raw: &str) -> String {
+    let total_chars = raw.chars().count();
+    if total_chars <= RAW_RESPONSE_PREVIEW_LIMIT {
+        return raw.to_string();
+    }
+
+    let preview: String = raw.chars().take(RAW_RESPONSE_PREVIEW_LIMIT).collect();
+    format!("{}... [truncated, total_chars={}]", preview, total_chars)
 }
