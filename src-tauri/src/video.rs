@@ -1,8 +1,8 @@
 use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
+use log::{debug, error, info};
 use std::path::Path;
-use log::{info, error, debug};
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +46,12 @@ where
     //  [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
     // -map "[v]" -map "[a]" output.mp4
 
-    info!("Starting cut_video: input={:?}, output={:?}, segments={}", input_path, output_path, segments.len());
+    info!(
+        "Starting cut_video: input={:?}, output={:?}, segments={}",
+        input_path,
+        output_path,
+        segments.len()
+    );
 
     let (filter_complex, _inputs) = build_filter_complex(segments);
 
@@ -144,7 +149,12 @@ where
         })?;
     }
 
-    info!("Starting export_clips: input={:?}, output_dir={:?}, segments={}", input_path, output_dir, segments.len());
+    info!(
+        "Starting export_clips: input={:?}, output_dir={:?}, segments={}",
+        input_path,
+        output_dir,
+        segments.len()
+    );
 
     let total_clips = segments.len();
 
@@ -170,14 +180,16 @@ where
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
             let mut last_error = None;
-            
+
             let mut cmd = FfmpegCommand::new();
             cmd.input(input_path.to_str().unwrap());
-            
+
             if fast_mode {
                 cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c", "copy"]);
             } else {
-                cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac"]);
+                cmd.args(&[
+                    "-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac",
+                ]);
             }
 
             cmd.output(output_path.to_str().unwrap())

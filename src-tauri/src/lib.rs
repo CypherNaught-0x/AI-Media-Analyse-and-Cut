@@ -8,11 +8,11 @@ use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use ffmpeg_sidecar::paths::{ffmpeg_path, sidecar_path};
-use tauri::Emitter;
 #[allow(unused_imports)]
-use log::{info, warn, error};
+use log::{error, info, warn};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use tauri::Emitter;
 
 fn describe_ffmpeg_lookup() -> String {
     let resolved_path = ffmpeg_path();
@@ -173,7 +173,7 @@ fn get_media_duration(input_path: &str) -> Option<f64> {
         .arg(input_path)
         .output()
         .ok()?;
-        
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     if let Some(pos) = stderr.find("Duration: ") {
         let s = &stderr[pos + 10..];
@@ -213,43 +213,58 @@ async fn prepare_audio_for_ai(
         .args(&["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
         .output(output_path.to_str().unwrap())
         .spawn()
-        .map_err(|e| format_ffmpeg_spawn_error("prepare audio for AI analysis", &input, Some(&output_path), &e))?
+        .map_err(|e| {
+            format_ffmpeg_spawn_error(
+                "prepare audio for AI analysis",
+                &input,
+                Some(&output_path),
+                &e,
+            )
+        })?
         .iter()
-        .map_err(|e| format!("Failed while reading FFmpeg output during audio preparation for '{}': {}", input.display(), e))?
-        .for_each(|event| {
-            match event {
-                FfmpegEvent::Progress(progress) => {
-                    let current_seconds = parse_timestamp_to_seconds_raw(&progress.time).unwrap_or(0.0);
-                    let percentage = if let Some(d) = duration {
-                        if d > 0.0 {
-                            Some((current_seconds / d) * 100.0)
-                        } else {
-                            None
-                        }
+        .map_err(|e| {
+            format!(
+                "Failed while reading FFmpeg output during audio preparation for '{}': {}",
+                input.display(),
+                e
+            )
+        })?
+        .for_each(|event| match event {
+            FfmpegEvent::Progress(progress) => {
+                let current_seconds = parse_timestamp_to_seconds_raw(&progress.time).unwrap_or(0.0);
+                let percentage = if let Some(d) = duration {
+                    if d > 0.0 {
+                        Some((current_seconds / d) * 100.0)
                     } else {
                         None
-                    };
-                    
-                    let payload = serde_json::json!({
-                        "time": progress.time,
-                        "percentage": percentage
-                    });
-                    let _ = window.emit("progress", payload);
-                }
-                FfmpegEvent::Error(err) => {
-                    last_error = Some(err);
-                }
-                FfmpegEvent::Log(level, msg) => {
-                    if matches!(level, ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal) {
-                        last_error = Some(msg);
                     }
-                }
-                _ => {}
+                } else {
+                    None
+                };
+
+                let payload = serde_json::json!({
+                    "time": progress.time,
+                    "percentage": percentage
+                });
+                let _ = window.emit("progress", payload);
             }
+            FfmpegEvent::Error(err) => {
+                last_error = Some(err);
+            }
+            FfmpegEvent::Log(level, msg) => {
+                if matches!(
+                    level,
+                    ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal
+                ) {
+                    last_error = Some(msg);
+                }
+            }
+            _ => {}
         });
 
     if !output_path.exists() {
-        let msg = last_error.unwrap_or_else(|| "FFmpeg finished without creating the output file".to_string());
+        let msg = last_error
+            .unwrap_or_else(|| "FFmpeg finished without creating the output file".to_string());
         return Err(format!(
             "Audio preparation failed for '{}' -> '{}': {}",
             input.display(),
@@ -259,8 +274,9 @@ async fn prepare_audio_for_ai(
     }
 
     // Check size
-    let metadata = std::fs::metadata(&output_path)
-        .map_err(|e| format_path_io_error("read generated audio file metadata", &output_path, &e))?;
+    let metadata = std::fs::metadata(&output_path).map_err(|e| {
+        format_path_io_error("read generated audio file metadata", &output_path, &e)
+    })?;
     let size = metadata.len();
 
     Ok(AudioInfo {
@@ -317,7 +333,14 @@ async fn upload_file(
     let path_buf = PathBuf::from(path);
     upload_file_and_wait(&api_key, &base_url, &path_buf)
         .await
-        .map_err(|e| format!("Failed to upload audio file '{}' to '{}': {}", path_buf.display(), base_url, e))
+        .map_err(|e| {
+            format!(
+                "Failed to upload audio file '{}' to '{}': {}",
+                path_buf.display(),
+                base_url,
+                e
+            )
+        })
 }
 
 #[tauri::command]
@@ -343,7 +366,12 @@ async fn analyze_audio(
             audio_base64.as_deref(),
         )
         .await
-        .map_err(|e| format!("AI analysis request to '{}' with model '{}' failed: {}", base_url, model, e))
+        .map_err(|e| {
+            format!(
+                "AI analysis request to '{}' with model '{}' failed: {}",
+                base_url, model, e
+            )
+        })
 }
 
 #[tauri::command]
@@ -358,11 +386,14 @@ async fn cut_video(
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_path);
 
-    let total_duration: f64 = segments.iter().map(|s| {
-        let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
-        let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
-        end - start
-    }).sum();
+    let total_duration: f64 = segments
+        .iter()
+        .map(|s| {
+            let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
+            let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
+            end - start
+        })
+        .sum();
 
     cut_video_fn(&input, &segments, &output, move |time| {
         let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
@@ -394,38 +425,50 @@ async fn export_clips(
     let output = PathBuf::from(output_dir);
 
     // Calculate duration for each clip
-    let clip_durations: Vec<f64> = segments.iter().map(|c| {
-        c.segments.iter().map(|s| {
-            let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
-            let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
-            end - start
-        }).sum()
-    }).collect();
+    let clip_durations: Vec<f64> = segments
+        .iter()
+        .map(|c| {
+            c.segments
+                .iter()
+                .map(|s| {
+                    let start = parse_timestamp_to_seconds_raw(&s.start).unwrap_or(0.0);
+                    let end = parse_timestamp_to_seconds_raw(&s.end).unwrap_or(0.0);
+                    end - start
+                })
+                .sum()
+        })
+        .collect();
 
     let total_duration: f64 = clip_durations.iter().sum();
 
-    export_clips_fn(&input, &segments, &output, fast_mode, move |clip_idx, total_clips, time| {
-        let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
-        
-        // Sum duration of previous clips
-        let previous_duration: f64 = clip_durations.iter().take(clip_idx).sum();
-        
-        let total_current = previous_duration + current_clip_time;
-        
-        let percentage = if total_duration > 0.0 {
-            ((total_current / total_duration) * 100.0).min(100.0)
-        } else {
-            0.0
-        };
-        
-        let payload = serde_json::json!({
-            "time": time,
-            "percentage": percentage,
-            "current_clip": clip_idx + 1,
-            "total_clips": total_clips
-        });
-        let _ = window.emit("progress", payload);
-    })
+    export_clips_fn(
+        &input,
+        &segments,
+        &output,
+        fast_mode,
+        move |clip_idx, total_clips, time| {
+            let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+
+            // Sum duration of previous clips
+            let previous_duration: f64 = clip_durations.iter().take(clip_idx).sum();
+
+            let total_current = previous_duration + current_clip_time;
+
+            let percentage = if total_duration > 0.0 {
+                ((total_current / total_duration) * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+
+            let payload = serde_json::json!({
+                "time": time,
+                "percentage": percentage,
+                "current_clip": clip_idx + 1,
+                "total_clips": total_clips
+            });
+            let _ = window.emit("progress", payload);
+        },
+    )
     .map_err(|e| e.to_string())
 }
 
@@ -433,9 +476,12 @@ async fn export_clips(
 async fn read_file_as_base64(path: String) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
 
-    let content = tokio::fs::read(&path)
-        .await
-        .map_err(|e| format!("Failed to read audio file '{}' for base64 encoding: {}", path, e))?;
+    let content = tokio::fs::read(&path).await.map_err(|e| {
+        format!(
+            "Failed to read audio file '{}' for base64 encoding: {}",
+            path, e
+        )
+    })?;
 
     Ok(general_purpose::STANDARD.encode(content))
 }
@@ -512,7 +558,7 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), Stri
     use tauri::Manager;
 
     let log_dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-    
+
     let file = std::fs::File::create(&target_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::FileOptions::<()>::default()
@@ -525,10 +571,10 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), Stri
             let path = entry.path();
             if path.is_file() {
                 if let Some(name) = path.file_name() {
-                     let name = name.to_string_lossy();
-                     zip.start_file(name, options).map_err(|e| e.to_string())?;
-                     let content = std::fs::read(&path).map_err(|e| e.to_string())?;
-                     zip.write_all(&content).map_err(|e| e.to_string())?;
+                    let name = name.to_string_lossy();
+                    zip.start_file(name, options).map_err(|e| e.to_string())?;
+                    let content = std::fs::read(&path).map_err(|e| e.to_string())?;
+                    zip.write_all(&content).map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -622,9 +668,16 @@ async fn export_podcast_clips(
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_dir);
 
-    export_podcast_clips_fn(&input, &segments, start_padding, end_padding, &output, move |time| {
-        let _ = window.emit("progress", time);
-    })
+    export_podcast_clips_fn(
+        &input,
+        &segments,
+        start_padding,
+        end_padding,
+        &output,
+        move |time| {
+            let _ = window.emit("progress", time);
+        },
+    )
     .map_err(|e: anyhow::Error| e.to_string())
 }
 
