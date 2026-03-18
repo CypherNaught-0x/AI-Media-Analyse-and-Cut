@@ -19,6 +19,7 @@ import { useSettings } from "../composables/useSettings";
 import { parseTime, adjustTimestamp, formatTime } from "../composables/useTimeFormat";
 import { generateSubtitleContent } from "../utils/subtitle";
 import { trimClipBoundarySilence } from "../utils/clipSilence";
+import { normalizeTranscriptSegments } from "../utils/transcriptParsing";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -274,13 +275,9 @@ async function translateTranscript() {
         if (jsonMatch) {
             try {
                 const parsed = JSON.parse(jsonMatch[0]);
-                if (Array.isArray(parsed)) {
-                    translations.value[lang] = parsed;
-                    currentLanguage.value = lang;
-                    status.value = `Translation to ${lang} complete.`;
-                } else {
-                    throw new Error("Response is not an array");
-                }
+                translations.value[lang] = normalizeTranscriptSegments(parsed);
+                currentLanguage.value = lang;
+                status.value = `Translation to ${lang} complete.`;
             } catch (e) {
                 console.error("JSON Parse Error", e);
                 showError(
@@ -475,14 +472,10 @@ async function processFile() {
         if (jsonMatch) {
             try {
                 const parsed = JSON.parse(jsonMatch[0]);
-                if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-                
-                // Adjust timestamps back to original timeline
-                const adjustedSegments = parsed.map((seg: any) => ({
-                    ...seg,
-                    start: adjustTimestamp(seg.start, processedAudio.offsets),
-                    end: adjustTimestamp(seg.end, processedAudio.offsets)
-                }));
+                const adjustedSegments = normalizeTranscriptSegments(
+                    parsed,
+                    (timestamp) => adjustTimestamp(timestamp, processedAudio.offsets),
+                );
                 
                 segments.value = adjustedSegments;
                 status.value = `Analysis complete. Found ${segments.value.length} segments.`;

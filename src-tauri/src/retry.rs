@@ -1,6 +1,6 @@
+use log::{error, info, warn};
 use std::future::Future;
 use std::time::Duration;
-use log::{info, warn, error};
 
 /// Retry configuration for API calls
 #[derive(Debug, Clone)]
@@ -64,6 +64,9 @@ pub enum RetryableError {
     RateLimited { retry_after: Option<Duration> },
     /// Server errors
     Server(String),
+    /// Errors that should not be retried because the request completed but the
+    /// payload was invalid or incompatible with the expected response shape.
+    Permanent(String),
 }
 
 impl RetryableError {
@@ -71,11 +74,10 @@ impl RetryableError {
     pub fn is_retryable(&self, config: &RetryConfig) -> bool {
         match self {
             RetryableError::Network(_) => true,
-            RetryableError::Http { status, .. } => {
-                config.retryable_status_codes.contains(status)
-            }
+            RetryableError::Http { status, .. } => config.retryable_status_codes.contains(status),
             RetryableError::RateLimited { .. } => true,
             RetryableError::Server(_) => true,
+            RetryableError::Permanent(_) => false,
         }
     }
 
@@ -114,6 +116,7 @@ impl std::fmt::Display for RetryableError {
                 }
             }
             RetryableError::Server(msg) => write!(f, "Server error: {}", msg),
+            RetryableError::Permanent(msg) => write!(f, "Permanent error: {}", msg),
         }
     }
 }
