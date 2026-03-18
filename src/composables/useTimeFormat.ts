@@ -3,14 +3,36 @@ import type { SegmentOffset } from '../types';
 /**
  * Parse a time string (MM:SS or HH:MM:SS or seconds) to seconds
  */
-export function parseTime(timeStr: string): number {
-  const parts = timeStr.split(':');
+export function parseTime(timeStr: string | number): number {
+  if (typeof timeStr === 'number') {
+    if (Number.isFinite(timeStr)) {
+      return timeStr;
+    }
+    throw new Error(`Invalid timestamp number: ${timeStr}`);
+  }
+
+  if (typeof timeStr !== 'string') {
+    throw new Error(`Invalid timestamp type: expected string, received ${typeof timeStr}`);
+  }
+
+  const normalized = timeStr.trim();
+  if (!normalized) {
+    throw new Error('Invalid timestamp: empty string');
+  }
+
+  const parts = normalized.split(':');
   if (parts.length === 3) {
     return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
   } else if (parts.length === 2) {
     return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
   }
-  return parseFloat(timeStr);
+
+  const parsed = parseFloat(normalized);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid timestamp format: '${timeStr}'`);
+  }
+
+  return parsed;
 }
 
 /**
