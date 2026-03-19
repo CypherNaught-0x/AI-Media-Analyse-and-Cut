@@ -15,6 +15,7 @@ const { settings, updateSettings, modelFetchState, updateModelFetchState } = use
 const localBaseUrl = ref(settings.value.baseUrl);
 const localApiKey = ref(settings.value.apiKey);
 const localModel = ref(settings.value.model);
+const localEnforceJsonSchema = ref(settings.value.enforceJsonSchema ?? true);
 const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const localPreClipPadding = ref(settings.value.preClipPadding || 0);
 const localPostClipPadding = ref(settings.value.postClipPadding || 0);
@@ -150,6 +151,7 @@ const hasChanges = computed(() => {
         localBaseUrl.value !== settings.value.baseUrl ||
         localApiKey.value !== settings.value.apiKey ||
         localModel.value !== settings.value.model ||
+        localEnforceJsonSchema.value !== (settings.value.enforceJsonSchema ?? true) ||
         localPreClipPadding.value !== (settings.value.preClipPadding || 0) ||
         localPostClipPadding.value !== (settings.value.postClipPadding || 0)
     );
@@ -304,6 +306,7 @@ function saveSettings() {
         baseUrl: normalizedUrl,
         apiKey: localApiKey.value,
         model: localModel.value,
+        enforceJsonSchema: localEnforceJsonSchema.value,
         preClipPadding: localPreClipPadding.value,
         postClipPadding: localPostClipPadding.value,
     });
@@ -396,6 +399,29 @@ function cancel() {
                     </div>
                     <p v-if="fetchError" class="text-xs text-red-400 mt-1">{{ fetchError }}</p>
                     <p v-else class="text-xs text-gray-500 mt-1">{{ endpointInfo }}</p>
+                </div>
+
+                <div class="mb-6 group">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                        Response Validation
+                    </label>
+                    <div
+                        class="flex items-start gap-4 rounded-2xl bg-black/20 border border-white/10 p-4 cursor-pointer hover:bg-black/30 transition-colors"
+                        @click="localEnforceJsonSchema = !localEnforceJsonSchema">
+                        <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
+                            :class="localEnforceJsonSchema ? 'bg-blue-600' : 'bg-gray-700'">
+                            <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                                :class="localEnforceJsonSchema ? 'translate-x-6' : 'translate-x-1'" />
+                        </div>
+                        <div class="flex-1">
+                            <p class="text-sm font-medium text-gray-200">Enforce Structured JSON for transcript analysis</p>
+                            <p class="text-xs text-gray-500 mt-1">
+                                Sends a strict JSON schema with AI analysis requests on OpenAI-compatible APIs.
+                                Improves reliability, but some providers may respond slower or behave differently.
+                            </p>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Clip Settings -->
