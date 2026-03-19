@@ -1,7 +1,7 @@
 use crate::retry::{retry_with_backoff, RetryConfig, RetryableError};
 use crate::video::TranscriptSegment;
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use reqwest::{
     header::{ACCEPT, ACCEPT_ENCODING},
     Client, RequestBuilder,
@@ -223,72 +223,15 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
         let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
 
         let payload = if is_google_api {
-            // Google format
-            let mut contents = vec![json!({
-                "role": "user",
-                "parts": [{ "text": user_prompt }]
-            })];
-
-            if let Some(uri) = audio_uri {
-                contents[0]["parts"].as_array_mut().unwrap().push(json!({
-                    "file_data": {
-                        "mime_type": "audio/ogg",
-                        "file_uri": uri
-                    }
-                }));
-            } else if let Some(base64) = audio_base64 {
-                contents[0]["parts"].as_array_mut().unwrap().push(json!({
-                    "inline_data": {
-                        "mime_type": "audio/ogg",
-                        "data": base64
-                    }
-                }));
-            }
-
-            json!({
-                "contents": contents,
-                "system_instruction": {
-                    "parts": [{ "text": system_prompt }]
-                }
-            })
+            build_google_analyze_payload(&system_prompt, &user_prompt, audio_uri, audio_base64)
         } else {
-            // OpenAI format
-            // Some models support audio in messages, try to include it
-            let mut user_content = vec![json!({
-                "type": "text",
-                "text": user_prompt
-            })];
-
-            // If we have base64 audio, include it
-            if let Some(base64) = audio_base64 {
-                user_content.push(json!({
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64,
-                        "format": "ogg"
-                    }
-                }));
-            }
-
-            let mut payload = json!({
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
-            });
-
-            if enforce_json_schema {
-                payload["response_format"] = transcript_response_format();
-            }
-
-            payload
+            build_openai_analyze_payload(
+                &self.model,
+                &system_prompt,
+                &user_prompt,
+                audio_base64,
+                enforce_json_schema,
+            )
         };
 
         let base_url = self.base_url.trim_end_matches('/');
@@ -303,21 +246,42 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
             format!("{}/v1/chat/completions", base_url)
         };
 
-        let mut request = self.client.post(&url).json(&payload);
-
-        // Add Authorization header for non-Google APIs
-        if !is_google_api {
-            request = request.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        let res_json = execute_json_request(request, &url)
+        match self
+            .execute_ai_json_request(&url, &payload, is_google_api)
             .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        {
+            Ok(text) => Ok(text),
+            Err(err)
+                if should_retry_analysis_without_schema(
+                    &err,
+                    is_google_api,
+                    enforce_json_schema,
+                ) =>
+            {
+                warn!(
+                    "Structured transcript response failed on '{}' with '{}'. Retrying once without json_schema enforcement.",
+                    url, err
+                );
 
-        let text = extract_text_from_response(&res_json, is_google_api)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let fallback_payload = build_openai_analyze_payload(
+                    &self.model,
+                    &system_prompt,
+                    &user_prompt,
+                    audio_base64,
+                    false,
+                );
 
-        Ok(text)
+                self.execute_ai_json_request(&url, &fallback_payload, is_google_api)
+                    .await
+                    .map_err(|fallback_err| {
+                        anyhow::anyhow!(
+                            "Structured transcript request failed and fallback without json_schema also failed: {}",
+                            fallback_err
+                        )
+                    })
+            }
+            Err(err) => Err(anyhow::anyhow!("{}", err)),
+        }
     }
 
     pub async fn generate_clips(
@@ -644,6 +608,116 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
             Err(retry_err) => Err(anyhow::anyhow!("{}", retry_err)),
         }
     }
+
+    async fn execute_ai_json_request(
+        &self,
+        url: &str,
+        payload: &Value,
+        is_google_api: bool,
+    ) -> std::result::Result<String, RetryableError> {
+        let mut request = self.client.post(url).json(payload);
+
+        if !is_google_api {
+            request = request.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+
+        let res_json = execute_json_request(request, url).await?;
+        extract_text_from_response(&res_json, is_google_api)
+    }
+}
+
+fn build_google_analyze_payload(
+    system_prompt: &str,
+    user_prompt: &str,
+    audio_uri: Option<&str>,
+    audio_base64: Option<&str>,
+) -> Value {
+    let mut contents = vec![json!({
+        "role": "user",
+        "parts": [{ "text": user_prompt }]
+    })];
+
+    if let Some(uri) = audio_uri {
+        contents[0]["parts"].as_array_mut().unwrap().push(json!({
+            "file_data": {
+                "mime_type": "audio/ogg",
+                "file_uri": uri
+            }
+        }));
+    } else if let Some(base64) = audio_base64 {
+        contents[0]["parts"].as_array_mut().unwrap().push(json!({
+            "inline_data": {
+                "mime_type": "audio/ogg",
+                "data": base64
+            }
+        }));
+    }
+
+    json!({
+        "contents": contents,
+        "system_instruction": {
+            "parts": [{ "text": system_prompt }]
+        }
+    })
+}
+
+fn build_openai_analyze_payload(
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    audio_base64: Option<&str>,
+    enforce_json_schema: bool,
+) -> Value {
+    let mut user_content = vec![json!({
+        "type": "text",
+        "text": user_prompt
+    })];
+
+    if let Some(base64) = audio_base64 {
+        user_content.push(json!({
+            "type": "input_audio",
+            "input_audio": {
+                "data": base64,
+                "format": "ogg"
+            }
+        }));
+    }
+
+    let mut payload = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": user_content
+            }
+        ]
+    });
+
+    if enforce_json_schema {
+        payload["response_format"] = transcript_response_format();
+    }
+
+    payload
+}
+
+fn should_retry_analysis_without_schema(
+    err: &RetryableError,
+    is_google_api: bool,
+    enforce_json_schema: bool,
+) -> bool {
+    enforce_json_schema
+        && !is_google_api
+        && matches!(
+            err,
+            RetryableError::Server(message)
+                if message
+                    .to_ascii_lowercase()
+                    .contains("error decoding response body")
+        )
 }
 
 fn build_json_request(request: RequestBuilder) -> RequestBuilder {
