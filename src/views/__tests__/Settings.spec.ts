@@ -20,6 +20,7 @@ const settingsRef = ref({
   apiKey: 'test-api-key',
   baseUrl: 'https://test.url',
   model: 'test-model',
+  enforceJsonSchema: true,
   glossary: '',
   preClipPadding: 0,
   postClipPadding: 0,
@@ -49,6 +50,7 @@ describe('Settings.vue', () => {
       apiKey: 'test-api-key',
       baseUrl: 'https://test.url',
       model: 'test-model',
+      enforceJsonSchema: true,
       glossary: '',
       preClipPadding: 0,
       postClipPadding: 0,
@@ -114,6 +116,27 @@ describe('Settings.vue', () => {
 
     expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: 'new-api-key',
+    }));
+  });
+
+  it('saves the JSON enforcement toggle', async () => {
+    const wrapper = mount(Settings, {
+      global: {
+        plugins: [router],
+      },
+    });
+
+    const toggleCard = wrapper.findAll('.cursor-pointer').find(node =>
+      node.text().includes('Enforce Structured JSON for transcript analysis'),
+    );
+    expect(toggleCard).toBeTruthy();
+    await toggleCard!.trigger('click');
+
+    const saveButton = wrapper.findAll('button').find(b => b.text() === 'Save Settings');
+    await saveButton!.trigger('click');
+
+    expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
+      enforceJsonSchema: false,
     }));
   });
 });

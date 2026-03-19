@@ -4,6 +4,7 @@ export interface LLMSettings {
   baseUrl: string;
   apiKey: string;
   model: string;
+  enforceJsonSchema: boolean;
   glossary: string;
   preClipPadding: number;
   postClipPadding: number;
@@ -21,6 +22,7 @@ const defaultSettings: LLMSettings = {
   baseUrl: 'https://generativelanguage.googleapis.com',
   apiKey: '',
   model: 'gemini-2.5-flash',
+  enforceJsonSchema: true,
   glossary: '',
   preClipPadding: 0.0,
   postClipPadding: 0.0,

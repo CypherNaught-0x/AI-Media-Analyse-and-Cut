@@ -41,7 +41,7 @@ async fn test_transcription_mock() {
     );
 
     let result = client
-        .analyze_audio("context", "glossary", None, false, None, None)
+        .analyze_audio("context", "glossary", None, false, true, None, None)
         .await
         .unwrap();
 
@@ -101,7 +101,7 @@ async fn test_transcription_mock_with_structured_content() {
     );
 
     let result = client
-        .analyze_audio("context", "glossary", None, false, None, None)
+        .analyze_audio("context", "glossary", None, false, true, None, None)
         .await
         .unwrap();
 
@@ -131,7 +131,7 @@ async fn test_transcription_invalid_json_body_includes_raw_preview() {
     );
 
     let err = client
-        .analyze_audio("context", "glossary", None, false, None, None)
+        .analyze_audio("context", "glossary", None, false, true, None, None)
         .await
         .unwrap_err()
         .to_string();
@@ -192,6 +192,101 @@ async fn test_translation_mock() {
     let segments: Vec<TranscriptSegment> = serde_json::from_str(&result).unwrap();
     assert_eq!(segments.len(), 1);
     assert_eq!(segments[0].text, "Hola mundo");
+
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_transcription_request_includes_json_schema_when_enabled() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(mockito::Matcher::PartialJsonString(
+            r#"{"response_format":{"type":"json_schema","json_schema":{"name":"transcript_segments"}}}"#
+                .to_string(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": json!([
+                            {
+                                "start": "00:00",
+                                "end": "00:05",
+                                "speaker": "Speaker 1",
+                                "text": "Hello world"
+                            }
+                        ]).to_string()
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = GeminiClient::new(
+        "fake_key".to_string(),
+        server.url(),
+        "gemini-1.5-flash".to_string(),
+    );
+
+    let result = client
+        .analyze_audio("context", "glossary", None, false, true, None, None)
+        .await
+        .unwrap();
+
+    let segments: Vec<TranscriptSegment> = serde_json::from_str(&result).unwrap();
+    assert_eq!(segments.len(), 1);
+
+    mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_transcription_request_succeeds_when_json_schema_disabled() {
+    let mut server = Server::new_async().await;
+    let mock = server
+        .mock("POST", "/v1/chat/completions")
+        .match_body(mockito::Matcher::Regex(
+            r#""model"\s*:\s*"gemini-1.5-flash""#.to_string(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": json!([
+                            {
+                                "start": "00:00",
+                                "end": "00:05",
+                                "speaker": "Speaker 1",
+                                "text": "Hello world"
+                            }
+                        ]).to_string()
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let client = GeminiClient::new(
+        "fake_key".to_string(),
+        server.url(),
+        "gemini-1.5-flash".to_string(),
+    );
+
+    let result = client
+        .analyze_audio("context", "glossary", None, false, false, None, None)
+        .await
+        .unwrap();
+
+    let segments: Vec<TranscriptSegment> = serde_json::from_str(&result).unwrap();
+    assert_eq!(segments.len(), 1);
 
     mock.assert_async().await;
 }
@@ -294,6 +389,7 @@ async fn test_real_pipeline() {
             "",
             None,
             false,
+            true,
             None,
             Some(&audio_base64),
         )

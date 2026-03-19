@@ -29,6 +29,7 @@ vi.mock('../../composables/useSettings', () => ({
         apiKey: 'test-api-key',
         baseUrl: 'https://test.url',
         model: 'test-model',
+        enforceJsonSchema: true,
       },
     },
   }),
