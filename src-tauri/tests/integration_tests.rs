@@ -4,6 +4,53 @@ use mockito::Server;
 use serde_json::json;
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+
+async fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut header_end = None;
+    let mut content_length = 0usize;
+
+    loop {
+        let bytes_read = stream.read(&mut chunk).await?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+
+        if header_end.is_none() {
+            if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let end = pos + 4;
+                header_end = Some(end);
+                let headers = String::from_utf8_lossy(&buffer[..end]);
+                content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if name.eq_ignore_ascii_case("content-length") {
+                            value.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+            }
+        }
+
+        if let Some(end) = header_end {
+            if buffer.len() >= end + content_length {
+                break;
+            }
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
+}
 
 #[tokio::test]
 async fn test_transcription_mock() {
@@ -289,6 +336,77 @@ async fn test_transcription_request_succeeds_when_json_schema_disabled() {
     assert_eq!(segments.len(), 1);
 
     mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_transcription_retries_without_json_schema_on_body_decode_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_for_server = Arc::clone(&requests);
+
+    let server = tokio::spawn(async move {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_http_request(&mut stream).await.unwrap();
+            requests_for_server.lock().await.push(request);
+
+            if attempt == 0 {
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 999\r\nConnection: close\r\n\r\n{\"choices\":[{\"message\":{\"content\":\"[]\"}}]}",
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                let body = json!({
+                    "choices": [{
+                        "message": {
+                            "content": json!([
+                                {
+                                    "start": "00:00",
+                                    "end": "00:05",
+                                    "speaker": "Speaker 1",
+                                    "text": "Fallback succeeded"
+                                }
+                            ]).to_string()
+                        }
+                    }]
+                })
+                .to_string();
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        }
+    });
+
+    let client = GeminiClient::new(
+        "fake_key".to_string(),
+        format!("http://{}", address),
+        "gemini-1.5-flash".to_string(),
+    );
+
+    let result = client
+        .analyze_audio("context", "glossary", None, false, true, None, None)
+        .await
+        .unwrap();
+
+    let segments: Vec<TranscriptSegment> = serde_json::from_str(&result).unwrap();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].text, "Fallback succeeded");
+
+    server.await.unwrap();
+
+    let captured_requests = requests.lock().await;
+    assert_eq!(captured_requests.len(), 2);
+    assert!(captured_requests[0].contains("\"response_format\""));
+    assert!(!captured_requests[1].contains("\"response_format\""));
 }
 
 #[tokio::test]
