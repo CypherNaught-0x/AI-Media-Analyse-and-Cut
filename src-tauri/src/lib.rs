@@ -348,6 +348,7 @@ async fn analyze_audio(
     api_key: String,
     base_url: String,
     model: String,
+    enforce_json_schema: bool,
     context: String,
     glossary: String,
     speaker_count: Option<u32>,
@@ -362,6 +363,7 @@ async fn analyze_audio(
             &glossary,
             speaker_count,
             remove_filler_words,
+            enforce_json_schema,
             audio_uri.as_deref(),
             audio_base64.as_deref(),
         )

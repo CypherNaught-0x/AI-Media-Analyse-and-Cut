@@ -23,6 +23,42 @@ impl OutputFormat {
     }
 }
 
+fn transcript_response_format() -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "transcript_segments",
+            "strict": true,
+            "schema": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "start": {
+                            "type": "string",
+                            "description": "Segment start timestamp in MM:SS format"
+                        },
+                        "end": {
+                            "type": "string",
+                            "description": "Segment end timestamp in MM:SS format"
+                        },
+                        "speaker": {
+                            "type": "string",
+                            "description": "Speaker label such as Speaker 1"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Transcript text for this segment"
+                        }
+                    },
+                    "required": ["start", "end", "speaker", "text"]
+                }
+            }
+        }
+    })
+}
+
 #[derive(Clone)]
 pub struct GeminiClient {
     client: Client,
@@ -150,6 +186,7 @@ impl GeminiClient {
         glossary: &str,
         speaker_count: Option<u32>,
         remove_filler_words: bool,
+        enforce_json_schema: bool,
         audio_uri: Option<&str>,
         audio_base64: Option<&str>,
     ) -> Result<String> {
@@ -233,7 +270,7 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
                 }));
             }
 
-            json!({
+            let mut payload = json!({
                 "model": self.model,
                 "messages": [
                     {
@@ -245,7 +282,13 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
                         "content": user_content
                     }
                 ]
-            })
+            });
+
+            if enforce_json_schema {
+                payload["response_format"] = transcript_response_format();
+            }
+
+            payload
         };
 
         let base_url = self.base_url.trim_end_matches('/');

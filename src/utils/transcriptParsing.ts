@@ -42,6 +42,71 @@ function requireField(
   );
 }
 
+function extractJsonArray(rawResponse: string): string {
+  const match = rawResponse.match(/\[[\s\S]*\]/);
+  if (!match) {
+    throw new Error('Failed to find JSON array in AI response');
+  }
+
+  return match[0];
+}
+
+function repairSpeakerLabelQuotes(jsonText: string): string {
+  return jsonText.replace(
+    /"speaker":"Speaker\s+"(\d+)"/g,
+    '"speaker":"Speaker $1"',
+  );
+}
+
+function repairStartKeyTypos(jsonText: string): string {
+  let repaired = jsonText.replace(/([{,])"+start":/g, '$1"start":');
+
+  repaired = repaired.replace(
+    /\{"((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)","end":/g,
+    '{"start":"$1","end":',
+  );
+
+  repaired = repaired.replace(
+    /"start":"((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)","((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)",(?="speaker":)/g,
+    '"start":"$1","end":"$2",',
+  );
+
+  return repaired;
+}
+
+export function repairMalformedTranscriptJson(jsonText: string): string {
+  return repairStartKeyTypos(repairSpeakerLabelQuotes(jsonText));
+}
+
+export function parseTranscriptResponse(
+  rawResponse: string,
+  adjustTimestamp?: TimestampAdjuster,
+): TranscriptSegment[] {
+  const jsonText = extractJsonArray(rawResponse);
+
+  try {
+    return normalizeTranscriptSegments(JSON.parse(jsonText), adjustTimestamp);
+  } catch (originalError) {
+    const repairedJson = repairMalformedTranscriptJson(jsonText);
+    if (repairedJson === jsonText) {
+      throw originalError;
+    }
+
+    try {
+      return normalizeTranscriptSegments(JSON.parse(repairedJson), adjustTimestamp);
+    } catch (repairError) {
+      const originalMessage =
+        originalError instanceof Error ? originalError.message : String(originalError);
+      const repairMessage =
+        repairError instanceof Error ? repairError.message : String(repairError);
+
+      throw new Error(
+        `Failed to parse transcript JSON after repair attempt. Original error: ${originalMessage}. Repair error: ${repairMessage}`,
+      );
+    }
+  }
+}
+
 export function normalizeTranscriptSegments(
   raw: unknown,
   adjustTimestamp?: TimestampAdjuster,

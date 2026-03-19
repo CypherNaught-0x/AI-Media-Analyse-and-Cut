@@ -19,7 +19,7 @@ import { useSettings } from "../composables/useSettings";
 import { parseTime, adjustTimestamp, formatTime } from "../composables/useTimeFormat";
 import { generateSubtitleContent } from "../utils/subtitle";
 import { trimClipBoundarySilence } from "../utils/clipSilence";
-import { normalizeTranscriptSegments } from "../utils/transcriptParsing";
+import { parseTranscriptResponse } from "../utils/transcriptParsing";
 
 import LightningIcon from '../assets/icons/lightning.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -274,8 +274,7 @@ async function translateTranscript() {
         const jsonMatch = response.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
             try {
-                const parsed = JSON.parse(jsonMatch[0]);
-                translations.value[lang] = normalizeTranscriptSegments(parsed);
+                translations.value[lang] = parseTranscriptResponse(response);
                 currentLanguage.value = lang;
                 status.value = `Translation to ${lang} complete.`;
             } catch (e) {
@@ -449,6 +448,7 @@ async function processFile() {
                     apiKey: settings.value.apiKey,
                     baseUrl: settings.value.baseUrl,
                     model: settings.value.model,
+                    enforceJsonSchema: settings.value.enforceJsonSchema,
                     context: context.value,
                     glossary: settings.value.glossary,
                     speakerCount: speakerCount.value,
@@ -471,9 +471,8 @@ async function processFile() {
         const jsonMatch = response.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
             try {
-                const parsed = JSON.parse(jsonMatch[0]);
-                const adjustedSegments = normalizeTranscriptSegments(
-                    parsed,
+                const adjustedSegments = parseTranscriptResponse(
+                    response,
                     (timestamp) => adjustTimestamp(timestamp, processedAudio.offsets),
                 );
                 
