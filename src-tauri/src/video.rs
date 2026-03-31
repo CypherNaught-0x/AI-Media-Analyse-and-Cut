@@ -13,11 +13,60 @@ pub struct Segment {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TranscriptWord {
+    pub start: String,
+    pub end: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptAlternativeSource {
+    #[default]
+    Parakeet,
+    Google,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptAlternative {
+    pub source: TranscriptAlternativeSource,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity_score: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptMergeStatus {
+    #[default]
+    Matched,
+    Conflict,
+    MissingGoogle,
+    MissingParakeet,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
     pub start: String,
     pub end: String,
     pub speaker: String,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<Vec<TranscriptWord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alternatives: Option<Vec<TranscriptAlternative>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_status: Option<TranscriptMergeStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_source: Option<TranscriptAlternativeSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity_score: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

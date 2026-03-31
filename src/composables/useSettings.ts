@@ -1,3 +1,4 @@
+import type { TranscriptionBackend } from '../types';
 import { ref, watch } from 'vue';
 
 export interface LLMSettings {
@@ -8,6 +9,9 @@ export interface LLMSettings {
   glossary: string;
   preClipPadding: number;
   postClipPadding: number;
+  transcriptionBackend: TranscriptionBackend;
+  parakeetModelPath: string;
+  sortformerModelPath: string;
 }
 
 export interface ModelFetchState {
@@ -26,6 +30,9 @@ const defaultSettings: LLMSettings = {
   glossary: '',
   preClipPadding: 0.0,
   postClipPadding: 0.0,
+  transcriptionBackend: 'llm',
+  parakeetModelPath: '',
+  sortformerModelPath: '',
 };
 
 // Load from localStorage

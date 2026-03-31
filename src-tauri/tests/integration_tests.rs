@@ -229,6 +229,7 @@ async fn test_translation_mock() {
         end: "00:05".to_string(),
         speaker: "Speaker 1".to_string(),
         text: "Hello world".to_string(),
+        ..Default::default()
     }];
 
     let result = client

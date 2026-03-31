@@ -6,6 +6,7 @@ use reqwest::{
     header::{ACCEPT, ACCEPT_ENCODING},
     Client, RequestBuilder,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 struct OutputFormat;
@@ -18,6 +19,11 @@ impl OutputFormat {
             end: "00:05".to_string(),
             speaker: "Speaker 1".to_string(),
             text: "This is an example sentence.".to_string(),
+            words: None,
+            alternatives: None,
+            merge_status: None,
+            active_source: None,
+            similarity_score: None,
         }];
         serde_json::to_string(&example).unwrap_or_default()
     }
@@ -45,7 +51,7 @@ fn transcript_response_format() -> Value {
                         },
                         "speaker": {
                             "type": "string",
-                            "description": "Speaker label such as Speaker 1"
+                            "description": "Stable speaker label such as Speaker 1, or a real name only when the identity is clearly spoken or strongly inferable from context"
                         },
                         "text": {
                             "type": "string",
@@ -57,6 +63,167 @@ fn transcript_response_format() -> Value {
             }
         }
     })
+}
+
+fn cleanup_response_format() -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "cleanup_segments",
+            "strict": true,
+            "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "segments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "start_index": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                },
+                                "end_index": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                },
+                                "text": {
+                                    "type": "string"
+                                },
+                                "speaker": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": ["start_index", "end_index", "text"]
+                        }
+                    }
+                },
+                "required": ["segments"]
+            }
+        }
+    })
+}
+
+#[derive(Deserialize)]
+struct CleanupPlan {
+    segments: Vec<CleanupSegmentPlan>,
+}
+
+#[derive(Deserialize)]
+struct CleanupSegmentPlan {
+    start_index: usize,
+    end_index: usize,
+    text: String,
+    #[serde(default)]
+    speaker: Option<String>,
+}
+
+fn extract_json_object(raw_response: &str) -> Result<String> {
+    if let (Some(start), Some(end)) = (raw_response.find('{'), raw_response.rfind('}')) {
+        return Ok(raw_response[start..=end].to_string());
+    }
+
+    Err(anyhow::anyhow!(
+        "Failed to find JSON object in cleanup response"
+    ))
+}
+
+fn apply_cleanup_plan(
+    transcript: &[TranscriptSegment],
+    cleanup_plan: CleanupPlan,
+) -> Result<Vec<TranscriptSegment>> {
+    if transcript.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if cleanup_plan.segments.is_empty() {
+        return Err(anyhow::anyhow!("Cleanup plan returned no segments"));
+    }
+
+    let mut expected_start = 0usize;
+    let mut cleaned_segments = Vec::with_capacity(cleanup_plan.segments.len());
+
+    for cleaned in cleanup_plan.segments {
+        if cleaned.start_index != expected_start {
+            return Err(anyhow::anyhow!(
+                "Cleanup plan is not contiguous at segment index {}",
+                expected_start
+            ));
+        }
+
+        if cleaned.end_index < cleaned.start_index || cleaned.end_index >= transcript.len() {
+            return Err(anyhow::anyhow!(
+                "Cleanup plan range {}-{} is out of bounds",
+                cleaned.start_index,
+                cleaned.end_index
+            ));
+        }
+
+        if cleaned.text.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "Cleanup plan returned empty text for range {}-{}",
+                cleaned.start_index,
+                cleaned.end_index
+            ));
+        }
+
+        let source_segments = &transcript[cleaned.start_index..=cleaned.end_index];
+        let first = source_segments
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("Cleanup plan referenced an empty range"))?;
+        let last = source_segments.last().unwrap();
+
+        let distinct_speakers = source_segments
+            .iter()
+            .map(|segment| segment.speaker.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        if distinct_speakers.len() > 1 {
+            return Err(anyhow::anyhow!(
+                "Cleanup plan merged segments with different speakers between {} and {}",
+                cleaned.start_index,
+                cleaned.end_index
+            ));
+        }
+
+        let merged_words = source_segments
+            .iter()
+            .filter_map(|segment| segment.words.as_ref())
+            .flat_map(|words| words.iter().cloned())
+            .collect::<Vec<_>>();
+
+        cleaned_segments.push(TranscriptSegment {
+            start: first.start.clone(),
+            end: last.end.clone(),
+            speaker: cleaned
+                .speaker
+                .as_ref()
+                .map(|speaker| speaker.trim())
+                .filter(|speaker| !speaker.is_empty())
+                .unwrap_or(first.speaker.as_str())
+                .to_string(),
+            text: cleaned.text.trim().to_string(),
+            words: (!merged_words.is_empty()).then_some(merged_words),
+            alternatives: None,
+            merge_status: None,
+            active_source: None,
+            similarity_score: None,
+        });
+
+        expected_start = cleaned.end_index + 1;
+    }
+
+    if expected_start != transcript.len() {
+        return Err(anyhow::anyhow!(
+            "Cleanup plan ended at {}, but transcript has {} segments",
+            expected_start,
+            transcript.len()
+        ));
+    }
+
+    Ok(cleaned_segments)
 }
 
 #[derive(Clone)]
@@ -193,7 +360,7 @@ impl GeminiClient {
         let mut system_prompt = "You are a professional video editor assistant. Your task is to transcribe the audio and identify logical segments.".to_string();
 
         if let Some(count) = speaker_count {
-            system_prompt.push_str(&format!(" There are {} speakers in this audio. Please label them as Speaker 1, Speaker 2, etc.", count));
+            system_prompt.push_str(&format!(" There are {} speakers in this audio. Use stable labels for exactly those speakers.", count));
         }
 
         let mut user_prompt = format!(
@@ -215,8 +382,31 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
 "#,
         );
 
+        user_prompt.push_str(
+            r#"
+GLOSSARY AND CONTEXT GUIDANCE (IMPORTANT):
+- Treat glossary entries as authoritative spellings for names, products, companies, acronyms, and technical terms.
+- Use the context to disambiguate phonetically similar words and to infer the correct domain-specific terminology.
+- If the audio sounds like a glossary term or a contextually obvious proper noun, prefer the glossary/context spelling over a literal phonetic guess.
+- Do not leave obvious ASR misspellings for technical words, names, or branded terms when the glossary or context makes the intended wording clear.
+- Preserve casing for acronyms, product names, and proper nouns when context or glossary indicates it.
+"#,
+        );
+
+        user_prompt.push_str(
+            r#"
+SPEAKER LABEL GUIDANCE (IMPORTANT):
+- Keep speaker labels stable across the whole transcript.
+- If a speaker's real name is clearly spoken in the audio, use that name as the speaker label.
+- You may also use a real name when it is strongly inferable from the provided context or glossary.
+- Only name a speaker when the evidence is clear. If there is any real uncertainty, use neutral labels such as Speaker 1, Speaker 2, etc.
+- Do not guess names just because a name appears somewhere in the context.
+- Prefer concise speaker labels like "Alice", "Dr. Weber", or "Moderator" over long descriptions.
+"#,
+        );
+
         if remove_filler_words {
-            user_prompt.push_str("IMPORTANT: Remove all filler words (um, uh, like, you know) and non-voice sounds (coughs, breaths) from the 'text' field. The transcript should be clean and ready for subtitles.\n");
+            user_prompt.push_str("IMPORTANT: Remove only obvious filler words and short disfluencies such as 'um', 'uh', 'like', 'you know', brief false starts, and immediate word repetitions. Do not rewrite, paraphrase, summarize, or replace whole sentences. Preserve the original meaning, order, and wording except for the minimal filler/disfluency tokens you remove. Also remove non-voice sounds such as coughs or breaths when they appear in the text.\n");
         }
 
         // Determine if this is a Google API or OpenAI-compatible API
@@ -281,6 +471,315 @@ SUBTITLE LENGTH GUIDELINES (IMPORTANT):
                     })
             }
             Err(err) => Err(anyhow::anyhow!("{}", err)),
+        }
+    }
+
+    pub async fn cleanup_parakeet_transcript(
+        &self,
+        transcript: Vec<TranscriptSegment>,
+        context: &str,
+        glossary: &str,
+        remove_filler_words: bool,
+    ) -> Result<Vec<TranscriptSegment>> {
+        let indexed_transcript = transcript
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                json!({
+                    "index": index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "speaker": segment.speaker,
+                    "text": segment.text,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let transcript_json = serde_json::to_string(&indexed_transcript)?;
+        let system_prompt = "You are a transcript cleanup editor. You clean ASR output while preserving timing coverage exactly.";
+        let mut user_prompt = format!(
+            "Clean this transcript that was produced by a local ASR model.
+
+Context:
+{}
+
+Glossary:
+{}
+
+Rules:
+- Preserve the original meaning and chronology.
+- You MAY merge adjacent segments, but only if they are contiguous and from the same speaker.
+- Do NOT reorder content.
+- Do NOT skip content or leave timing gaps.
+- Do NOT invent timestamps.
+- Return JSON with a 'segments' array.
+- Each output item must contain:
+  - 'start_index': index of the first source segment included
+  - 'end_index': index of the last source segment included
+  - 'text': the cleaned text for that contiguous range
+- The output ranges must cover every input segment exactly once, in order, with no overlaps.
+- Keep timing stable by using only contiguous source ranges.
+- Improve punctuation, capitalization, spelling, and obvious ASR mistakes.
+- Treat glossary entries as authoritative spellings for names, products, companies, acronyms, and technical terms.
+- Use the context to resolve special vocabulary, domain terms, personal names, and branded words that may be misspelled phonetically in the ASR output.
+- When glossary and context make the intended wording clear, replace phonetic or malformed spellings with the canonical form.
+- Prefer technically precise wording from the glossary/context over generic or phonetically similar alternatives.
+- Preserve casing for acronyms, proper nouns, and product names.
+- You MAY replace a generic speaker label with a real name only when that name is clearly spoken in the transcript or strongly inferable from context/glossary.
+- If the speaker identity is uncertain, keep the existing generic speaker label.
+- Keep speaker labels stable and consistent across all segments belonging to the same person.
+- If you return a renamed speaker, include a 'speaker' field for that output item. Otherwise omit it.
+",
+            context, glossary
+        );
+
+        if remove_filler_words {
+            user_prompt.push_str(
+                "- Remove only obvious filler words, short disfluencies, and immediate repetitions when that improves readability.\n- Do not paraphrase, summarize, or rewrite complete sentences.\n- Keep the original wording and sentence structure except for the minimal filler/disfluency tokens you remove.\n",
+            );
+        }
+
+        user_prompt.push_str(&format!("\nTranscript:\n{}", transcript_json));
+
+        let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
+        let payload = if is_google_api {
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": user_prompt }]
+                }],
+                "system_instruction": {
+                    "parts": [{ "text": system_prompt }]
+                },
+                "generationConfig": {
+                    "responseMimeType": "application/json"
+                }
+            })
+        } else {
+            json!({
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                "response_format": cleanup_response_format()
+            })
+        };
+
+        let base_url = self.base_url.trim_end_matches('/');
+        let url = if is_google_api {
+            format!(
+                "{}/v1beta/models/{}:generateContent?key={}",
+                base_url, self.model, self.api_key
+            )
+        } else {
+            format!("{}/v1/chat/completions", base_url)
+        };
+
+        let response = self
+            .execute_ai_json_request(&url, &payload, is_google_api)
+            .await
+            .map_err(|error| anyhow::anyhow!("{}", error))?;
+
+        let cleanup_json = match extract_json_object(&response) {
+            Ok(cleanup_json) => cleanup_json,
+            Err(error) => {
+                warn!(
+                    "Cleanup response could not be parsed as JSON object: {}. Falling back to original transcript. Response preview: {}",
+                    error,
+                    preview_for_error(&response)
+                );
+                return Ok(transcript);
+            }
+        };
+
+        let cleanup_plan: CleanupPlan = match serde_json::from_str(&cleanup_json) {
+            Ok(cleanup_plan) => cleanup_plan,
+            Err(error) => {
+                warn!(
+                    "Cleanup response JSON schema parse failed: {}. Falling back to original transcript. Response preview: {}",
+                    error,
+                    preview_for_error(&cleanup_json)
+                );
+                return Ok(transcript);
+            }
+        };
+
+        match apply_cleanup_plan(&transcript, cleanup_plan) {
+            Ok(cleaned) => Ok(cleaned),
+            Err(error) => {
+                warn!(
+                    "Cleanup plan validation failed: {}. Falling back to original transcript. Response preview: {}",
+                    error,
+                    preview_for_error(&cleanup_json)
+                );
+                Ok(transcript)
+            }
+        }
+    }
+
+    pub async fn merge_transcript_hypotheses(
+        &self,
+        primary_transcript: Vec<TranscriptSegment>,
+        reference_transcript: Vec<TranscriptSegment>,
+        context: &str,
+        glossary: &str,
+        remove_filler_words: bool,
+    ) -> Result<Vec<TranscriptSegment>> {
+        let primary_json = serde_json::to_string(
+            &primary_transcript
+                .iter()
+                .enumerate()
+                .map(|(index, segment)| {
+                    json!({
+                        "index": index,
+                        "start": segment.start,
+                        "end": segment.end,
+                        "speaker": segment.speaker,
+                        "text": segment.text,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?;
+
+        let reference_json = serde_json::to_string(&reference_transcript)?;
+        let system_prompt = "You are a transcript reconciliation editor. You combine two transcript hypotheses while preserving the timing scaffold of the primary transcript exactly.";
+        let mut user_prompt = format!(
+            "Merge these two transcript hypotheses.
+
+PRIMARY TRANSCRIPT:
+- This transcript provides the timing scaffold, segment order, and speaker segmentation to preserve.
+- Your output MUST map only onto contiguous ranges of the primary transcript.
+
+REFERENCE TRANSCRIPT:
+- Use this as an alternative hypothesis for wording, spelling, names, acronyms, and technical terminology.
+- The reference transcript may be more accurate for some words, but its timestamps and segment boundaries must NOT be used directly.
+
+Context:
+{}
+
+Glossary:
+{}
+
+Rules:
+- Preserve the original meaning and chronology.
+- Prefer the primary transcript's timing and speaker boundaries.
+- Use the reference transcript, glossary, and context to improve spelling, names, branded terms, acronyms, and technical vocabulary.
+- When the reference transcript clearly captures wording better than the primary transcript, prefer that wording.
+- You MAY merge adjacent primary segments, but only if they are contiguous and from the same speaker.
+- Do NOT reorder content.
+- Do NOT skip content or leave timing gaps.
+- Do NOT invent timestamps.
+- Return JSON with a 'segments' array.
+- Each output item must contain:
+  - 'start_index': index of the first primary segment included
+  - 'end_index': index of the last primary segment included
+  - 'text': the merged text for that contiguous primary range
+- The output ranges must cover every primary segment exactly once, in order, with no overlaps.
+- Treat glossary entries as authoritative spellings for names, products, companies, acronyms, and technical terms.
+- Use the context to resolve special vocabulary, personal names, domain terms, and phonetically ambiguous words.
+- Preserve casing for acronyms, proper nouns, and product names.
+",
+            context, glossary
+        );
+
+        if remove_filler_words {
+            user_prompt.push_str(
+                "- Remove only obvious filler words, short disfluencies, and immediate repetitions when that improves readability.\n- Do not paraphrase, summarize, or rewrite complete sentences.\n- Keep the original wording and sentence structure except for the minimal filler/disfluency tokens you remove.\n",
+            );
+        }
+
+        user_prompt.push_str(&format!(
+            "\nPrimary transcript:\n{}\n\nReference transcript:\n{}",
+            primary_json, reference_json
+        ));
+
+        let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
+        let payload = if is_google_api {
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [{ "text": user_prompt }]
+                }],
+                "system_instruction": {
+                    "parts": [{ "text": system_prompt }]
+                },
+                "generationConfig": {
+                    "responseMimeType": "application/json"
+                }
+            })
+        } else {
+            json!({
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt
+                    }
+                ],
+                "response_format": cleanup_response_format()
+            })
+        };
+
+        let base_url = self.base_url.trim_end_matches('/');
+        let url = if is_google_api {
+            format!(
+                "{}/v1beta/models/{}:generateContent?key={}",
+                base_url, self.model, self.api_key
+            )
+        } else {
+            format!("{}/v1/chat/completions", base_url)
+        };
+
+        let response = self
+            .execute_ai_json_request(&url, &payload, is_google_api)
+            .await
+            .map_err(|error| anyhow::anyhow!("{}", error))?;
+
+        let cleanup_json = match extract_json_object(&response) {
+            Ok(cleanup_json) => cleanup_json,
+            Err(error) => {
+                warn!(
+                    "Merged transcript response could not be parsed as JSON object: {}. Falling back to primary transcript. Response preview: {}",
+                    error,
+                    preview_for_error(&response)
+                );
+                return Ok(primary_transcript);
+            }
+        };
+
+        let cleanup_plan: CleanupPlan = match serde_json::from_str(&cleanup_json) {
+            Ok(cleanup_plan) => cleanup_plan,
+            Err(error) => {
+                warn!(
+                    "Merged transcript response JSON schema parse failed: {}. Falling back to primary transcript. Response preview: {}",
+                    error,
+                    preview_for_error(&cleanup_json)
+                );
+                return Ok(primary_transcript);
+            }
+        };
+
+        match apply_cleanup_plan(&primary_transcript, cleanup_plan) {
+            Ok(merged) => Ok(merged),
+            Err(error) => {
+                warn!(
+                    "Merged transcript plan validation failed: {}. Falling back to primary transcript. Response preview: {}",
+                    error,
+                    preview_for_error(&cleanup_json)
+                );
+                Ok(primary_transcript)
+            }
         }
     }
 
@@ -864,4 +1363,98 @@ fn preview_for_error(raw: &str) -> String {
 
     let preview: String = raw.chars().take(RAW_RESPONSE_PREVIEW_LIMIT).collect();
     format!("{}... [truncated, total_chars={}]", preview, total_chars)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::video::TranscriptWord;
+
+    #[test]
+    fn apply_cleanup_plan_merges_contiguous_ranges() {
+        let transcript = vec![
+            TranscriptSegment {
+                start: "00:00.000".into(),
+                end: "00:01.000".into(),
+                speaker: "Speaker 1".into(),
+                text: "hello".into(),
+                words: Some(vec![TranscriptWord {
+                    start: "00:00.000".into(),
+                    end: "00:01.000".into(),
+                    text: "hello".into(),
+                    speaker: Some("Speaker 1".into()),
+                }]),
+                alternatives: None,
+                merge_status: None,
+                active_source: None,
+                similarity_score: None,
+            },
+            TranscriptSegment {
+                start: "00:01.000".into(),
+                end: "00:02.000".into(),
+                speaker: "Speaker 1".into(),
+                text: "world".into(),
+                words: Some(vec![TranscriptWord {
+                    start: "00:01.000".into(),
+                    end: "00:02.000".into(),
+                    text: "world".into(),
+                    speaker: Some("Speaker 1".into()),
+                }]),
+                alternatives: None,
+                merge_status: None,
+                active_source: None,
+                similarity_score: None,
+            },
+        ];
+
+        let cleaned = apply_cleanup_plan(
+            &transcript,
+            CleanupPlan {
+                segments: vec![CleanupSegmentPlan {
+                    start_index: 0,
+                    end_index: 1,
+                    text: "Hello world.".into(),
+                    speaker: None,
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(cleaned.len(), 1);
+        assert_eq!(cleaned[0].start, "00:00.000");
+        assert_eq!(cleaned[0].end, "00:02.000");
+        assert_eq!(cleaned[0].text, "Hello world.");
+        assert_eq!(cleaned[0].words.as_ref().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn apply_cleanup_plan_can_rename_speaker_when_provided() {
+        let transcript = vec![TranscriptSegment {
+            start: "00:00.000".into(),
+            end: "00:01.000".into(),
+            speaker: "Speaker 1".into(),
+            text: "hello".into(),
+            words: None,
+            alternatives: None,
+            merge_status: None,
+            active_source: None,
+            similarity_score: None,
+        }];
+
+        let cleaned = apply_cleanup_plan(
+            &transcript,
+            CleanupPlan {
+                segments: vec![CleanupSegmentPlan {
+                    start_index: 0,
+                    end_index: 0,
+                    text: "Hello.".into(),
+                    speaker: Some("Alice".into()),
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(cleaned[0].speaker, "Alice");
+        assert_eq!(cleaned[0].text, "Hello.");
+    }
 }

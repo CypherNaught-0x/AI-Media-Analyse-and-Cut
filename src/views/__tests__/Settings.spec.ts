@@ -13,6 +13,11 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
   check: vi.fn(() => Promise.resolve({ available: false })),
 }));
 
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  open: vi.fn(),
+  save: vi.fn(),
+}));
+
 // Mock useSettings
 const updateSettingsMock = vi.fn();
 const updateModelFetchStateMock = vi.fn();
@@ -24,6 +29,9 @@ const settingsRef = ref({
   glossary: '',
   preClipPadding: 0,
   postClipPadding: 0,
+  transcriptionBackend: 'llm',
+  parakeetModelPath: '',
+  sortformerModelPath: '',
 });
 const modelFetchStateRef = ref({
   availableModels: [],
@@ -54,6 +62,9 @@ describe('Settings.vue', () => {
       glossary: '',
       preClipPadding: 0,
       postClipPadding: 0,
+      transcriptionBackend: 'llm',
+      parakeetModelPath: '',
+      sortformerModelPath: '',
     };
     modelFetchStateRef.value = {
       availableModels: [],
@@ -69,7 +80,7 @@ describe('Settings.vue', () => {
       },
     });
 
-    expect(wrapper.text()).toContain('LLM Settings');
+    expect(wrapper.text()).toContain('AI Settings');
     expect(wrapper.find('input[type="password"]').exists()).toBe(true);
   });
 

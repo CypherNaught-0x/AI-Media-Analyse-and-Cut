@@ -40,7 +40,8 @@ You can download the latest version for Windows and MacOS from the releases page
 
 1. Download the `.dmg` file (e.g., `ai-media-cutter_x.x.x_aarch64.dmg` for Apple Silicon or `_x64.dmg` for Intel).
 2. Drag the app to your **Applications** folder.
-3. **"Unidentified Developer" Warning**:
+3. If you get an "App is Damaged and can't be opened" error run `xattr -dr com.apple.quarantine /Applications/ai-media-cutter.app`
+4. **"Unidentified Developer" Warning**:
    * **Right-click** the app in Finder and select **Open**.
    * Click **Open** in the dialog.
    * *Alternatively*: Go to **System Settings > Privacy & Security** and click **Open Anyway**.

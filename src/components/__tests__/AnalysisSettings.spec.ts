@@ -6,6 +6,7 @@ describe('AnalysisSettings.vue', () => {
   it('renders correctly', () => {
     const wrapper = mount(AnalysisSettings, {
       props: {
+        transcriptionBackend: 'llm',
         context: 'test context',
         glossary: 'test glossary',
         speakerCount: 2,
@@ -22,6 +23,7 @@ describe('AnalysisSettings.vue', () => {
   it('emits updates', async () => {
     const wrapper = mount(AnalysisSettings, {
       props: {
+        transcriptionBackend: 'llm',
         context: '',
         glossary: '',
         speakerCount: null,
@@ -44,5 +46,45 @@ describe('AnalysisSettings.vue', () => {
 
     await wrapper.findAll('.cursor-pointer')[1].trigger('click');
     expect(wrapper.emitted('update:trimSilence')![0]).toEqual([false]);
+  });
+
+  it('emits backend updates', async () => {
+    const wrapper = mount(AnalysisSettings, {
+      props: {
+        transcriptionBackend: 'llm',
+        context: '',
+        glossary: '',
+        speakerCount: null,
+        removeFillerWords: false,
+        trimSilence: true,
+      },
+    });
+
+    const parakeetButton = wrapper.findAll('button').find((button) => button.text().includes('Parakeet'));
+    await parakeetButton!.trigger('click');
+
+    expect(wrapper.emitted('update:transcriptionBackend')![0]).toEqual(['parakeet']);
+  });
+
+  it('keeps speaker count and filler-word cleanup enabled for hybrid merge', async () => {
+    const wrapper = mount(AnalysisSettings, {
+      props: {
+        transcriptionBackend: 'hybrid-merge',
+        context: '',
+        glossary: '',
+        speakerCount: 2,
+        removeFillerWords: false,
+        trimSilence: true,
+      },
+    });
+
+    const speakerInput = wrapper.find('input[type="number"]');
+    expect(speakerInput.attributes('disabled')).toBeUndefined();
+
+    await speakerInput.setValue(4);
+    expect(wrapper.emitted('update:speakerCount')![0]).toEqual([4]);
+
+    await wrapper.findAll('.cursor-pointer')[0].trigger('click');
+    expect(wrapper.emitted('update:removeFillerWords')![0]).toEqual([true]);
   });
 });
