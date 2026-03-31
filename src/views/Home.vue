@@ -9,7 +9,7 @@ import SubtitleExport from "../components/SubtitleExport.vue";
 import ViralClipsGenerator from "../components/ViralClipsGenerator.vue";
 import PodcastGenerator from "../components/PodcastGenerator.vue";
 import ErrorOverlay from "../components/ErrorOverlay.vue";
-import type { TranscriptSegment, AudioInfo, ProcessedAudio, SilenceInterval, ClipExportPayload, Clip } from "../types";
+import type { TranscriptSegment, AudioInfo, ProcessedAudio, SilenceInterval, ClipExportPayload, Clip, TranscriptionBackend } from "../types";
 import FileSelector from "../components/FileSelector.vue";
 import AnalysisSettings from "../components/AnalysisSettings.vue";
 import ClipGenerator from "../components/ClipGenerator.vue";
@@ -27,6 +27,7 @@ import UserIcon from '../assets/icons/user.svg?component';
 import TranslateIcon from '../assets/icons/translate.svg?component';
 import CheckIcon from '../assets/icons/check.svg?component';
 import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
+import type { TranscriptWord } from '../types';
 
 const router = useRouter();
 const { settings } = useSettings();
@@ -83,32 +84,88 @@ const allowSplicing = ref(false);
 const clips = ref<Clip[]>([]);
 const lastExportPath = ref("");
 const clipExportSilenceCache = ref<{ path: string; intervals: SilenceInterval[] } | null>(null);
+const speakerOrder = ref<string[]>([]);
 
 const lastAnalyzedSettings = ref({
     context: '',
     glossary: '',
     speakerCount: null as number | null,
     removeFillerWords: false,
-    trimSilence: true
+    trimSilence: true,
+    transcriptionBackend: 'llm' as TranscriptionBackend,
+    parakeetModelPath: '',
+    sortformerModelPath: '',
 });
 
+const isLlmOnlyBackend = computed(() => settings.value.transcriptionBackend === 'llm');
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
+const hasParakeetModels = computed(() => {
+    return true;
+});
+const hasBackendConfiguration = computed(() => {
+    if (settings.value.transcriptionBackend === 'llm') return hasApiKey.value;
+    if (settings.value.transcriptionBackend === 'hybrid') return hasApiKey.value && hasParakeetModels.value;
+    if (settings.value.transcriptionBackend === 'hybrid-merge') return hasApiKey.value && hasParakeetModels.value;
+    return hasParakeetModels.value;
+});
 const currentModelDisplay = computed(() => {
+    if (settings.value.transcriptionBackend === 'hybrid') {
+        if (!hasApiKey.value) return "Hybrid (missing API key)";
+        return `Hybrid: Parakeet + ${settings.value.model}`;
+    }
+    if (settings.value.transcriptionBackend === 'hybrid-merge') {
+        if (!hasApiKey.value) return "Hybrid Merge (missing API key)";
+        return `Hybrid Merge: Parakeet + ${settings.value.model}`;
+    }
+    if (settings.value.transcriptionBackend === 'parakeet') {
+        if (!settings.value.parakeetModelPath.trim() && !settings.value.sortformerModelPath.trim()) {
+            return "Parakeet-RS (auto-download)";
+        }
+        return "Parakeet-RS (local)";
+    }
     if (!hasApiKey.value) return "No API Key configured";
     return `${settings.value.model}`;
 });
+const currentEngineLabel = computed(() => {
+    return settings.value.transcriptionBackend === 'llm' ? 'Current Model' : 'Current Pipeline';
+});
 const hasTranscript = computed(() => segments.value.length > 0);
 const settingsChanged = computed(() => {
-    return context.value !== lastAnalyzedSettings.value.context ||
+    return settings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
+           settings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
+           settings.value.sortformerModelPath !== lastAnalyzedSettings.value.sortformerModelPath ||
+           context.value !== lastAnalyzedSettings.value.context ||
            settings.value.glossary !== lastAnalyzedSettings.value.glossary ||
            speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
            removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords ||
            trimSilence.value !== lastAnalyzedSettings.value.trimSilence;
 });
 
+function getSpeakerAppearanceOrder(transcriptSegments: TranscriptSegment[]): string[] {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+
+    for (const segment of transcriptSegments) {
+        if (!seen.has(segment.speaker)) {
+            seen.add(segment.speaker);
+            ordered.push(segment.speaker);
+        }
+    }
+
+    return ordered;
+}
+
+function syncSpeakerOrder() {
+    const appearanceOrder = getSpeakerAppearanceOrder(segments.value);
+    const present = new Set(appearanceOrder);
+    const preserved = speakerOrder.value.filter((speaker) => present.has(speaker));
+    const additions = appearanceOrder.filter((speaker) => !preserved.includes(speaker));
+    speakerOrder.value = [...preserved, ...additions];
+}
+
 const uniqueSpeakers = computed(() => {
-    const s = new Set(segments.value.map(seg => seg.speaker));
-    return Array.from(s).sort();
+    const present = new Set(segments.value.map((segment) => segment.speaker));
+    return speakerOrder.value.filter((speaker) => present.has(speaker));
 });
 
 const displaySegments = computed({
@@ -145,6 +202,10 @@ onMounted(async () => {
                  status.value = `Processing... ${payload.toFixed(1)}s`;
             } else if (typeof payload === 'object') {
                  if (payload.percentage !== undefined) {
+                     if (progressInterval) {
+                         clearInterval(progressInterval);
+                         progressInterval = null;
+                     }
                      progressPercentage.value = payload.percentage;
                      let statusMsg = `Processing... ${payload.percentage.toFixed(1)}%`;
                      
@@ -166,10 +227,15 @@ onMounted(async () => {
 
 watch(inputPath, () => {
     segments.value = [];
+    speakerOrder.value = [];
     translations.value = {};
     currentLanguage.value = "Original";
     loadTranscript();
 });
+
+watch(segments, () => {
+    syncSpeakerOrder();
+}, { deep: true });
 
 async function loadTranscript() {
     if (!inputPath.value) return;
@@ -206,7 +272,10 @@ async function loadTranscript() {
                 glossary: settings.value.glossary,
                 speakerCount: speakerCount.value,
                 removeFillerWords: removeFillerWords.value,
-                trimSilence: trimSilence.value
+                trimSilence: trimSilence.value,
+                transcriptionBackend: settings.value.transcriptionBackend ?? 'llm',
+                parakeetModelPath: settings.value.parakeetModelPath ?? '',
+                sortformerModelPath: settings.value.sortformerModelPath ?? '',
             };
             
             status.value = "Loaded existing transcript and settings.";
@@ -227,7 +296,10 @@ async function saveTranscript() {
             glossary: settings.value.glossary,
             speakerCount: speakerCount.value,
             removeFillerWords: removeFillerWords.value,
-            trimSilence: trimSilence.value
+            trimSilence: trimSilence.value,
+            transcriptionBackend: settings.value.transcriptionBackend,
+            parakeetModelPath: settings.value.parakeetModelPath,
+            sortformerModelPath: settings.value.sortformerModelPath,
         };
         await invoke("write_text_file", { 
             path: transcriptPath, 
@@ -351,9 +423,84 @@ function logExecution(type: 'analysis' | 'generation', inputSize: number, durati
     localStorage.setItem('executionHistory', JSON.stringify(executionHistory.value));
 }
 
+async function analyzeWithLlmTranscript(
+    analysisAudioPath: string,
+    adjustTimestamps?: boolean,
+    processedOffsets?: ProcessedAudio['offsets'],
+): Promise<TranscriptSegment[]> {
+    const isGoogleApi = settings.value.baseUrl.includes('generativelanguage.googleapis.com');
+    let uri: string | null = null;
+    let audioBase64: string | null = null;
+
+    if (isGoogleApi) {
+        status.value = "Uploading file...";
+        uri = await invoke<string | null>("upload_file", {
+            apiKey: settings.value.apiKey,
+            baseUrl: settings.value.baseUrl,
+            path: analysisAudioPath
+        });
+
+        if (uri) {
+            status.value = "File uploaded successfully";
+        }
+    } else {
+        status.value = "Encoding audio as base64...";
+        audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
+        status.value = "Audio encoded successfully";
+    }
+
+    const response = await invoke<string>("analyze_audio", {
+        apiKey: settings.value.apiKey,
+        baseUrl: settings.value.baseUrl,
+        model: settings.value.model,
+        enforceJsonSchema: settings.value.enforceJsonSchema,
+        context: context.value,
+        glossary: settings.value.glossary,
+        speakerCount: speakerCount.value,
+        removeFillerWords: removeFillerWords.value,
+        audioUri: uri,
+        audioBase64: audioBase64
+    });
+
+    const timestampAdjuster = adjustTimestamps && processedOffsets
+        ? (timestamp: string) => adjustTimestamp(timestamp, processedOffsets)
+        : undefined;
+
+    return parseTranscriptResponse(response, timestampAdjuster);
+}
+
+function adjustWordWithOffsets(word: TranscriptWord, offsets: ProcessedAudio['offsets']): TranscriptWord {
+    return {
+        ...word,
+        start: adjustTimestamp(word.start, offsets),
+        end: adjustTimestamp(word.end, offsets),
+    };
+}
+
+function adjustSegmentsWithOffsets(
+    transcriptSegments: TranscriptSegment[],
+    offsets: ProcessedAudio['offsets'],
+): TranscriptSegment[] {
+    return transcriptSegments.map((segment) => ({
+        ...segment,
+        start: adjustTimestamp(segment.start, offsets),
+        end: adjustTimestamp(segment.end, offsets),
+        words: segment.words?.map((word) => adjustWordWithOffsets(word, offsets)),
+    }));
+}
+
 async function processFile() {
-    if (!inputPath.value || !hasApiKey.value) {
-        status.value = "Please provide file path and API key.";
+    if (!inputPath.value) {
+        status.value = "Please provide a media file.";
+        return;
+    }
+
+    if (!hasBackendConfiguration.value) {
+        status.value = settings.value.transcriptionBackend === 'parakeet'
+            ? "Parakeet models will auto-download or use your custom paths. Please retry if FFmpeg is not initialized."
+            : settings.value.transcriptionBackend === 'llm'
+            ? "Please provide an API key."
+            : "Please provide an API key for hybrid cleanup.";
         return;
     }
 
@@ -401,64 +548,97 @@ async function processFile() {
         // Use processed audio for upload/analysis
         const analysisAudioPath = processedAudio.path;
 
-        const isGoogleApi = settings.value.baseUrl.includes('generativelanguage.googleapis.com');
-        let uri: string | null = null;
-        let audioBase64: string | null = null;
-
-        if (isGoogleApi) {
-            // 2. Upload for Google API (only for large files)
-            
-            status.value = "Uploading file...";
-            try {
-                uri = await invoke<string | null>("upload_file", {
-                    apiKey: settings.value.apiKey,
-                    baseUrl: settings.value.baseUrl,
-                    path: analysisAudioPath
-                });
-            } catch (error) {
-                failStage("Audio upload", error);
-                return;
-            }
-
-            if (uri) {
-                status.value = "File uploaded successfully";
-            }
-        } else {
-            // For non-Google APIs, read the file as base64
-            status.value = "Encoding audio as base64...";
-            try {
-                audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
-            } catch (error) {
-                failStage("Audio encoding", error);
-                return;
-            }
-            status.value = "Audio encoded successfully";
-        }
-
-        // 3. Analyze
         const estimatedTime = estimateTime('analysis', audioInfo.duration);
-        status.value = `Analyzing with AI... (Est. ${estimatedTime.toFixed(0)}s)`;
+        status.value = isLlmOnlyBackend.value
+            ? `Analyzing with AI... (Est. ${estimatedTime.toFixed(0)}s)`
+            : settings.value.transcriptionBackend === 'hybrid'
+                ? `Running hybrid transcription... (Est. ${estimatedTime.toFixed(0)}s)`
+                : settings.value.transcriptionBackend === 'hybrid-merge'
+                    ? `Running merged hybrid transcription... (Est. ${estimatedTime.toFixed(0)}s)`
+                : `Transcribing with Parakeet... (Est. ${estimatedTime.toFixed(0)}s)`;
         const startTime = Date.now();
+        let hybridCleanupUsedFallback = false;
 
         startSimulatedProgress(estimatedTime);
-        let response: string;
+        let nextSegments: TranscriptSegment[] = [];
         try {
-            try {
-                response = await invoke<string>("analyze_audio", {
-                    apiKey: settings.value.apiKey,
-                    baseUrl: settings.value.baseUrl,
-                    model: settings.value.model,
-                    enforceJsonSchema: settings.value.enforceJsonSchema,
-                    context: context.value,
-                    glossary: settings.value.glossary,
-                    speakerCount: speakerCount.value,
-                    removeFillerWords: removeFillerWords.value,
-                    audioUri: uri,
-                    audioBase64: audioBase64
-                });
-            } catch (error) {
-                failStage("AI analysis request", error);
-                return;
+            if (isLlmOnlyBackend.value) {
+                try {
+                    nextSegments = await analyzeWithLlmTranscript(
+                        analysisAudioPath,
+                        true,
+                        processedAudio.offsets,
+                    );
+                } catch (error) {
+                    failStage("AI analysis request", error);
+                    return;
+                }
+            } else {
+                let parakeetSegments: TranscriptSegment[];
+                try {
+                    parakeetSegments = await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
+                        audioPath: analysisAudioPath,
+                        parakeetModelPath: settings.value.parakeetModelPath,
+                        sortformerModelPath: settings.value.sortformerModelPath,
+                    });
+                } catch (error) {
+                    failStage("Parakeet transcription", error);
+                    return;
+                }
+
+                if (settings.value.transcriptionBackend === 'hybrid') {
+                    status.value = "Cleaning transcript with AI...";
+                    const originalSegments = parakeetSegments;
+                    try {
+                        nextSegments = await invoke<TranscriptSegment[]>("cleanup_parakeet_transcript", {
+                            apiKey: settings.value.apiKey,
+                            baseUrl: settings.value.baseUrl,
+                            model: settings.value.model,
+                            transcript: parakeetSegments,
+                            context: context.value,
+                            glossary: settings.value.glossary,
+                            removeFillerWords: removeFillerWords.value,
+                        });
+                    } catch (error) {
+                        console.warn("Hybrid cleanup failed, using Parakeet transcript", error);
+                        nextSegments = originalSegments;
+                        hybridCleanupUsedFallback = true;
+                    }
+                } else if (settings.value.transcriptionBackend === 'hybrid-merge') {
+                    status.value = "Querying remote transcript for merge...";
+                    let referenceTranscript: TranscriptSegment[];
+                    try {
+                        referenceTranscript = await analyzeWithLlmTranscript(analysisAudioPath);
+                    } catch (error) {
+                        console.warn("Merged hybrid remote transcript failed, using Parakeet transcript", error);
+                        nextSegments = parakeetSegments;
+                        hybridCleanupUsedFallback = true;
+                        referenceTranscript = [];
+                    }
+
+                    if (referenceTranscript.length > 0) {
+                        status.value = "Merging Parakeet and remote transcripts...";
+                        try {
+                            nextSegments = await invoke<TranscriptSegment[]>("merge_transcript_hypotheses", {
+                                primaryTranscript: parakeetSegments,
+                                referenceTranscript,
+                            });
+                        } catch (error) {
+                            console.warn("Merged hybrid reconciliation failed, using Parakeet transcript", error);
+                            nextSegments = parakeetSegments;
+                            hybridCleanupUsedFallback = true;
+                        }
+                    } else {
+                        nextSegments = parakeetSegments;
+                        hybridCleanupUsedFallback = true;
+                    }
+                } else {
+                    nextSegments = parakeetSegments;
+                }
+
+                if (trimSilence.value) {
+                    nextSegments = adjustSegmentsWithOffsets(nextSegments, processedAudio.offsets);
+                }
             }
         } finally {
             stopSimulatedProgress();
@@ -467,67 +647,46 @@ async function processFile() {
         const duration = (Date.now() - startTime) / 1000;
         logExecution('analysis', audioInfo.duration, duration);
 
-        // 4. Parse Response
-        const jsonMatch = response.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
+        segments.value = nextSegments;
+        status.value = isLlmOnlyBackend.value
+            ? `Analysis complete. Found ${segments.value.length} segments.`
+            : settings.value.transcriptionBackend === 'hybrid'
+                ? hybridCleanupUsedFallback
+                    ? `Hybrid cleanup failed, using Parakeet transcript. Found ${segments.value.length} segments.`
+                    : `Hybrid transcription complete. Found ${segments.value.length} segments.`
+                : settings.value.transcriptionBackend === 'hybrid-merge'
+                    ? hybridCleanupUsedFallback
+                        ? `Hybrid merge failed, using Parakeet transcript. Found ${segments.value.length} segments.`
+                        : `Hybrid merge complete. Found ${segments.value.length} segments.`
+                : `Parakeet transcription complete. Found ${segments.value.length} segments.`;
+
+        lastAnalyzedSettings.value = {
+            context: context.value,
+            glossary: settings.value.glossary,
+            speakerCount: speakerCount.value,
+            removeFillerWords: removeFillerWords.value,
+            trimSilence: trimSilence.value,
+            transcriptionBackend: settings.value.transcriptionBackend,
+            parakeetModelPath: settings.value.parakeetModelPath,
+            sortformerModelPath: settings.value.sortformerModelPath,
+        };
+
+        await saveTranscript();
+
+        if (isLlmOnlyBackend.value && useAdvancedAlignment.value && segments.value.length > 0) {
+            status.value = "Aligning transcript with local model...";
             try {
-                const adjustedSegments = parseTranscriptResponse(
-                    response,
-                    (timestamp) => adjustTimestamp(timestamp, processedAudio.offsets),
-                );
-                
-                segments.value = adjustedSegments;
-                status.value = `Analysis complete. Found ${segments.value.length} segments.`;
-
-                // Update last analyzed settings
-                lastAnalyzedSettings.value = {
-                    context: context.value,
-                    glossary: settings.value.glossary,
-                    speakerCount: speakerCount.value,
-                    removeFillerWords: removeFillerWords.value,
-                    trimSilence: trimSilence.value
-                };
-
+                const alignedSegments = await invoke<TranscriptSegment[]>("align_transcript", {
+                    audioPath: audioInfo.path,
+                    transcript: segments.value
+                });
+                segments.value = alignedSegments;
+                status.value = `Alignment complete. Adjusted ${segments.value.length} segments.`;
                 await saveTranscript();
-
-                // 5. Advanced Alignment (Optional)
-                if (useAdvancedAlignment.value && segments.value.length > 0) {
-                    status.value = "Aligning transcript with local model...";
-                    try {
-                        // Use the processed audio for alignment since the transcript matches it?
-                        // No, the transcript now has ORIGINAL timestamps.
-                        // But align_transcript expects audio and transcript to match.
-                        // If we pass original audio and original timestamps, it should work.
-                        // But alignment might be confused by silence if the transcript doesn't have it?
-                        // Actually, if we use original audio, alignment is fine.
-                        
-                        const alignedSegments = await invoke<TranscriptSegment[]>("align_transcript", {
-                            audioPath: audioInfo.path,
-                            transcript: segments.value
-                        });
-                        segments.value = alignedSegments;
-                        status.value = `Alignment complete. Adjusted ${segments.value.length} segments.`;
-                        await saveTranscript();
-                    } catch (e) {
-                        console.error("Alignment failed", e);
-                        status.value = `Alignment failed: ${e}. Using original timestamps.`;
-                    }
-                }
-
             } catch (e) {
-                console.error("JSON Parse Error", e);
-                showError(
-                    "Failed to parse segments from AI response.",
-                    response,
-                    e instanceof Error ? e.message : String(e)
-                );
+                console.error("Alignment failed", e);
+                status.value = `Alignment failed: ${e}. Using original timestamps.`;
             }
-        } else {
-            console.error(response);
-            showError(
-                "Failed to find JSON in AI response.",
-                response
-            );
         }
 
     } catch (e) {
@@ -811,6 +970,14 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
         }
         return seg;
     });
+
+    if (exists) {
+        speakerOrder.value = speakerOrder.value.filter((speaker) => speaker !== oldName);
+    } else {
+        speakerOrder.value = speakerOrder.value.map((speaker) =>
+            speaker === oldName ? trimmedNewName : speaker,
+        );
+    }
     
     await saveTranscript();
 }
@@ -883,7 +1050,7 @@ function updateProcessing(processing: boolean) {
                             <LightningIcon class="h-6 w-6" />
                         </div>
                         <div>
-                            <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">Current Model</label>
+                            <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">{{ currentEngineLabel }}</label>
                             <div class="text-white font-medium">{{ currentModelDisplay }}</div>
                         </div>
                     </div>
@@ -894,10 +1061,11 @@ function updateProcessing(processing: boolean) {
                 </div>
 
                 <!-- File Selection Section -->
-                <FileSelector v-model="inputPath" />
+                <FileSelector v-model="inputPath" @invalid-selection="updateStatus" />
 
                 <!-- Analysis Settings -->
                 <AnalysisSettings
+                    v-model:transcriptionBackend="settings.transcriptionBackend"
                     v-model:context="context"
                     v-model:glossary="settings.glossary"
                     v-model:speakerCount="speakerCount"
@@ -907,7 +1075,7 @@ function updateProcessing(processing: boolean) {
 
                 <!-- Action Buttons -->
                 <div class="flex gap-4 mb-6">
-                    <button @click="processFile" :disabled="isProcessing || !hasApiKey || (hasTranscript && !settingsChanged)"
+                    <button @click="processFile" :disabled="isProcessing || !hasBackendConfiguration || (hasTranscript && !settingsChanged)"
                         class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2">
                         <SpinnerIcon v-if="isProcessing" class="animate-spin h-5 w-5 text-white" />
                         {{ isProcessing ? 'Processing...' : (hasTranscript && !settingsChanged ? 'Transcript Loaded' : (hasTranscript ? 'Re-analyze Media' : 'Analyze Media')) }}
@@ -993,7 +1161,7 @@ function updateProcessing(processing: boolean) {
                     </div>
                     
                     <!-- Advanced Alignment Toggle (Placeholder for now) -->
-                    <div class="mb-4 p-4 bg-black/20 rounded-xl border border-white/5 flex items-center justify-between">
+                    <div v-if="isLlmOnlyBackend" class="mb-4 p-4 bg-black/20 rounded-xl border border-white/5 flex items-center justify-between">
                         <div>
                             <h3 class="text-sm font-semibold text-gray-300">Advanced Alignment</h3>
                             <p class="text-xs text-gray-500">Align AI transcript with local timestamps (Coming Soon)</p>

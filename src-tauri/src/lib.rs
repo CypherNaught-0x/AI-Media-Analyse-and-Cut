@@ -288,20 +288,24 @@ async fn prepare_audio_for_ai(
 
 mod alignment;
 pub mod gemini;
+mod parakeet;
 pub mod podcast;
 pub mod retry;
 pub mod silence;
 pub mod time_utils;
+mod transcript_merge;
 mod upload;
 pub mod video;
 
 use crate::alignment::align_transcript;
 use crate::gemini::GeminiClient;
+use crate::parakeet::transcribe_with_parakeet;
 use crate::podcast::{
     calculate_segments_duration as calc_duration, export_podcast as export_podcast_fn,
     export_podcast_clips as export_podcast_clips_fn, PodcastSegment,
 };
 use crate::silence::{detect_silence, remove_silence};
+use crate::transcript_merge::merge_transcript_hypotheses_with_progress as merge_transcript_hypotheses_fn;
 use crate::upload::upload_file_and_wait;
 use crate::video::{
     cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
@@ -374,6 +378,49 @@ async fn analyze_audio(
                 base_url, model, e
             )
         })
+}
+
+#[tauri::command]
+async fn cleanup_parakeet_transcript(
+    api_key: String,
+    base_url: String,
+    model: String,
+    transcript: Vec<TranscriptSegment>,
+    context: String,
+    glossary: String,
+    remove_filler_words: bool,
+) -> Result<Vec<TranscriptSegment>, String> {
+    let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
+    client
+        .cleanup_parakeet_transcript(transcript, &context, &glossary, remove_filler_words)
+        .await
+        .map_err(|e| {
+            format!(
+                "Transcript cleanup request to '{}' with model '{}' failed: {}",
+                base_url, model, e
+            )
+        })
+}
+
+#[tauri::command]
+async fn merge_transcript_hypotheses(
+    window: tauri::Window,
+    primary_transcript: Vec<TranscriptSegment>,
+    reference_transcript: Vec<TranscriptSegment>,
+) -> Result<Vec<TranscriptSegment>, String> {
+    Ok(merge_transcript_hypotheses_fn(
+        primary_transcript,
+        reference_transcript,
+        |percentage, message| {
+            let _ = window.emit(
+                "progress",
+                serde_json::json!({
+                    "percentage": percentage,
+                    "message": message,
+                }),
+            );
+        },
+    ))
 }
 
 #[tauri::command]
@@ -702,6 +749,9 @@ pub fn run() {
             prepare_audio_for_ai,
             upload_file,
             analyze_audio,
+            cleanup_parakeet_transcript,
+            merge_transcript_hypotheses,
+            transcribe_with_parakeet,
             cut_video,
             export_clips,
             read_file_as_base64,

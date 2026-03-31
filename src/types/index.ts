@@ -1,8 +1,33 @@
+export type TranscriptionBackend = 'llm' | 'parakeet' | 'hybrid' | 'hybrid-merge';
+
+export interface TranscriptWord {
+  start: string;
+  end: string;
+  text: string;
+  speaker?: string;
+}
+
+export type TranscriptAlternativeSource = 'parakeet' | 'google';
+
+export interface TranscriptAlternative {
+  source: TranscriptAlternativeSource;
+  text: string;
+  speaker?: string;
+  similarityScore?: number;
+}
+
+export type TranscriptMergeStatus = 'matched' | 'conflict' | 'missing_google' | 'missing_parakeet';
+
 export interface TranscriptSegment {
   start: string;
   end: string;
   text: string;
   speaker: string;
+  words?: TranscriptWord[];
+  alternatives?: TranscriptAlternative[];
+  mergeStatus?: TranscriptMergeStatus;
+  activeSource?: TranscriptAlternativeSource;
+  similarityScore?: number;
 }
 
 export interface Clip {

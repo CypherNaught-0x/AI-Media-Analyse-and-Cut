@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { ask } from '@tauri-apps/plugin-dialog';
-import type { TranscriptSegment } from '../types';
+import type {
+  TranscriptAlternativeSource,
+  TranscriptMergeStatus,
+  TranscriptSegment,
+  TranscriptWord
+} from '../types';
 
 const props = defineProps<{
   segments: TranscriptSegment[];
@@ -15,6 +20,7 @@ const emit = defineEmits<{
 const editingIndex = ref<number | null>(null);
 const tempSegment = ref<TranscriptSegment | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
+const alternativeSources: TranscriptAlternativeSource[] = ['google', 'parakeet'];
 
 const parseTime = (timeStr: string): number => {
   const [mm, ss] = timeStr.split(':').map(Number);
@@ -43,6 +49,61 @@ const startEditing = (index: number) => {
   tempSegment.value = { ...props.segments[index] };
 };
 
+const stripMergeMetadata = (segment: TranscriptSegment): TranscriptSegment => ({
+  ...segment,
+  alternatives: undefined,
+  mergeStatus: undefined,
+  activeSource: undefined,
+  similarityScore: undefined
+});
+
+const mergeWords = (segmentsToMerge: TranscriptSegment[]): TranscriptWord[] | undefined => {
+  const mergedWords = segmentsToMerge.flatMap((segment) => segment.words ?? []);
+  return mergedWords.length > 0 ? mergedWords : undefined;
+};
+
+const getAlternativeText = (segment: TranscriptSegment, source: TranscriptAlternativeSource): string => {
+  return segment.alternatives?.find((alternative) => alternative.source === source)?.text ?? '';
+};
+
+const hasAlternativeText = (segment: TranscriptSegment, source: TranscriptAlternativeSource): boolean => {
+  return getAlternativeText(segment, source).trim().length > 0;
+};
+
+const sourceLabel = (source: TranscriptAlternativeSource): string => {
+  return source === 'google' ? 'Google' : 'Parakeet';
+};
+
+const mergeStatusLabel = (status?: TranscriptMergeStatus): string => {
+  if (status === 'missing_google') return 'Missing In Google';
+  if (status === 'missing_parakeet') return 'Missing In Parakeet';
+  if (status === 'conflict') return 'Review Needed';
+  return 'Aligned';
+};
+
+const mergeStatusClass = (status?: TranscriptMergeStatus): string => {
+  if (status === 'missing_google') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
+  if (status === 'missing_parakeet') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
+  if (status === 'conflict') return 'bg-orange-500/15 text-orange-200 border-orange-500/30';
+  return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
+};
+
+const selectAlternative = (index: number, source: TranscriptAlternativeSource) => {
+  const segment = props.segments[index];
+  const text = getAlternativeText(segment, source).trim();
+  if (!text) return;
+  const speaker = segment.alternatives?.find((alternative) => alternative.source === source)?.speaker?.trim();
+
+  const newSegments = [...props.segments];
+  newSegments[index] = {
+    ...segment,
+    text,
+    speaker: speaker || segment.speaker,
+    activeSource: source
+  };
+  emit('update:segments', newSegments);
+};
+
 const cancelEdit = () => {
   editingIndex.value = null;
   tempSegment.value = null;
@@ -51,7 +112,7 @@ const cancelEdit = () => {
 const saveEdit = () => {
   if (editingIndex.value !== null && tempSegment.value) {
     const newSegments = [...props.segments];
-    newSegments[editingIndex.value] = tempSegment.value;
+    newSegments[editingIndex.value] = stripMergeMetadata(tempSegment.value);
     emit('update:segments', newSegments);
     cancelEdit();
   }
@@ -104,7 +165,8 @@ const mergeSelected = () => {
     start: first.start,
     end: last.end,
     speaker: first.speaker,
-    text: mergedText
+    text: mergedText,
+    words: mergeWords(indices.map((i) => props.segments[i]))
   };
   
   const newSegments = [...props.segments];
@@ -129,7 +191,8 @@ const mergeDown = (index: number) => {
     start: current.start,
     end: next.end,
     speaker: current.speaker,
-    text: `${current.text} ${next.text}`
+    text: `${current.text} ${next.text}`,
+    words: mergeWords([current, next])
   };
   
   const newSegments = [...props.segments];
@@ -161,10 +224,51 @@ const mergeDown = (index: number) => {
       <!-- Display Mode -->
       <div v-if="editingIndex !== index">
         <div class="flex justify-between text-sm text-gray-400 mb-2 cursor-pointer">
-          <span class="font-bold text-blue-400">{{ segment.speaker }}</span>
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-blue-400">{{ segment.speaker }}</span>
+            <span
+              v-if="segment.mergeStatus"
+              class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+              :class="mergeStatusClass(segment.mergeStatus)"
+            >
+              {{ mergeStatusLabel(segment.mergeStatus) }}
+            </span>
+            <span
+              v-if="segment.similarityScore !== undefined"
+              class="text-[10px] text-gray-500"
+            >
+              {{ Math.round(segment.similarityScore * 100) }}%
+            </span>
+          </div>
           <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
         </div>
         <p class="text-gray-200 cursor-pointer leading-relaxed">{{ segment.text }}</p>
+
+        <div v-if="segment.alternatives?.length" class="mt-3 grid gap-2 md:grid-cols-2">
+          <div
+            v-for="source in alternativeSources"
+            :key="source"
+            class="rounded-lg border p-3"
+            :class="segment.activeSource === source ? 'border-blue-500/40 bg-blue-500/10' : 'border-white/10 bg-black/20'"
+          >
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <span class="text-xs font-semibold uppercase tracking-wide text-gray-300">{{ sourceLabel(source) }}</span>
+              <button
+                class="rounded border px-2 py-1 text-[11px] transition-colors"
+                :class="hasAlternativeText(segment, source)
+                  ? (segment.activeSource === source ? 'border-blue-500/40 bg-blue-500/15 text-blue-200' : 'border-white/10 bg-white/5 text-gray-200 hover:bg-white/10')
+                  : 'border-white/5 bg-white/5 text-gray-500 cursor-not-allowed'"
+                :disabled="!hasAlternativeText(segment, source)"
+                @click.stop="selectAlternative(index, source)"
+              >
+                {{ segment.activeSource === source ? 'Selected' : 'Use' }}
+              </button>
+            </div>
+            <p class="text-sm leading-relaxed" :class="hasAlternativeText(segment, source) ? 'text-gray-200' : 'text-gray-500 italic'">
+              {{ hasAlternativeText(segment, source) ? getAlternativeText(segment, source) : 'No matching sentence detected.' }}
+            </p>
+          </div>
+        </div>
         
         <!-- Action Toolbar -->
         <div class="absolute top-2 right-2 hidden group-hover:flex gap-2 bg-black/60 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl">
