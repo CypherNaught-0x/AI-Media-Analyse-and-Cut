@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
 import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -19,6 +19,9 @@ const localEnforceJsonSchema = ref(settings.value.enforceJsonSchema ?? true);
 const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const localPreClipPadding = ref(settings.value.preClipPadding || 0);
 const localPostClipPadding = ref(settings.value.postClipPadding || 0);
+const localTranscriptionBackend = ref(settings.value.transcriptionBackend ?? 'llm');
+const localParakeetModelPath = ref(settings.value.parakeetModelPath ?? '');
+const localSortformerModelPath = ref(settings.value.sortformerModelPath ?? '');
 const isFetchingModels = ref(false);
 const fetchError = ref('');
 const showManualInput = ref(false);
@@ -153,7 +156,10 @@ const hasChanges = computed(() => {
         localModel.value !== settings.value.model ||
         localEnforceJsonSchema.value !== (settings.value.enforceJsonSchema ?? true) ||
         localPreClipPadding.value !== (settings.value.preClipPadding || 0) ||
-        localPostClipPadding.value !== (settings.value.postClipPadding || 0)
+        localPostClipPadding.value !== (settings.value.postClipPadding || 0) ||
+        localTranscriptionBackend.value !== (settings.value.transcriptionBackend ?? 'llm') ||
+        localParakeetModelPath.value !== (settings.value.parakeetModelPath ?? '') ||
+        localSortformerModelPath.value !== (settings.value.sortformerModelPath ?? '')
     );
 });
 
@@ -299,6 +305,34 @@ async function exportLogs() {
     }
 }
 
+async function selectParakeetModelDirectory() {
+    const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Parakeet TDT model directory',
+    });
+    if (typeof selected === 'string') {
+        localParakeetModelPath.value = selected;
+    }
+}
+
+async function selectSortformerModelFile() {
+    const selected = await open({
+        directory: false,
+        multiple: false,
+        title: 'Select Sortformer model file',
+        filters: [
+            {
+                name: 'ONNX Model',
+                extensions: ['onnx'],
+            },
+        ],
+    });
+    if (typeof selected === 'string') {
+        localSortformerModelPath.value = selected;
+    }
+}
+
 function saveSettings() {
     const normalizedUrl = normalizeBaseUrl(localBaseUrl.value);
 
@@ -309,6 +343,9 @@ function saveSettings() {
         enforceJsonSchema: localEnforceJsonSchema.value,
         preClipPadding: localPreClipPadding.value,
         postClipPadding: localPostClipPadding.value,
+        transcriptionBackend: localTranscriptionBackend.value,
+        parakeetModelPath: localParakeetModelPath.value.trim(),
+        sortformerModelPath: localSortformerModelPath.value.trim(),
     });
     router.push('/');
 }
@@ -323,9 +360,9 @@ function cancel() {
         <div class="max-w-2xl mx-auto">
             <header class="mb-10">
                 <h1 class="text-4xl font-bold text-white mb-2">
-                    LLM Settings
+                    AI Settings
                 </h1>
-                <p class="text-gray-400">Configure your AI model and API credentials</p>
+                <p class="text-gray-400">Configure remote LLMs and the local Parakeet transcription backend</p>
             </header>
 
             <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl">
@@ -334,7 +371,96 @@ function cancel() {
                 <div class="mb-6 group">
                     <label
                         class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                        Base URL
+                        Default Transcription Backend
+                    </label>
+                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                        <button
+                            type="button"
+                            class="text-left p-4 rounded-2xl border transition-all"
+                            :class="localTranscriptionBackend === 'llm'
+                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                            @click="localTranscriptionBackend = 'llm'"
+                        >
+                            <div class="text-sm font-semibold">LLM-Based</div>
+                            <p class="text-xs text-gray-400 mt-1">Uses the API settings below for transcription and speaker labeling.</p>
+                        </button>
+                        <button
+                            type="button"
+                            class="text-left p-4 rounded-2xl border transition-all"
+                            :class="localTranscriptionBackend === 'parakeet'
+                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                            @click="localTranscriptionBackend = 'parakeet'"
+                        >
+                            <div class="text-sm font-semibold">Parakeet</div>
+                            <p class="text-xs text-gray-400 mt-1">Runs local Parakeet TDT + Sortformer with diarization and word timestamps.</p>
+                        </button>
+                        <button
+                            type="button"
+                            class="text-left p-4 rounded-2xl border transition-all"
+                            :class="localTranscriptionBackend === 'hybrid'
+                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                            @click="localTranscriptionBackend = 'hybrid'"
+                        >
+                            <div class="text-sm font-semibold">Hybrid</div>
+                            <p class="text-xs text-gray-400 mt-1">Uses Parakeet for timings and a remote LLM pass to clean and merge transcript lines.</p>
+                        </button>
+                        <button
+                            type="button"
+                            class="text-left p-4 rounded-2xl border transition-all"
+                            :class="localTranscriptionBackend === 'hybrid-merge'
+                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                            @click="localTranscriptionBackend = 'hybrid-merge'"
+                        >
+                            <div class="text-sm font-semibold">Hybrid Merge</div>
+                            <p class="text-xs text-gray-400 mt-1">Queries both Parakeet and the remote model, then merges their strengths onto Parakeet timings.</p>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider">
+                        Parakeet Settings
+                    </label>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-2">Parakeet TDT Model Directory</label>
+                            <div class="flex gap-3">
+                                <input v-model="localParakeetModelPath" type="text"
+                                    class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                                    placeholder="Leave blank to auto-download into app data" />
+                                <button @click="selectParakeetModelDirectory"
+                                    class="px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-2xl transition-all border border-white/10">
+                                    Browse
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">Leave blank to let the app download an int8 TDT model into Tauri app data. Custom directories should contain encoder, decoder, and `vocab.txt`.</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-2">Sortformer Model File</label>
+                            <div class="flex gap-3">
+                                <input v-model="localSortformerModelPath" type="text"
+                                    class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                                    placeholder="Leave blank to auto-download into app data" />
+                                <button @click="selectSortformerModelFile"
+                                    class="px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-2xl transition-all border border-white/10">
+                                    Browse
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">Leave blank to let the app download Sortformer v2 automatically, or provide your own `.onnx` file.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Base URL -->
+                <div class="mb-6 group">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                        LLM Base URL
                     </label>
                     <input v-model="localBaseUrl" type="text"
                         class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
@@ -347,7 +473,7 @@ function cancel() {
                 <div class="mb-6 group">
                     <label
                         class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                        API Key
+                        LLM API Key
                     </label>
                     <input v-model="localApiKey" type="password"
                         class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
@@ -359,7 +485,7 @@ function cancel() {
                 <div class="mb-6 group">
                     <label
                         class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                        Model
+                        LLM Model
                     </label>
                     <div class="flex gap-3 mb-2">
                         <div class="flex-1 relative">
