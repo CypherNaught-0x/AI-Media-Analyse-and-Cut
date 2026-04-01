@@ -33,7 +33,6 @@ hf-hub = "0.4"
 ndarray = "0.17"
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.16"
-tokenizers = "0.22"
 regex = "1.12.2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-log = "2.7.1"
