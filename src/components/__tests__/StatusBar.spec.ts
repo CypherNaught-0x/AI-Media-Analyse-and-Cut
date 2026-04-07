@@ -21,10 +21,12 @@ describe('StatusBar.vue', () => {
         status: 'Processing',
         isProcessing: true,
         progressPercentage: 50,
+        progressEtaSeconds: 95,
       },
     });
     
     expect(wrapper.find('.bg-blue-500').exists()).toBe(true);
     expect(wrapper.find('.bg-blue-500').attributes('style')).toContain('width: 50%');
+    expect(wrapper.text()).toContain('ETA 1:35');
   });
 });

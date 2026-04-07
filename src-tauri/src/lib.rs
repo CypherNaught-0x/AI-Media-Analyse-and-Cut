@@ -408,15 +408,24 @@ async fn merge_transcript_hypotheses(
     primary_transcript: Vec<TranscriptSegment>,
     reference_transcript: Vec<TranscriptSegment>,
 ) -> Result<Vec<TranscriptSegment>, String> {
+    let started_at = std::time::Instant::now();
     Ok(merge_transcript_hypotheses_fn(
         primary_transcript,
         reference_transcript,
         |percentage, message| {
+            let elapsed_seconds = started_at.elapsed().as_secs_f32();
+            let eta_seconds = if percentage > 0.0 && percentage < 100.0 {
+                Some((elapsed_seconds * ((100.0 - percentage) / percentage)).max(0.0))
+            } else {
+                None
+            };
             let _ = window.emit(
                 "progress",
                 serde_json::json!({
                     "percentage": percentage,
                     "message": message,
+                    "elapsedSeconds": elapsed_seconds,
+                    "etaSeconds": eta_seconds,
                 }),
             );
         },

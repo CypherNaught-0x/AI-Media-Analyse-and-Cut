@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { ask } from '@tauri-apps/plugin-dialog';
 import type {
   TranscriptAlternativeSource,
@@ -8,9 +8,14 @@ import type {
   TranscriptWord
 } from '../types';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   segments: TranscriptSegment[];
-}>();
+  showOnlyReviewSegments?: boolean;
+  reviewThreshold?: number;
+}>(), {
+  showOnlyReviewSegments: false,
+  reviewThreshold: 0.85
+});
 
 const emit = defineEmits<{
   (e: 'jump-to', time: number): void;
@@ -22,6 +27,29 @@ const tempSegment = ref<TranscriptSegment | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
 const alternativeSources: TranscriptAlternativeSource[] = ['google', 'parakeet'];
 
+const reviewThreshold = computed(() => {
+  if (Number.isNaN(props.reviewThreshold)) return 0.85;
+  return Math.min(Math.max(props.reviewThreshold, 0), 1);
+});
+
+const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
+  if (segment.mergeStatus && segment.mergeStatus !== 'matched') {
+    return true;
+  }
+
+  if (segment.similarityScore !== undefined) {
+    return segment.similarityScore < reviewThreshold.value;
+  }
+
+  return false;
+};
+
+const visibleSegments = computed(() =>
+  props.segments
+    .map((segment, originalIndex) => ({ segment, originalIndex }))
+    .filter(({ segment }) => !props.showOnlyReviewSegments || segmentNeedsReview(segment))
+);
+
 const parseTime = (timeStr: string): number => {
   const [mm, ss] = timeStr.split(':').map(Number);
   return mm * 60 + ss;
@@ -31,22 +59,22 @@ const jumpTo = (timeStr: string) => {
   emit('jump-to', parseTime(timeStr));
 };
 
-const handleSegmentClick = (index: number, event: MouseEvent) => {
+const handleSegmentClick = (originalIndex: number, event: MouseEvent) => {
   if (event.shiftKey) {
-    if (selectedIndices.value.has(index)) {
-      selectedIndices.value.delete(index);
+    if (selectedIndices.value.has(originalIndex)) {
+      selectedIndices.value.delete(originalIndex);
     } else {
-      selectedIndices.value.add(index);
+      selectedIndices.value.add(originalIndex);
     }
   } else {
     // If we are not selecting, just jump
-    jumpTo(props.segments[index].start);
+    jumpTo(props.segments[originalIndex].start);
   }
 };
 
-const startEditing = (index: number) => {
-  editingIndex.value = index;
-  tempSegment.value = { ...props.segments[index] };
+const startEditing = (originalIndex: number) => {
+  editingIndex.value = originalIndex;
+  tempSegment.value = { ...props.segments[originalIndex] };
 };
 
 const stripMergeMetadata = (segment: TranscriptSegment): TranscriptSegment => ({
@@ -88,14 +116,14 @@ const mergeStatusClass = (status?: TranscriptMergeStatus): string => {
   return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
 };
 
-const selectAlternative = (index: number, source: TranscriptAlternativeSource) => {
-  const segment = props.segments[index];
+const selectAlternative = (originalIndex: number, source: TranscriptAlternativeSource) => {
+  const segment = props.segments[originalIndex];
   const text = getAlternativeText(segment, source).trim();
   if (!text) return;
   const speaker = segment.alternatives?.find((alternative) => alternative.source === source)?.speaker?.trim();
 
   const newSegments = [...props.segments];
-  newSegments[index] = {
+  newSegments[originalIndex] = {
     ...segment,
     text,
     speaker: speaker || segment.speaker,
@@ -118,7 +146,7 @@ const saveEdit = () => {
   }
 };
 
-const deleteSegment = async (index: number) => {
+const deleteSegment = async (originalIndex: number) => {
   const confirmed = await ask('Are you sure you want to delete this segment?', {
     title: 'Confirm Deletion',
     kind: 'warning'
@@ -126,7 +154,7 @@ const deleteSegment = async (index: number) => {
 
   if (confirmed) {
     const newSegments = [...props.segments];
-    newSegments.splice(index, 1);
+    newSegments.splice(originalIndex, 1);
     emit('update:segments', newSegments);
   }
 };
@@ -181,11 +209,11 @@ const mergeSelected = () => {
   selectedIndices.value.clear();
 };
 
-const mergeDown = (index: number) => {
-  if (index >= props.segments.length - 1) return;
+const mergeDown = (originalIndex: number) => {
+  if (originalIndex >= props.segments.length - 1) return;
   
-  const current = props.segments[index];
-  const next = props.segments[index + 1];
+  const current = props.segments[originalIndex];
+  const next = props.segments[originalIndex + 1];
   
   const merged: TranscriptSegment = {
     start: current.start,
@@ -196,7 +224,7 @@ const mergeDown = (index: number) => {
   };
   
   const newSegments = [...props.segments];
-  newSegments.splice(index, 2, merged);
+  newSegments.splice(originalIndex, 2, merged);
   emit('update:segments', newSegments);
 };
 </script>
@@ -214,15 +242,15 @@ const mergeDown = (index: number) => {
         </div>
     </div>
 
-    <div v-for="(segment, index) in segments" :key="index" 
+    <div v-for="{ segment, originalIndex } in visibleSegments" :key="`${originalIndex}-${segment.start}-${segment.end}`" 
          class="segment mb-4 p-4 rounded-lg transition-all duration-300 group relative border"
          :class="[
-            selectedIndices.has(index) ? 'bg-blue-500/20 border-blue-500/50' : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/20'
+            selectedIndices.has(originalIndex) ? 'bg-blue-500/20 border-blue-500/50' : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/20'
          ]"
-         @click="handleSegmentClick(index, $event)">
+         @click="handleSegmentClick(originalIndex, $event)">
       
       <!-- Display Mode -->
-      <div v-if="editingIndex !== index">
+      <div v-if="editingIndex !== originalIndex">
         <div class="flex justify-between text-sm text-gray-400 mb-2 cursor-pointer">
           <div class="flex items-center gap-2">
             <span class="font-bold text-blue-400">{{ segment.speaker }}</span>
@@ -259,7 +287,7 @@ const mergeDown = (index: number) => {
                   ? (segment.activeSource === source ? 'border-blue-500/40 bg-blue-500/15 text-blue-200' : 'border-white/10 bg-white/5 text-gray-200 hover:bg-white/10')
                   : 'border-white/5 bg-white/5 text-gray-500 cursor-not-allowed'"
                 :disabled="!hasAlternativeText(segment, source)"
-                @click.stop="selectAlternative(index, source)"
+                @click.stop="selectAlternative(originalIndex, source)"
               >
                 {{ segment.activeSource === source ? 'Selected' : 'Use' }}
               </button>
@@ -272,9 +300,9 @@ const mergeDown = (index: number) => {
         
         <!-- Action Toolbar -->
         <div class="absolute top-2 right-2 hidden group-hover:flex gap-2 bg-black/60 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl">
-          <button @click.stop="startEditing(index)" class="px-2 py-1 bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 transition-colors">Edit</button>
-          <button v-if="index < segments.length - 1" @click.stop="mergeDown(index)" class="px-2 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors" title="Merge with next">Merge ↓</button>
-          <button @click.stop="deleteSegment(index)" class="px-2 py-1 bg-red-500/20 text-red-300 border border-red-500/30 rounded text-xs hover:bg-red-500/30 transition-colors">Del</button>
+          <button @click.stop="startEditing(originalIndex)" class="px-2 py-1 bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 transition-colors">Edit</button>
+          <button v-if="originalIndex < segments.length - 1" @click.stop="mergeDown(originalIndex)" class="px-2 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors" title="Merge with next">Merge ↓</button>
+          <button @click.stop="deleteSegment(originalIndex)" class="px-2 py-1 bg-red-500/20 text-red-300 border border-red-500/30 rounded text-xs hover:bg-red-500/30 transition-colors">Del</button>
         </div>
       </div>
 

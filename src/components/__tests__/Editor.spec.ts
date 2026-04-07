@@ -112,4 +112,91 @@ describe('Editor.vue', () => {
     expect(updatedSegments).toHaveLength(1);
     expect(updatedSegments[0].text).toBe('Hello world How are you?');
   });
+
+  it('filters to segments that require review below the selected threshold', () => {
+    const reviewSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:05', speaker: 'Speaker 1', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.96 },
+      { start: '00:05', end: '00:10', speaker: 'Speaker 2', text: 'Needs review', mergeStatus: 'matched', similarityScore: 0.62 },
+      { start: '00:10', end: '00:15', speaker: 'Speaker 3', text: 'Missing in Google', mergeStatus: 'missing_google' },
+    ];
+
+    const wrapper = mount(Editor, {
+      props: {
+        segments: reviewSegments,
+        showOnlyReviewSegments: true,
+        reviewThreshold: 0.8,
+      },
+    });
+
+    const segments = wrapper.findAll('.segment');
+    expect(segments).toHaveLength(2);
+    expect(wrapper.text()).toContain('Needs review');
+    expect(wrapper.text()).toContain('Missing in Google');
+    expect(segments[0].text()).toContain('Needs review');
+    expect(segments[1].text()).toContain('Missing in Google');
+  });
+
+  it('edits the correct original segment while filtered', async () => {
+    const reviewSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:05', speaker: 'Speaker 1', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.96 },
+      { start: '00:05', end: '00:10', speaker: 'Speaker 2', text: 'Needs review', mergeStatus: 'matched', similarityScore: 0.62 },
+      { start: '00:10', end: '00:15', speaker: 'Speaker 3', text: 'Also aligned', mergeStatus: 'matched', similarityScore: 0.92 },
+    ];
+
+    const wrapper = mount(Editor, {
+      props: {
+        segments: reviewSegments,
+        showOnlyReviewSegments: true,
+        reviewThreshold: 0.8,
+      },
+    });
+
+    const editButton = wrapper.findAll('button').find((button) => button.text() === 'Edit');
+    await editButton!.trigger('click');
+
+    const textarea = wrapper.find('textarea');
+    await textarea.setValue('Updated reviewed segment');
+
+    const saveButton = wrapper.findAll('button').find((button) => button.text() === 'Save Changes');
+    await saveButton!.trigger('click');
+
+    const updatedSegments = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    expect(updatedSegments[0].text).toBe('Aligned');
+    expect(updatedSegments[1].text).toBe('Updated reviewed segment');
+    expect(updatedSegments[2].text).toBe('Also aligned');
+  });
+
+  it('selects transcript alternatives against the original segment while filtered', async () => {
+    const reviewSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:05', speaker: 'Speaker 1', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.96 },
+      {
+        start: '00:05',
+        end: '00:10',
+        speaker: 'Speaker 2',
+        text: 'Parakeet text',
+        mergeStatus: 'conflict',
+        similarityScore: 0.51,
+        alternatives: [
+          { source: 'google', text: 'Google text', speaker: 'Named Speaker' },
+          { source: 'parakeet', text: 'Parakeet text', speaker: 'Speaker 2' },
+        ],
+      },
+    ];
+
+    const wrapper = mount(Editor, {
+      props: {
+        segments: reviewSegments,
+        showOnlyReviewSegments: true,
+        reviewThreshold: 0.8,
+      },
+    });
+
+    const useButton = wrapper.findAll('button').find((button) => button.text() === 'Use');
+    await useButton!.trigger('click');
+
+    const updatedSegments = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    expect(updatedSegments[1].text).toBe('Google text');
+    expect(updatedSegments[1].speaker).toBe('Named Speaker');
+    expect(updatedSegments[1].activeSource).toBe('google');
+  });
 });
