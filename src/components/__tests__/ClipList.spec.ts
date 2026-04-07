@@ -17,6 +17,11 @@ describe('ClipList.vue', () => {
         clips,
         lastExportPath: '',
         isProcessing: false,
+        hasMediaFile: true,
+        includeSubtitles: true,
+        fastMode: true,
+        trimBoundarySilence: false,
+        selectedClipIndices: [],
       },
     });
     
@@ -30,6 +35,11 @@ describe('ClipList.vue', () => {
         clips,
         lastExportPath: '',
         isProcessing: false,
+        hasMediaFile: true,
+        includeSubtitles: true,
+        fastMode: true,
+        trimBoundarySilence: false,
+        selectedClipIndices: [],
       },
     });
 
@@ -51,12 +61,19 @@ describe('ClipList.vue', () => {
         clips: [...clips, { ...clips[0], title: 'Clip 2' }],
         lastExportPath: '',
         isProcessing: false,
+        hasMediaFile: true,
+        includeSubtitles: true,
+        fastMode: true,
+        trimBoundarySilence: false,
+        selectedClipIndices: [],
       },
     });
 
     // Select second clip
     const clipItems = wrapper.findAll('.group'); // The clip container has 'group' class
     await clipItems[1].trigger('click');
+    const selectedEventArgs = wrapper.emitted('update:selectedClipIndices')![0][0] as number[];
+    await wrapper.setProps({ selectedClipIndices: selectedEventArgs });
 
     // Click export
     const exportButton = wrapper.findAll('button')[0];
@@ -73,10 +90,17 @@ describe('ClipList.vue', () => {
         clips,
         lastExportPath: '',
         isProcessing: false,
+        hasMediaFile: true,
+        includeSubtitles: true,
+        fastMode: true,
+        trimBoundarySilence: false,
+        selectedClipIndices: [],
       },
     });
 
     await wrapper.get('[data-testid=\"trim-boundary-silence\"]').setValue(true);
+    const trimEventArgs = wrapper.emitted('update:trimBoundarySilence')![0][0] as boolean;
+    await wrapper.setProps({ trimBoundarySilence: trimEventArgs });
 
     const exportButton = wrapper.findAll('button')[0];
     await exportButton.trigger('click');

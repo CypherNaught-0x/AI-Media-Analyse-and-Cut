@@ -14,6 +14,7 @@ const props = defineProps<{
   segments: TranscriptSegment[];
   inputPath: string;
   language?: string;
+  disabled?: boolean;
 }>();
 
 const status = ref("");
@@ -38,7 +39,7 @@ function validateAndShow() {
 }
 
 async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolean = false) {
-    if (props.segments.length === 0) return;
+    if (props.segments.length === 0 || props.disabled) return;
     
     // Process segments for comfortable display (split long entries)
     const { segments: processedSegments, errors } = processSubtitlesForDisplay(
@@ -127,20 +128,20 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
     <div class="flex flex-col gap-2">
         <div class="flex items-center gap-2">
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                <button @click="exportSubtitles('srt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">SRT</button>
-                <button @click="exportSubtitles('srt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save SRT as...">
+                <button @click="exportSubtitles('srt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed">SRT</button>
+                <button @click="exportSubtitles('srt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Save SRT as...">
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                <button @click="exportSubtitles('vtt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">VTT</button>
-                <button @click="exportSubtitles('vtt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save VTT as...">
+                <button @click="exportSubtitles('vtt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed">VTT</button>
+                <button @click="exportSubtitles('vtt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Save VTT as...">
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                <button @click="exportSubtitles('txt')" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10">TXT</button>
-                <button @click="exportSubtitles('txt', true)" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors" title="Save TXT as...">
+                <button @click="exportSubtitles('txt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed">TXT</button>
+                <button @click="exportSubtitles('txt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Save TXT as...">
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
