@@ -68,6 +68,24 @@ fn is_punctuation_only(text: &str) -> bool {
             .all(|char| matches!(char, '.' | ',' | '!' | '?' | ';' | ':' | ')' | ']' | '"'))
 }
 
+fn split_leading_punctuation(text: &str) -> Option<(String, String)> {
+    let trimmed = text.trim_start();
+    let prefix_len = trimmed
+        .char_indices()
+        .take_while(|(_, char)| matches!(char, '.' | ',' | '!' | '?' | ';' | ':' | ')' | ']' | '"'))
+        .map(|(index, char)| index + char.len_utf8())
+        .last()
+        .unwrap_or(0);
+
+    if prefix_len == 0 {
+        return None;
+    }
+
+    let prefix = trimmed[..prefix_len].to_string();
+    let remainder = trimmed[prefix_len..].trim_start().to_string();
+    (!remainder.is_empty()).then_some((prefix, remainder))
+}
+
 fn append_token_text(buffer: &mut String, token: &str) {
     if token.is_empty() {
         return;
@@ -246,8 +264,7 @@ fn normalize_transcript_segments(segments: Vec<TranscriptSegment>) -> Vec<Transc
             continue;
         }
 
-        let rebuilt_text = transcript_text_from_words(&words);
-        if rebuilt_text == "." {
+        if transcript_text_from_words(&words) == "." {
             if let Some(previous_segment) = normalized.last_mut() {
                 if let Some(previous_words) = previous_segment.words.as_mut() {
                     previous_words.extend(words);
@@ -260,6 +277,31 @@ fn normalize_transcript_segments(segments: Vec<TranscriptSegment>) -> Vec<Transc
             continue;
         }
 
+        if let Some(first_word) = words.first_mut() {
+            if let Some((leading_punctuation, remainder)) =
+                split_leading_punctuation(first_word.text.as_str())
+            {
+                if let Some(previous_segment) = normalized.last_mut() {
+                    if let Some(previous_words) = previous_segment.words.as_mut() {
+                        if let Some(last_word) = previous_words.last_mut() {
+                            last_word.text.push_str(&leading_punctuation);
+                        } else {
+                            previous_words.push(TranscriptWord {
+                                start: first_word.start.clone(),
+                                end: first_word.start.clone(),
+                                text: leading_punctuation.clone(),
+                                speaker: Some(previous_segment.speaker.clone()),
+                            });
+                        }
+                        previous_segment.end = first_word.start.clone();
+                        previous_segment.text = transcript_text_from_words(previous_words);
+                    }
+                }
+
+                first_word.text = remainder;
+            }
+        }
+
         segment.start = words
             .first()
             .map(|word| word.start.clone())
@@ -268,7 +310,7 @@ fn normalize_transcript_segments(segments: Vec<TranscriptSegment>) -> Vec<Transc
             .last()
             .map(|word| word.end.clone())
             .unwrap_or(segment.end);
-        segment.text = rebuilt_text;
+        segment.text = transcript_text_from_words(&words);
         segment.words = Some(words);
 
         normalized.push(segment);
@@ -783,5 +825,77 @@ mod tests {
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].text, "Hello.");
         assert_eq!(segments[1].text, "world.");
+    }
+
+    #[test]
+    fn normalize_transcript_segments_moves_punctuation_prefix_from_first_word() {
+        let segments = normalize_transcript_segments(vec![
+            TranscriptSegment {
+                start: "00:00.000".into(),
+                end: "00:01.000".into(),
+                speaker: "Speaker 1".into(),
+                text: "unterwegs für IAV".into(),
+                words: Some(vec![
+                    TranscriptWord {
+                        start: "00:00.000".into(),
+                        end: "00:00.350".into(),
+                        text: "unterwegs".into(),
+                        speaker: Some("Speaker 1".into()),
+                    },
+                    TranscriptWord {
+                        start: "00:00.350".into(),
+                        end: "00:00.700".into(),
+                        text: "für".into(),
+                        speaker: Some("Speaker 1".into()),
+                    },
+                    TranscriptWord {
+                        start: "00:00.700".into(),
+                        end: "00:01.000".into(),
+                        text: "IAV".into(),
+                        speaker: Some("Speaker 1".into()),
+                    },
+                ]),
+                alternatives: None,
+                merge_status: None,
+                active_source: None,
+                similarity_score: None,
+            },
+            TranscriptSegment {
+                start: "00:01.000".into(),
+                end: "00:02.000".into(),
+                speaker: "Speaker 1".into(),
+                text: ". Kümmern wir uns".into(),
+                words: Some(vec![
+                    TranscriptWord {
+                        start: "00:01.000".into(),
+                        end: "00:01.400".into(),
+                        text: ". Kümmern".into(),
+                        speaker: Some("Speaker 1".into()),
+                    },
+                    TranscriptWord {
+                        start: "00:01.400".into(),
+                        end: "00:02.000".into(),
+                        text: "wir".into(),
+                        speaker: Some("Speaker 1".into()),
+                    },
+                ]),
+                alternatives: None,
+                merge_status: None,
+                active_source: None,
+                similarity_score: None,
+            },
+        ]);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, "unterwegs für IAV.");
+        assert_eq!(segments[1].text, "Kümmern wir");
+        assert_eq!(
+            segments[1]
+                .words
+                .as_ref()
+                .and_then(|words| words.first())
+                .map(|word| word.text.as_str()),
+            Some("Kümmern")
+        );
     }
 }
