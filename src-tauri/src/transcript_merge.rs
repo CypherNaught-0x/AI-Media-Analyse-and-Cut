@@ -1,5 +1,6 @@
 use log::info;
 use std::collections::BTreeMap;
+use std::thread;
 use std::time::Instant;
 
 use crate::video::{
@@ -13,8 +14,13 @@ const GROUPING_PENALTY: f32 = 0.03;
 const GAP_PENALTY: f32 = 0.72;
 const MIN_MATCH_SIMILARITY: f32 = 0.34;
 const STRONG_MATCH_SIMILARITY: f32 = 0.82;
+const ANCHOR_MATCH_SIMILARITY: f32 = 0.94;
+const ANCHOR_MARGIN: f32 = 0.08;
+const ANCHOR_SEARCH_PADDING: usize = 18;
+const MIN_ANCHOR_TEXT_CHARS: usize = 10;
 const ALIGNMENT_BAND: usize = 32;
 const MAX_WORD_RESEGMENT_WORDS: usize = 64;
+const MIN_PARALLEL_GAP_SIZE: usize = 24;
 
 #[derive(Clone, Copy)]
 enum AlignmentStep {
@@ -25,6 +31,21 @@ enum AlignmentStep {
     },
     MissingGoogle,
     MissingParakeet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AlignmentAnchor {
+    primary_index: usize,
+    reference_index: usize,
+    similarity: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AlignmentGap {
+    primary_start: usize,
+    primary_end: usize,
+    reference_start: usize,
+    reference_end: usize,
 }
 
 #[allow(dead_code)]
@@ -109,6 +130,72 @@ fn compute_alignment<F>(
 where
     F: FnMut(f32, &str),
 {
+    on_progress(8.0, "Finding alignment anchors...");
+    let anchors = detect_alignment_anchors(primary, reference);
+    if anchors.is_empty() {
+        return compute_alignment_window(primary, reference, Some((on_progress, 5.0, 77.0)));
+    }
+
+    info!(
+        "Using {} transcript alignment anchors to split merge windows",
+        anchors.len()
+    );
+    on_progress(
+        12.0,
+        "Found strong local matches. Aligning remaining transcript windows...",
+    );
+
+    let gaps = build_alignment_gaps(primary.len(), reference.len(), &anchors);
+    let total_gap_units = gaps
+        .iter()
+        .map(|gap| {
+            (gap.primary_end - gap.primary_start) + (gap.reference_end - gap.reference_start)
+        })
+        .sum::<usize>()
+        .max(1);
+
+    let gap_alignments = align_gaps(primary, reference, &gaps);
+    let mut completed_gap_units = 0usize;
+    let mut alignment = Vec::new();
+
+    let gap_count = gaps.len();
+
+    for (gap_index, gap) in gaps.iter().enumerate() {
+        alignment.extend(gap_alignments[gap_index].iter().copied());
+        completed_gap_units +=
+            (gap.primary_end - gap.primary_start) + (gap.reference_end - gap.reference_start);
+        let progress = 12.0 + (completed_gap_units as f32 / total_gap_units as f32) * 65.0;
+        let message = if gap_count > 1 {
+            format!(
+                "Aligning transcript window {}/{}...",
+                gap_index + 1,
+                gap_count
+            )
+        } else {
+            "Aligning Parakeet and remote transcripts...".to_string()
+        };
+        on_progress(progress.min(77.0), &message);
+
+        if let Some(anchor) = anchors.get(gap_index) {
+            alignment.push(AlignmentStep::Match {
+                primary_len: 1,
+                reference_len: 1,
+                similarity: anchor.similarity,
+            });
+        }
+    }
+
+    alignment
+}
+
+fn compute_alignment_window<F>(
+    primary: &[TranscriptSegment],
+    reference: &[TranscriptSegment],
+    mut progress: Option<(&mut F, f32, f32)>,
+) -> Vec<AlignmentStep>
+where
+    F: FnMut(f32, &str),
+{
     let primary_len = primary.len();
     let reference_len = reference.len();
     let mut costs = vec![vec![f32::INFINITY; reference_len + 1]; primary_len + 1];
@@ -118,9 +205,12 @@ where
     costs[0][0] = 0.0;
 
     for primary_index in 0..=primary_len {
-        if primary_len > 0 && primary_index < primary_len && primary_index % 8 == 0 {
-            let progress = 5.0 + (primary_index as f32 / primary_len as f32) * 72.0;
-            on_progress(progress, "Aligning Parakeet and remote transcripts...");
+        if let Some((on_progress, progress_start, progress_span)) = progress.as_mut() {
+            if primary_len > 0 && primary_index < primary_len && primary_index % 8 == 0 {
+                let progress =
+                    *progress_start + (primary_index as f32 / primary_len as f32) * *progress_span;
+                (*on_progress)(progress, "Aligning Parakeet and remote transcripts...");
+            }
         }
 
         let center = if primary_len == 0 {
@@ -234,6 +324,234 @@ where
     steps
 }
 
+fn detect_alignment_anchors(
+    primary: &[TranscriptSegment],
+    reference: &[TranscriptSegment],
+) -> Vec<AlignmentAnchor> {
+    if primary.is_empty() || reference.is_empty() {
+        return Vec::new();
+    }
+
+    let mut primary_candidates = vec![None::<(usize, f32, f32)>; primary.len()];
+    let mut reference_candidates = vec![None::<(usize, f32, f32)>; reference.len()];
+    let band = ALIGNMENT_BAND.max(primary.len().abs_diff(reference.len()) + ANCHOR_SEARCH_PADDING);
+
+    for (primary_index, primary_segment) in primary.iter().enumerate() {
+        let normalized_primary = normalize_text(primary_segment.text.trim());
+        if normalized_primary.len() < MIN_ANCHOR_TEXT_CHARS {
+            continue;
+        }
+
+        let center = (primary_index * reference.len()) / primary.len();
+        let reference_start = center.saturating_sub(band);
+        let reference_end = (center + band).min(reference.len().saturating_sub(1));
+
+        let mut best_match = None::<(usize, f32)>;
+        let mut second_best = 0.0f32;
+
+        for (reference_index, reference_segment) in reference
+            .iter()
+            .enumerate()
+            .take(reference_end + 1)
+            .skip(reference_start)
+        {
+            let normalized_reference = normalize_text(reference_segment.text.trim());
+            if normalized_reference.len() < MIN_ANCHOR_TEXT_CHARS {
+                continue;
+            }
+
+            let similarity = combined_similarity_text(&normalized_primary, &normalized_reference);
+            if similarity >= ANCHOR_MATCH_SIMILARITY {
+                if let Some((_, best_similarity)) = best_match {
+                    if similarity > best_similarity {
+                        second_best = best_similarity;
+                        best_match = Some((reference_index, similarity));
+                    } else if similarity > second_best {
+                        second_best = similarity;
+                    }
+                } else {
+                    best_match = Some((reference_index, similarity));
+                }
+            }
+        }
+
+        if let Some((reference_index, similarity)) = best_match {
+            if similarity - second_best >= ANCHOR_MARGIN {
+                primary_candidates[primary_index] =
+                    Some((reference_index, similarity, second_best));
+            }
+        }
+    }
+
+    for (reference_index, reference_segment) in reference.iter().enumerate() {
+        let normalized_reference = normalize_text(reference_segment.text.trim());
+        if normalized_reference.len() < MIN_ANCHOR_TEXT_CHARS {
+            continue;
+        }
+
+        let center = (reference_index * primary.len()) / reference.len();
+        let primary_start = center.saturating_sub(band);
+        let primary_end = (center + band).min(primary.len().saturating_sub(1));
+
+        let mut best_match = None::<(usize, f32)>;
+        let mut second_best = 0.0f32;
+
+        for (primary_index, primary_segment) in primary
+            .iter()
+            .enumerate()
+            .take(primary_end + 1)
+            .skip(primary_start)
+        {
+            let normalized_primary = normalize_text(primary_segment.text.trim());
+            if normalized_primary.len() < MIN_ANCHOR_TEXT_CHARS {
+                continue;
+            }
+
+            let similarity = combined_similarity_text(&normalized_primary, &normalized_reference);
+            if similarity >= ANCHOR_MATCH_SIMILARITY {
+                if let Some((_, best_similarity)) = best_match {
+                    if similarity > best_similarity {
+                        second_best = best_similarity;
+                        best_match = Some((primary_index, similarity));
+                    } else if similarity > second_best {
+                        second_best = similarity;
+                    }
+                } else {
+                    best_match = Some((primary_index, similarity));
+                }
+            }
+        }
+
+        if let Some((primary_index, similarity)) = best_match {
+            if similarity - second_best >= ANCHOR_MARGIN {
+                reference_candidates[reference_index] =
+                    Some((primary_index, similarity, second_best));
+            }
+        }
+    }
+
+    let mut anchors = Vec::new();
+    let mut last_primary = None::<usize>;
+    let mut last_reference = None::<usize>;
+
+    for (primary_index, candidate) in primary_candidates.iter().enumerate() {
+        let Some((reference_index, similarity, _)) = candidate else {
+            continue;
+        };
+
+        let Some((back_primary_index, _, _)) = reference_candidates[*reference_index] else {
+            continue;
+        };
+
+        if back_primary_index != primary_index {
+            continue;
+        }
+
+        if last_primary.is_some_and(|last| primary_index <= last)
+            || last_reference.is_some_and(|last| *reference_index <= last)
+        {
+            continue;
+        }
+
+        anchors.push(AlignmentAnchor {
+            primary_index,
+            reference_index: *reference_index,
+            similarity: *similarity,
+        });
+        last_primary = Some(primary_index);
+        last_reference = Some(*reference_index);
+    }
+
+    anchors
+}
+
+fn build_alignment_gaps(
+    primary_len: usize,
+    reference_len: usize,
+    anchors: &[AlignmentAnchor],
+) -> Vec<AlignmentGap> {
+    let mut gaps = Vec::with_capacity(anchors.len() + 1);
+    let mut primary_start = 0usize;
+    let mut reference_start = 0usize;
+
+    for anchor in anchors {
+        gaps.push(AlignmentGap {
+            primary_start,
+            primary_end: anchor.primary_index,
+            reference_start,
+            reference_end: anchor.reference_index,
+        });
+        primary_start = anchor.primary_index + 1;
+        reference_start = anchor.reference_index + 1;
+    }
+
+    gaps.push(AlignmentGap {
+        primary_start,
+        primary_end: primary_len,
+        reference_start,
+        reference_end: reference_len,
+    });
+
+    gaps
+}
+
+fn align_gaps(
+    primary: &[TranscriptSegment],
+    reference: &[TranscriptSegment],
+    gaps: &[AlignmentGap],
+) -> Vec<Vec<AlignmentStep>> {
+    let non_empty_gap_count = gaps
+        .iter()
+        .filter(|gap| {
+            gap.primary_start < gap.primary_end || gap.reference_start < gap.reference_end
+        })
+        .count();
+    let total_gap_size = gaps
+        .iter()
+        .map(|gap| {
+            (gap.primary_end - gap.primary_start) + (gap.reference_end - gap.reference_start)
+        })
+        .sum::<usize>();
+
+    let should_parallelize = non_empty_gap_count > 1
+        && total_gap_size >= MIN_PARALLEL_GAP_SIZE
+        && thread::available_parallelism()
+            .map(|parallelism| parallelism.get() > 1)
+            .unwrap_or(false);
+
+    if !should_parallelize {
+        return gaps
+            .iter()
+            .map(|gap| {
+                compute_alignment_window::<fn(f32, &str)>(
+                    &primary[gap.primary_start..gap.primary_end],
+                    &reference[gap.reference_start..gap.reference_end],
+                    None,
+                )
+            })
+            .collect();
+    }
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(gaps.len());
+
+        for gap in gaps {
+            handles.push(scope.spawn(move || {
+                compute_alignment_window::<fn(f32, &str)>(
+                    &primary[gap.primary_start..gap.primary_end],
+                    &reference[gap.reference_start..gap.reference_end],
+                    None,
+                )
+            }));
+        }
+
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("alignment gap worker panicked"))
+            .collect()
+    })
+}
+
 fn materialize_alignment(
     primary: &[TranscriptSegment],
     reference: &[TranscriptSegment],
@@ -275,7 +593,202 @@ fn materialize_alignment(
         }
     }
 
+    let merged = rebalance_adjacent_boundaries(merged);
     apply_inferred_speaker_labels(primary, merged)
+}
+
+fn rebalance_adjacent_boundaries(segments: Vec<TranscriptSegment>) -> Vec<TranscriptSegment> {
+    let mut rebalanced = segments;
+    let mut index = 0usize;
+
+    while index + 1 < rebalanced.len() {
+        let left = rebalanced[index].clone();
+        let right = rebalanced[index + 1].clone();
+
+        if let Some((updated_left, updated_right)) =
+            optimize_boundary_between_segments(&left, &right)
+        {
+            rebalanced[index] = updated_left;
+            rebalanced[index + 1] = updated_right;
+        }
+
+        index += 1;
+    }
+
+    rebalanced
+}
+
+fn optimize_boundary_between_segments(
+    left: &TranscriptSegment,
+    right: &TranscriptSegment,
+) -> Option<(TranscriptSegment, TranscriptSegment)> {
+    let left_google_text = google_text(left)?;
+    let right_google_text = google_text(right)?;
+    let left_words = left.words.as_ref()?;
+    let right_words = right.words.as_ref()?;
+
+    if left_words.is_empty() || right_words.is_empty() {
+        return None;
+    }
+
+    let left_google_speaker = alternative_speaker(left, TranscriptAlternativeSource::Google);
+    let right_google_speaker = alternative_speaker(right, TranscriptAlternativeSource::Google);
+    let left_parakeet_speaker = alternative_speaker(left, TranscriptAlternativeSource::Parakeet);
+    let right_parakeet_speaker = alternative_speaker(right, TranscriptAlternativeSource::Parakeet);
+
+    let same_google_speaker =
+        left_google_speaker.is_some() && left_google_speaker == right_google_speaker;
+    let same_parakeet_speaker =
+        left_parakeet_speaker.is_some() && left_parakeet_speaker == right_parakeet_speaker;
+
+    if !(same_google_speaker || same_parakeet_speaker || left.speaker == right.speaker) {
+        return None;
+    }
+
+    let combined_words = left_words
+        .iter()
+        .chain(right_words.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let original_split = left_words.len();
+    let search_radius = 8usize
+        .min(original_split.saturating_sub(1).max(1))
+        .min(right_words.len());
+    let split_start = original_split.saturating_sub(search_radius).max(1);
+    let split_end = (original_split + search_radius).min(combined_words.len() - 1);
+
+    let mut best_split = original_split;
+    let mut best_score = boundary_score(
+        &combined_words[..original_split],
+        left_google_text,
+        &combined_words[original_split..],
+        right_google_text,
+        original_split,
+        original_split,
+    );
+
+    for split_index in split_start..=split_end {
+        let score = boundary_score(
+            &combined_words[..split_index],
+            left_google_text,
+            &combined_words[split_index..],
+            right_google_text,
+            split_index,
+            original_split,
+        );
+        if score > best_score + 0.02 {
+            best_score = score;
+            best_split = split_index;
+        }
+    }
+
+    if best_split == original_split {
+        return None;
+    }
+
+    let updated_left = rebuild_segment_with_words(
+        left,
+        combined_words[..best_split].to_vec(),
+        left_google_text,
+    );
+    let updated_right = rebuild_segment_with_words(
+        right,
+        combined_words[best_split..].to_vec(),
+        right_google_text,
+    );
+
+    Some((updated_left, updated_right))
+}
+
+fn boundary_score(
+    left_words: &[TranscriptWord],
+    left_google_text: &str,
+    right_words: &[TranscriptWord],
+    right_google_text: &str,
+    split_index: usize,
+    original_split: usize,
+) -> f32 {
+    if left_words.is_empty() || right_words.is_empty() {
+        return f32::NEG_INFINITY;
+    }
+
+    let left_text = join_word_text(left_words);
+    let right_text = join_word_text(right_words);
+    let left_similarity = combined_similarity_text(&left_text, left_google_text);
+    let right_similarity = combined_similarity_text(&right_text, right_google_text);
+    let distance_penalty = split_index.abs_diff(original_split) as f32 * 0.01;
+
+    left_similarity + right_similarity - distance_penalty
+}
+
+fn rebuild_segment_with_words(
+    template: &TranscriptSegment,
+    words: Vec<TranscriptWord>,
+    google_text: &str,
+) -> TranscriptSegment {
+    let first = words
+        .first()
+        .expect("rebuilt segment words must not be empty");
+    let last = words
+        .last()
+        .expect("rebuilt segment words must not be empty");
+    let parakeet_text = join_word_text(&words);
+    let similarity = combined_similarity_text(&parakeet_text, google_text);
+    let parakeet_speaker = words
+        .iter()
+        .find_map(|word| {
+            word.speaker
+                .clone()
+                .filter(|speaker| !speaker.trim().is_empty())
+        })
+        .or_else(|| alternative_speaker(template, TranscriptAlternativeSource::Parakeet));
+    let google_speaker = alternative_speaker(template, TranscriptAlternativeSource::Google);
+    let resolved_speaker = google_speaker
+        .clone()
+        .or(parakeet_speaker.clone())
+        .unwrap_or_else(|| template.speaker.clone());
+
+    TranscriptSegment {
+        start: first.start.clone(),
+        end: last.end.clone(),
+        speaker: resolved_speaker,
+        text: google_text.to_string(),
+        words: Some(words),
+        alternatives: Some(vec![
+            TranscriptAlternative {
+                source: TranscriptAlternativeSource::Parakeet,
+                text: parakeet_text,
+                speaker: parakeet_speaker,
+                similarity_score: Some(similarity),
+            },
+            TranscriptAlternative {
+                source: TranscriptAlternativeSource::Google,
+                text: google_text.to_string(),
+                speaker: google_speaker,
+                similarity_score: Some(similarity),
+            },
+        ]),
+        merge_status: Some(if similarity >= STRONG_MATCH_SIMILARITY {
+            TranscriptMergeStatus::Matched
+        } else {
+            TranscriptMergeStatus::Conflict
+        }),
+        active_source: Some(TranscriptAlternativeSource::Google),
+        similarity_score: Some(similarity),
+    }
+}
+
+fn google_text(segment: &TranscriptSegment) -> Option<&str> {
+    segment
+        .alternatives
+        .as_ref()
+        .and_then(|alternatives| {
+            alternatives
+                .iter()
+                .find(|alternative| alternative.source == TranscriptAlternativeSource::Google)
+        })
+        .map(|alternative| alternative.text.trim())
+        .filter(|text| !text.is_empty())
 }
 
 fn build_matched_segments(
@@ -287,18 +800,19 @@ fn build_matched_segments(
     if reference_group.len() > 1 {
         if let Some(words) = merged_words.clone() {
             if words.len() <= MAX_WORD_RESEGMENT_WORDS {
-                if let Some(split_ranges) = split_word_ranges_by_reference(&words, reference_group) {
-                return split_ranges
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (start, end, local_similarity))| {
-                        build_segment_from_word_range(
-                            &words[start..=end],
-                            &reference_group[index],
-                            local_similarity,
-                        )
-                    })
-                    .collect();
+                if let Some(split_ranges) = split_word_ranges_by_reference(&words, reference_group)
+                {
+                    return split_ranges
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (start, end, local_similarity))| {
+                            build_segment_from_word_range(
+                                &words[start..=end],
+                                &reference_group[index],
+                                local_similarity,
+                            )
+                        })
+                        .collect();
                 }
             }
         }
@@ -371,11 +885,14 @@ fn build_segment_from_word_range(
     let first = words.first().expect("word range must not be empty");
     let last = words.last().expect("word range must not be empty");
     let parakeet_text = join_word_text(words);
-    let google_speaker = (!reference_segment.speaker.trim().is_empty())
-        .then_some(reference_segment.speaker.clone());
-    let resolved_speaker = google_speaker
-        .clone()
-        .unwrap_or_else(|| first.speaker.clone().unwrap_or_else(|| "Speaker Unknown".to_string()));
+    let google_speaker =
+        (!reference_segment.speaker.trim().is_empty()).then_some(reference_segment.speaker.clone());
+    let resolved_speaker = google_speaker.clone().unwrap_or_else(|| {
+        first
+            .speaker
+            .clone()
+            .unwrap_or_else(|| "Speaker Unknown".to_string())
+    });
 
     TranscriptSegment {
         start: first.start.clone(),
@@ -766,16 +1283,22 @@ fn apply_inferred_speaker_labels(
     merged
         .into_iter()
         .map(|mut segment| {
-            let parakeet_speaker = alternative_speaker(&segment, TranscriptAlternativeSource::Parakeet)
-                .or_else(|| segment.words.as_ref().and_then(|words| {
-                    words.iter()
-                        .find_map(|word| word.speaker.clone().filter(|speaker| !speaker.trim().is_empty()))
-                }));
+            let parakeet_speaker =
+                alternative_speaker(&segment, TranscriptAlternativeSource::Parakeet).or_else(
+                    || {
+                        segment.words.as_ref().and_then(|words| {
+                            words.iter().find_map(|word| {
+                                word.speaker
+                                    .clone()
+                                    .filter(|speaker| !speaker.trim().is_empty())
+                            })
+                        })
+                    },
+                );
             let speaker_order = parakeet_speaker
                 .as_ref()
                 .and_then(|speaker| speaker_orders.get(speaker).copied());
-            let google_speaker =
-                alternative_speaker(&segment, TranscriptAlternativeSource::Google);
+            let google_speaker = alternative_speaker(&segment, TranscriptAlternativeSource::Google);
 
             if let Some(google_speaker) = google_speaker {
                 segment.speaker = google_speaker.clone();
@@ -789,11 +1312,7 @@ fn apply_inferred_speaker_labels(
                 }
 
                 if let Some(speaker_order) = speaker_order {
-                    record_cooccurrence(
-                        &mut cooccurrence_by_order,
-                        speaker_order,
-                        google_speaker,
-                    );
+                    record_cooccurrence(&mut cooccurrence_by_order, speaker_order, google_speaker);
                 }
 
                 return segment;
@@ -1126,7 +1645,10 @@ mod tests {
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].speaker, "Dirk Leopold");
-        assert_eq!(merged[1].merge_status, Some(TranscriptMergeStatus::MissingGoogle));
+        assert_eq!(
+            merged[1].merge_status,
+            Some(TranscriptMergeStatus::MissingGoogle)
+        );
         assert_eq!(merged[1].speaker, "Dirk Leopold");
     }
 
@@ -1152,7 +1674,10 @@ mod tests {
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].speaker, "Dirk Leopold");
         assert_eq!(merged[1].speaker, "Alice Example");
-        assert_eq!(merged[2].merge_status, Some(TranscriptMergeStatus::MissingGoogle));
+        assert_eq!(
+            merged[2].merge_status,
+            Some(TranscriptMergeStatus::MissingGoogle)
+        );
         assert_eq!(merged[2].speaker, "Alice Example");
     }
 
@@ -1187,5 +1712,227 @@ mod tests {
             ),
             Some("Dirk Leopold".to_string())
         );
+    }
+
+    #[test]
+    fn detects_mutual_anchor_matches_for_near_perfect_segments() {
+        let anchors = detect_alignment_anchors(
+            &[
+                segment(
+                    "00:00.000",
+                    "00:01.000",
+                    "Speaker 1",
+                    "exact anchor opening",
+                ),
+                segment(
+                    "00:01.000",
+                    "00:02.000",
+                    "Speaker 1",
+                    "middle content differs a lot",
+                ),
+                segment(
+                    "00:02.000",
+                    "00:03.000",
+                    "Speaker 1",
+                    "exact anchor closing",
+                ),
+            ],
+            &[
+                segment("00:00.000", "00:01.000", "Host", "exact anchor opening"),
+                segment(
+                    "00:01.000",
+                    "00:02.000",
+                    "Host",
+                    "very different middle wording",
+                ),
+                segment("00:02.000", "00:03.000", "Host", "exact anchor closing"),
+            ],
+        );
+
+        assert_eq!(
+            anchors,
+            vec![
+                AlignmentAnchor {
+                    primary_index: 0,
+                    reference_index: 0,
+                    similarity: 1.0,
+                },
+                AlignmentAnchor {
+                    primary_index: 2,
+                    reference_index: 2,
+                    similarity: 1.0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_independent_alignment_gaps_around_anchors() {
+        let anchors = vec![
+            AlignmentAnchor {
+                primary_index: 1,
+                reference_index: 1,
+                similarity: 0.99,
+            },
+            AlignmentAnchor {
+                primary_index: 4,
+                reference_index: 3,
+                similarity: 0.98,
+            },
+        ];
+
+        let gaps = build_alignment_gaps(6, 5, &anchors);
+
+        assert_eq!(
+            gaps,
+            vec![
+                AlignmentGap {
+                    primary_start: 0,
+                    primary_end: 1,
+                    reference_start: 0,
+                    reference_end: 1,
+                },
+                AlignmentGap {
+                    primary_start: 2,
+                    primary_end: 4,
+                    reference_start: 2,
+                    reference_end: 3,
+                },
+                AlignmentGap {
+                    primary_start: 5,
+                    primary_end: 6,
+                    reference_start: 4,
+                    reference_end: 5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn uses_anchor_points_to_preserve_order_while_aligning_gaps() {
+        let merged = merge_transcript_hypotheses(
+            vec![
+                segment(
+                    "00:00.000",
+                    "00:01.000",
+                    "Speaker 1",
+                    "exact anchor opening",
+                ),
+                segment("00:01.000", "00:02.000", "Speaker 1", "left middle phrase"),
+                segment(
+                    "00:02.000",
+                    "00:03.000",
+                    "Speaker 1",
+                    "exact anchor closing",
+                ),
+            ],
+            vec![
+                segment("00:00.000", "00:01.000", "Host", "exact anchor opening"),
+                segment(
+                    "00:01.000",
+                    "00:02.000",
+                    "Host",
+                    "left middle phrase refined",
+                ),
+                segment("00:02.000", "00:03.000", "Host", "exact anchor closing"),
+            ],
+        );
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].text, "exact anchor opening");
+        assert_eq!(merged[1].text, "left middle phrase refined");
+        assert_eq!(merged[2].text, "exact anchor closing");
+    }
+
+    #[test]
+    fn rebalances_adjacent_boundaries_when_a_sentence_spills_into_the_next_segment() {
+        let merged = merge_transcript_hypotheses(
+            vec![
+                TranscriptSegment {
+                    start: "02:10.000".into(),
+                    end: "02:19.040".into(),
+                    speaker: "Speaker 1".into(),
+                    text: "In den letzten fünf Jahren dann als Seniorfachreferent".into(),
+                    words: Some(vec![
+                        TranscriptWord { start: "02:10.000".into(), end: "02:11.000".into(), text: "In".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:11.000".into(), end: "02:12.000".into(), text: "den".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:12.000".into(), end: "02:13.000".into(), text: "letzten".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:13.000".into(), end: "02:14.000".into(), text: "fünf".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:14.000".into(), end: "02:15.000".into(), text: "Jahren".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:15.000".into(), end: "02:16.500".into(), text: "dann".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:16.500".into(), end: "02:18.000".into(), text: "als".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:18.000".into(), end: "02:19.040".into(), text: "Seniorfachreferent".into(), speaker: Some("Speaker 1".into()) },
+                    ]),
+                    alternatives: None,
+                    merge_status: None,
+                    active_source: None,
+                    similarity_score: None,
+                },
+                TranscriptSegment {
+                    start: "02:19.040".into(),
+                    end: "02:26.960".into(),
+                    speaker: "Speaker 1".into(),
+                    text: "unterwegs für IAV Einmal intern leite ich unser produktbezogenes Security Operations Center".into(),
+                    words: Some(vec![
+                        TranscriptWord { start: "02:19.040".into(), end: "02:20.000".into(), text: "unterwegs".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:20.000".into(), end: "02:21.000".into(), text: "für".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:21.000".into(), end: "02:22.000".into(), text: "IAV.".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:22.000".into(), end: "02:23.000".into(), text: "Einmal".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:23.000".into(), end: "02:24.000".into(), text: "intern".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:24.000".into(), end: "02:25.000".into(), text: "leite".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:25.000".into(), end: "02:25.800".into(), text: "ich".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:25.800".into(), end: "02:26.300".into(), text: "unser".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:26.300".into(), end: "02:26.700".into(), text: "produktbezogenes".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:26.700".into(), end: "02:26.960".into(), text: "Security".into(), speaker: Some("Speaker 1".into()) },
+                    ]),
+                    alternatives: None,
+                    merge_status: None,
+                    active_source: None,
+                    similarity_score: None,
+                },
+                TranscriptSegment {
+                    start: "02:26.960".into(),
+                    end: "02:32.320".into(),
+                    speaker: "Speaker 1".into(),
+                    text: "Operations Center kümmern uns sozusagen".into(),
+                    words: Some(vec![
+                        TranscriptWord { start: "02:26.960".into(), end: "02:27.800".into(), text: "Operations".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:27.800".into(), end: "02:28.500".into(), text: "Center.".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:28.500".into(), end: "02:29.500".into(), text: "Kümmern".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:29.500".into(), end: "02:30.200".into(), text: "uns".into(), speaker: Some("Speaker 1".into()) },
+                        TranscriptWord { start: "02:30.200".into(), end: "02:31.300".into(), text: "sozusagen".into(), speaker: Some("Speaker 1".into()) },
+                    ]),
+                    alternatives: None,
+                    merge_status: None,
+                    active_source: None,
+                    similarity_score: None,
+                },
+            ],
+            vec![
+                segment("02:10.000", "02:22.000", "Hauke Petersen", "In den letzten fünf Jahren dann als Seniorfachreferent unterwegs für IAV."),
+                segment("02:22.000", "02:28.500", "Hauke Petersen", "Einmal intern leite ich unser produktbezogenes Security Operations Center."),
+                segment("02:28.500", "02:32.320", "Hauke Petersen", "Kümmern uns sozusagen."),
+            ],
+        );
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].end, "02:22.000");
+        assert_eq!(merged[1].start, "02:22.000");
+        assert_eq!(
+            merged[1]
+                .alternatives
+                .as_ref()
+                .and_then(|alternatives| {
+                    alternatives.iter().find(|alternative| {
+                        alternative.source == TranscriptAlternativeSource::Parakeet
+                    })
+                })
+                .map(|alternative| alternative.text.clone()),
+            Some(
+                "Einmal intern leite ich unser produktbezogenes Security Operations Center."
+                    .to_string()
+            )
+        );
+        assert_eq!(merged[2].start, "02:28.500");
     }
 }

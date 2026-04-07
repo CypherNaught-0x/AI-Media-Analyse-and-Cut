@@ -9,8 +9,14 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('../Editor.vue', () => ({
   default: {
-    template: '<button class="mock-editor" @click="$emit(\'update:segments\', segments)"></button>',
-    props: ['segments'],
+    template: `
+      <div
+        class="mock-editor"
+        :data-show-only-review-segments="String(showOnlyReviewSegments)"
+        :data-review-threshold="String(reviewThreshold)"
+      ></div>
+    `,
+    props: ['segments', 'showOnlyReviewSegments', 'reviewThreshold'],
   },
 }));
 
@@ -55,5 +61,39 @@ describe('TranscriptWorkspacePanel', () => {
     const translateButton = wrapper.findAll('button').find((button) => button.attributes('title') === 'Translate');
     await translateButton!.trigger('click');
     expect(wrapper.emitted('translate')).toBeTruthy();
+  });
+
+  it('passes review filter state through to the editor', async () => {
+    const reviewSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:05', speaker: 'Host', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.95 },
+      { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Needs review', mergeStatus: 'conflict', similarityScore: 0.42 },
+    ];
+
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        displaySegments: reviewSegments,
+        originalSegments: reviewSegments,
+        translations: {},
+        currentLanguage: 'Original',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: false,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host', 'Guest'],
+        isProcessing: false,
+      },
+    });
+
+    const toggle = wrapper.get('[data-testid="review-filter-toggle"]');
+    await toggle.setValue(true);
+
+    const threshold = wrapper.get('[data-testid="review-filter-threshold"]');
+    await threshold.setValue('70');
+
+    const editor = wrapper.get('.mock-editor');
+    expect(editor.attributes('data-show-only-review-segments')).toBe('true');
+    expect(editor.attributes('data-review-threshold')).toBe('0.7');
   });
 });
