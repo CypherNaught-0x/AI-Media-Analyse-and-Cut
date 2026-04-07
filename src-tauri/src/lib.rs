@@ -602,6 +602,11 @@ async fn read_text_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn path_exists(path: String) -> bool {
+    Path::new(&path).exists()
+}
+
+#[tauri::command]
 async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), String> {
     use std::io::Write;
     use tauri::Manager;
@@ -759,6 +764,7 @@ pub fn run() {
             open_folder,
             write_text_file,
             read_text_file,
+            path_exists,
             align_transcript,
             detect_silence,
             remove_silence,

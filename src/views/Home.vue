@@ -1,54 +1,48 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from "vue";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
-import Editor from "../components/Editor.vue";
-import SubtitleExport from "../components/SubtitleExport.vue";
 import ViralClipsGenerator from "../components/ViralClipsGenerator.vue";
 import PodcastGenerator from "../components/PodcastGenerator.vue";
 import ErrorOverlay from "../components/ErrorOverlay.vue";
-import type { TranscriptSegment, AudioInfo, ProcessedAudio, SilenceInterval, ClipExportPayload, Clip, TranscriptionBackend } from "../types";
-import FileSelector from "../components/FileSelector.vue";
-import AnalysisSettings from "../components/AnalysisSettings.vue";
+import HomeSourcePanel from "../components/HomeSourcePanel.vue";
+import TranscriptWorkspacePanel from "../components/TranscriptWorkspacePanel.vue";
+import type {
+    AudioInfo,
+    Clip,
+    ClipWorkspaceState,
+    LastAnalyzedSettings,
+    PodcastWorkspaceState,
+    ProcessedAudio,
+    SilenceInterval,
+    TranscriptSegment,
+    TranscriptWorkspaceState,
+    ViralClipsWorkspaceState
+} from "../types";
 import ClipGenerator from "../components/ClipGenerator.vue";
 import ClipList from "../components/ClipList.vue";
 import StatusBar from "../components/StatusBar.vue";
+import { useClipGeneration } from "../composables/useClipGeneration";
 import { useSettings } from "../composables/useSettings";
-import { parseTime, adjustTimestamp, formatTime } from "../composables/useTimeFormat";
-import { generateSubtitleContent } from "../utils/subtitle";
-import { trimClipBoundarySilence } from "../utils/clipSilence";
+import { useHomeSessionPersistence } from "../composables/useHomeSessionPersistence";
+import { adjustTimestamp } from "../composables/useTimeFormat";
 import { parseTranscriptResponse } from "../utils/transcriptParsing";
+import { buildTranscriptSidecar, parseTranscriptSidecar } from "../utils/transcriptSidecar";
+import {
+    createDefaultClipWorkspaceState,
+    createDefaultLastAnalyzedSettings,
+    createDefaultPodcastWorkspaceState,
+    createDefaultViralClipsWorkspaceState,
+} from "../utils/editSession";
 
-import LightningIcon from '../assets/icons/lightning.svg?component';
-import SpinnerIcon from '../assets/icons/spinner.svg?component';
-import UserIcon from '../assets/icons/user.svg?component';
-import TranslateIcon from '../assets/icons/translate.svg?component';
-import CheckIcon from '../assets/icons/check.svg?component';
-import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
 import type { TranscriptWord } from '../types';
+
+const AUTOSAVE_DEBOUNCE_MS = 750;
 
 const router = useRouter();
 const { settings } = useSettings();
-
-const SUPPORTED_LANGUAGES = [
-    { code: 'en', name: 'English', country: 'us' },
-    { code: 'es', name: 'Spanish', country: 'es' },
-    { code: 'fr', name: 'French', country: 'fr' },
-    { code: 'de', name: 'German', country: 'de' },
-    { code: 'it', name: 'Italian', country: 'it' },
-    { code: 'pt', name: 'Portuguese', country: 'pt' },
-    { code: 'nl', name: 'Dutch', country: 'nl' },
-    { code: 'ru', name: 'Russian', country: 'ru' },
-    { code: 'ja', name: 'Japanese', country: 'jp' },
-    { code: 'zh', name: 'Chinese', country: 'cn' },
-    { code: 'ko', name: 'Korean', country: 'kr' },
-    { code: 'hi', name: 'Hindi', country: 'in' },
-    { code: 'ar', name: 'Arabic', country: 'sa' },
-    { code: 'tr', name: 'Turkish', country: 'tr' },
-    { code: 'pl', name: 'Polish', country: 'pl' },
-];
 
 const status = ref("Initializing...");
 const isProcessing = ref(false);
@@ -63,39 +57,35 @@ const errorDetails = ref({
 const progressPercentage = ref<number | null>(null);
 const executionHistory = ref<{type: string, inputSize: number, duration: number, timestamp: number}[]>([]);
 const inputPath = ref("");
+const inputPathExists = ref(false);
 const segments = ref<TranscriptSegment[]>([]);
 const translations = ref<Record<string, TranscriptSegment[]>>({});
 const currentLanguage = ref("Original");
 const targetLanguage = ref("");
 const isTranslating = ref(false);
-const showLanguageDropdown = ref(false);
 const removeFillerWords = ref(false);
 const trimSilence = ref(true);
-const videoRef = ref<HTMLVideoElement | null>(null);
 
 const speakerCount = ref<number | null>(null);
 const context = ref("");
 const useAdvancedAlignment = ref(false);
-const clipCount = ref(3);
-const clipMinDuration = ref(10);
-const clipMaxDuration = ref(120);
-const clipTopic = ref("");
-const allowSplicing = ref(false);
-const clips = ref<Clip[]>([]);
-const lastExportPath = ref("");
+const clipCount = ref(createDefaultClipWorkspaceState().count);
+const clipMinDuration = ref(createDefaultClipWorkspaceState().minDuration);
+const clipMaxDuration = ref(createDefaultClipWorkspaceState().maxDuration);
+const clipTopic = ref(createDefaultClipWorkspaceState().topic);
+const allowSplicing = ref(createDefaultClipWorkspaceState().allowSplicing);
+const clips = ref<Clip[]>(createDefaultClipWorkspaceState().clips);
+const lastExportPath = ref(createDefaultClipWorkspaceState().lastExportPath);
+const includeSubtitles = ref(createDefaultClipWorkspaceState().includeSubtitles);
+const fastMode = ref(createDefaultClipWorkspaceState().fastMode);
+const clipTrimBoundarySilence = ref(createDefaultClipWorkspaceState().trimBoundarySilence);
+const selectedClipIndices = ref<number[]>(createDefaultClipWorkspaceState().selectedClipIndices);
 const clipExportSilenceCache = ref<{ path: string; intervals: SilenceInterval[] } | null>(null);
 const speakerOrder = ref<string[]>([]);
+const viralClipsState = ref<ViralClipsWorkspaceState>(createDefaultViralClipsWorkspaceState());
+const podcastWorkspaceState = ref<PodcastWorkspaceState>(createDefaultPodcastWorkspaceState());
 
-const lastAnalyzedSettings = ref({
-    context: '',
-    glossary: '',
-    speakerCount: null as number | null,
-    removeFillerWords: false,
-    trimSilence: true,
-    transcriptionBackend: 'llm' as TranscriptionBackend,
-    parakeetModelPath: '',
-    sortformerModelPath: '',
-});
+const lastAnalyzedSettings = ref<LastAnalyzedSettings>(createDefaultLastAnalyzedSettings());
 
 const isLlmOnlyBackend = computed(() => settings.value.transcriptionBackend === 'llm');
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
@@ -130,6 +120,7 @@ const currentEngineLabel = computed(() => {
     return settings.value.transcriptionBackend === 'llm' ? 'Current Model' : 'Current Pipeline';
 });
 const hasTranscript = computed(() => segments.value.length > 0);
+const hasMediaFile = computed(() => inputPath.value.length > 0 && inputPathExists.value);
 const settingsChanged = computed(() => {
     return settings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
            settings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
@@ -140,6 +131,41 @@ const settingsChanged = computed(() => {
            removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords ||
            trimSilence.value !== lastAnalyzedSettings.value.trimSilence;
 });
+
+const clipWorkspaceState = computed<ClipWorkspaceState>(() => ({
+    count: clipCount.value,
+    minDuration: clipMinDuration.value,
+    maxDuration: clipMaxDuration.value,
+    topic: clipTopic.value,
+    allowSplicing: allowSplicing.value,
+    clips: clips.value,
+    lastExportPath: lastExportPath.value,
+    includeSubtitles: includeSubtitles.value,
+    fastMode: fastMode.value,
+    trimBoundarySilence: clipTrimBoundarySilence.value,
+    selectedClipIndices: selectedClipIndices.value,
+}));
+
+const transcriptWorkspaceState = computed<TranscriptWorkspaceState>(() => ({
+    inputPath: inputPath.value,
+    segments: segments.value,
+    translations: translations.value,
+    currentLanguage: currentLanguage.value,
+    targetLanguage: targetLanguage.value,
+    context: context.value,
+    speakerCount: speakerCount.value,
+    removeFillerWords: removeFillerWords.value,
+    trimSilence: trimSilence.value,
+    useAdvancedAlignment: useAdvancedAlignment.value,
+    speakerOrder: speakerOrder.value,
+    lastAnalyzedSettings: lastAnalyzedSettings.value,
+    settingsSnapshot: {
+        glossary: settings.value.glossary,
+        transcriptionBackend: settings.value.transcriptionBackend,
+        parakeetModelPath: settings.value.parakeetModelPath,
+        sortformerModelPath: settings.value.sortformerModelPath,
+    },
+}));
 
 function getSpeakerAppearanceOrder(transcriptSegments: TranscriptSegment[]): string[] {
     const seen = new Set<string>();
@@ -182,6 +208,133 @@ const displaySegments = computed({
     }
 });
 
+async function updateInputPathExists(path: string) {
+    if (!path) {
+        inputPathExists.value = false;
+        return false;
+    }
+
+    try {
+        inputPathExists.value = await invoke<boolean>('path_exists', { path });
+    } catch (error) {
+        console.error('Failed to check input path existence:', error);
+        inputPathExists.value = false;
+    }
+
+    return inputPathExists.value;
+}
+
+function resetClipWorkspaceState() {
+    const defaults = createDefaultClipWorkspaceState();
+    clipCount.value = defaults.count;
+    clipMinDuration.value = defaults.minDuration;
+    clipMaxDuration.value = defaults.maxDuration;
+    clipTopic.value = defaults.topic;
+    allowSplicing.value = defaults.allowSplicing;
+    clips.value = defaults.clips;
+    lastExportPath.value = defaults.lastExportPath;
+    includeSubtitles.value = defaults.includeSubtitles;
+    fastMode.value = defaults.fastMode;
+    clipTrimBoundarySilence.value = defaults.trimBoundarySilence;
+    selectedClipIndices.value = defaults.selectedClipIndices;
+    clipExportSilenceCache.value = null;
+}
+
+function resetTranscriptWorkspaceState() {
+    segments.value = [];
+    translations.value = {};
+    currentLanguage.value = "Original";
+    targetLanguage.value = "";
+    context.value = "";
+    speakerCount.value = null;
+    removeFillerWords.value = false;
+    trimSilence.value = true;
+    useAdvancedAlignment.value = false;
+    speakerOrder.value = [];
+    lastAnalyzedSettings.value = createDefaultLastAnalyzedSettings();
+}
+
+function resetDerivedWorkspaceState() {
+    resetClipWorkspaceState();
+    viralClipsState.value = createDefaultViralClipsWorkspaceState();
+    podcastWorkspaceState.value = createDefaultPodcastWorkspaceState();
+}
+
+function applyTranscriptWorkspace(state: TranscriptWorkspaceState) {
+    inputPath.value = state.inputPath;
+    segments.value = state.segments;
+    translations.value = state.translations;
+    currentLanguage.value = state.currentLanguage;
+    targetLanguage.value = state.targetLanguage;
+    context.value = state.context;
+    speakerCount.value = state.speakerCount;
+    removeFillerWords.value = state.removeFillerWords;
+    trimSilence.value = state.trimSilence;
+    useAdvancedAlignment.value = state.useAdvancedAlignment;
+    speakerOrder.value = state.speakerOrder;
+    lastAnalyzedSettings.value = state.lastAnalyzedSettings;
+    settings.value.glossary = state.settingsSnapshot.glossary;
+    settings.value.transcriptionBackend = state.settingsSnapshot.transcriptionBackend;
+    settings.value.parakeetModelPath = state.settingsSnapshot.parakeetModelPath;
+    settings.value.sortformerModelPath = state.settingsSnapshot.sortformerModelPath;
+}
+
+function applyClipWorkspace(state: ClipWorkspaceState) {
+    clipCount.value = state.count;
+    clipMinDuration.value = state.minDuration;
+    clipMaxDuration.value = state.maxDuration;
+    clipTopic.value = state.topic;
+    allowSplicing.value = state.allowSplicing;
+    clips.value = state.clips;
+    lastExportPath.value = state.lastExportPath;
+    includeSubtitles.value = state.includeSubtitles;
+    fastMode.value = state.fastMode;
+    clipTrimBoundarySilence.value = state.trimBoundarySilence;
+    selectedClipIndices.value = state.selectedClipIndices;
+    clipExportSilenceCache.value = null;
+}
+
+const sessionPersistence = useHomeSessionPersistence({
+    autosaveDebounceMs: AUTOSAVE_DEBOUNCE_MS,
+    status,
+    inputPath,
+    inputPathExists,
+    transcriptWorkspaceState,
+    clipWorkspaceState,
+    viralClipsState,
+    podcastWorkspaceState,
+    updateInputPathExists,
+    saveTranscript,
+    loadTranscript,
+    resetTranscriptWorkspaceState,
+    resetDerivedWorkspaceState,
+    applyTranscriptWorkspace,
+    applyClipWorkspace,
+});
+
+const clipGeneration = useClipGeneration({
+    settings,
+    status,
+    isProcessing,
+    progressPercentage,
+    inputPath,
+    hasMediaFile,
+    segments,
+    clipCount,
+    clipMinDuration,
+    clipMaxDuration,
+    clipTopic,
+    allowSplicing,
+    clips,
+    selectedClipIndices,
+    lastExportPath,
+    clipExportSilenceCache,
+    estimateTime,
+    logExecution,
+    startSimulatedProgress,
+    stopSimulatedProgress,
+});
+
 onMounted(async () => {
     const history = localStorage.getItem('executionHistory');
     if (history) {
@@ -191,6 +344,7 @@ onMounted(async () => {
             console.error("Failed to parse execution history", e);
         }
     }
+    await sessionPersistence.restoreAutosavedSession();
 
     try {
         const res = await invoke<string>("init_ffmpeg");
@@ -225,48 +379,91 @@ onMounted(async () => {
     }
 });
 
-watch(inputPath, () => {
-    segments.value = [];
-    speakerOrder.value = [];
-    translations.value = {};
-    currentLanguage.value = "Original";
-    loadTranscript();
+onUnmounted(() => {
+    sessionPersistence.dispose();
 });
+
+watch(inputPath, async (newPath, oldPath) => {
+    await sessionPersistence.handleInputPathChange(newPath, oldPath);
+}, { flush: 'sync' });
 
 watch(segments, () => {
     syncSpeakerOrder();
 }, { deep: true });
+
+watch(
+    [
+        clipWorkspaceState,
+        viralClipsState,
+        podcastWorkspaceState,
+    ],
+    () => {
+        sessionPersistence.scheduleAutosave();
+    },
+    { deep: true }
+);
+
+watch(
+    transcriptWorkspaceState,
+    () => {
+        sessionPersistence.scheduleAutosave();
+        sessionPersistence.scheduleTranscriptSave();
+    },
+    { deep: true }
+);
 
 async function loadTranscript() {
     if (!inputPath.value) return;
     const transcriptPath = inputPath.value + ".transcript.json";
     try {
         const content = await invoke<string>("read_text_file", { path: transcriptPath });
-        const parsed = JSON.parse(content);
-        if (Array.isArray(parsed)) {
-            segments.value = parsed;
+        const parsed = parseTranscriptSidecar(content, createDefaultLastAnalyzedSettings());
+        if (!parsed) {
+            return;
+        }
+
+        if (parsed.segments && !parsed.context && !parsed.glossary && parsed.currentLanguage === undefined) {
+            segments.value = parsed.segments;
             status.value = "Loaded existing transcript.";
-        } else if (parsed && typeof parsed === 'object') {
-            if (Array.isArray(parsed.segments)) {
-                segments.value = parsed.segments;
-            }
-            if (typeof parsed.context === 'string') {
-                context.value = parsed.context;
-            }
-            if (typeof parsed.glossary === 'string') {
-                settings.value.glossary = parsed.glossary;
-            }
-            if (typeof parsed.speakerCount === 'number' || parsed.speakerCount === null) {
-                speakerCount.value = parsed.speakerCount;
-            }
-            if (typeof parsed.removeFillerWords === 'boolean') {
-                removeFillerWords.value = parsed.removeFillerWords;
-            }
-            if (typeof parsed.trimSilence === 'boolean') {
-                trimSilence.value = parsed.trimSilence;
-            }
-            
-            // Update last analyzed settings
+            return;
+        }
+
+        if (parsed.segments) {
+            segments.value = parsed.segments;
+        }
+        if (parsed.context !== undefined) {
+            context.value = parsed.context;
+        }
+        if (parsed.glossary !== undefined) {
+            settings.value.glossary = parsed.glossary;
+        }
+        if (parsed.speakerCount !== undefined) {
+            speakerCount.value = parsed.speakerCount;
+        }
+        if (parsed.removeFillerWords !== undefined) {
+            removeFillerWords.value = parsed.removeFillerWords;
+        }
+        if (parsed.trimSilence !== undefined) {
+            trimSilence.value = parsed.trimSilence;
+        }
+        if (parsed.translations) {
+            translations.value = parsed.translations;
+        }
+        if (parsed.currentLanguage !== undefined) {
+            currentLanguage.value = parsed.currentLanguage;
+        }
+        if (parsed.targetLanguage !== undefined) {
+            targetLanguage.value = parsed.targetLanguage;
+        }
+        if (parsed.useAdvancedAlignment !== undefined) {
+            useAdvancedAlignment.value = parsed.useAdvancedAlignment;
+        }
+        if (parsed.speakerOrder) {
+            speakerOrder.value = parsed.speakerOrder;
+        }
+        if (parsed.lastAnalyzedSettings) {
+            lastAnalyzedSettings.value = parsed.lastAnalyzedSettings;
+        } else {
             lastAnalyzedSettings.value = {
                 context: context.value,
                 glossary: settings.value.glossary,
@@ -277,9 +474,18 @@ async function loadTranscript() {
                 parakeetModelPath: settings.value.parakeetModelPath ?? '',
                 sortformerModelPath: settings.value.sortformerModelPath ?? '',
             };
-            
-            status.value = "Loaded existing transcript and settings.";
         }
+        if (parsed.transcriptionBackend !== undefined) {
+            settings.value.transcriptionBackend = parsed.transcriptionBackend;
+        }
+        if (parsed.parakeetModelPath !== undefined) {
+            settings.value.parakeetModelPath = parsed.parakeetModelPath;
+        }
+        if (parsed.sortformerModelPath !== undefined) {
+            settings.value.sortformerModelPath = parsed.sortformerModelPath;
+        }
+
+        status.value = "Loaded existing transcript and settings.";
     } catch (e) {
         // Ignore error if file doesn't exist
         console.log("No existing transcript found or error loading it.");
@@ -287,37 +493,16 @@ async function loadTranscript() {
 }
 
 async function saveTranscript() {
-    if (!inputPath.value || segments.value.length === 0) return;
+    if (!inputPath.value) return;
     const transcriptPath = inputPath.value + ".transcript.json";
     try {
-        const data = {
-            segments: segments.value,
-            context: context.value,
-            glossary: settings.value.glossary,
-            speakerCount: speakerCount.value,
-            removeFillerWords: removeFillerWords.value,
-            trimSilence: trimSilence.value,
-            transcriptionBackend: settings.value.transcriptionBackend,
-            parakeetModelPath: settings.value.parakeetModelPath,
-            sortformerModelPath: settings.value.sortformerModelPath,
-        };
         await invoke("write_text_file", { 
             path: transcriptPath, 
-            content: JSON.stringify(data, null, 2) 
+            content: JSON.stringify(buildTranscriptSidecar(transcriptWorkspaceState.value), null, 2) 
         });
         console.log("Transcript saved.");
     } catch (e) {
         console.error("Failed to save transcript:", e);
-    }
-}
-
-function selectLanguage(langName: string) {
-    targetLanguage.value = langName;
-    showLanguageDropdown.value = false;
-    
-    // If translation exists, switch to it
-    if (translations.value[langName]) {
-        currentLanguage.value = langName;
     }
 }
 
@@ -492,6 +677,11 @@ function adjustSegmentsWithOffsets(
 async function processFile() {
     if (!inputPath.value) {
         status.value = "Please provide a media file.";
+        return;
+    }
+
+    if (!hasMediaFile.value) {
+        status.value = "Selected media file could not be found. Choose a valid file to continue.";
         return;
     }
 
@@ -706,6 +896,10 @@ async function processFile() {
 
 async function cutVideo() {
     if (segments.value.length === 0) return;
+    if (!hasMediaFile.value) {
+        status.value = "Select a valid media file before exporting video.";
+        return;
+    }
 
     status.value = "Cutting media...";
     isProcessing.value = true;
@@ -727,218 +921,6 @@ async function cutVideo() {
     } finally {
         isProcessing.value = false;
         progressPercentage.value = null;
-    }
-}
-
-async function generateClips() {
-    if (segments.value.length === 0) return;
-    
-    status.value = "Generating clips...";
-    isProcessing.value = true;
-    progressPercentage.value = null;
-    
-    try {
-        const transcript = segments.value
-            .map(s => `[${s.start}-${s.end}] ${s.speaker}: ${s.text}`)
-            .join("\n");
-            
-        const estimatedTime = estimateTime('generation', transcript.length);
-        status.value = `Generating clips... (Est. ${estimatedTime.toFixed(0)}s)`;
-        const startTime = Date.now();
-
-        startSimulatedProgress(estimatedTime);
-        let response: string;
-        try {
-            response = await invoke<string>("generate_clips", {
-                apiKey: settings.value.apiKey,
-                baseUrl: settings.value.baseUrl,
-                model: settings.value.model,
-                transcript,
-                count: clipCount.value,
-                minDuration: clipMinDuration.value,
-                maxDuration: clipMaxDuration.value,
-                topic: clipTopic.value || null,
-                splicing: allowSplicing.value
-            });
-        } finally {
-            stopSimulatedProgress();
-        }
-
-        const duration = (Date.now() - startTime) / 1000;
-        logExecution('generation', transcript.length, duration);
-        
-        const jsonMatch = response.match(/\[[\s\S]*\]/);
-        if (jsonMatch) {
-            try {
-                const parsed = JSON.parse(jsonMatch[0]);
-                if (!Array.isArray(parsed)) throw new Error("Response is not an array");
-                
-                // Normalize clips to always have 'segments'
-                clips.value = parsed.map((c: any) => {
-                    if (c.segments) return c;
-                    // Backward compatibility for AI response without segments
-                    return {
-                        ...c,
-                        segments: [{ start: c.start, end: c.end }]
-                    };
-                });
-                
-                status.value = `Found ${clips.value.length} clips.`;
-            } catch (e) {
-                console.error("JSON Parse Error", e);
-                status.value = "Failed to parse clips from AI response. Check console for details.";
-            }
-        } else {
-            status.value = "Failed to find JSON in AI response.";
-            console.error(response);
-        }
-    } catch (e) {
-        status.value = `Error generating clips: ${e}`;
-    } finally {
-        isProcessing.value = false;
-        progressPercentage.value = null;
-    }
-}
-
-async function getClipExportSilenceIntervals(): Promise<SilenceInterval[]> {
-    if (clipExportSilenceCache.value?.path === inputPath.value) {
-        return clipExportSilenceCache.value.intervals;
-    }
-
-    status.value = "Detecting clip boundary silence...";
-    const intervals = await invoke<SilenceInterval[]>("detect_silence", { path: inputPath.value });
-    clipExportSilenceCache.value = { path: inputPath.value, intervals };
-    return intervals;
-}
-
-async function exportClips(payload?: ClipExportPayload) {
-    const clipsToExport = payload?.clips || clips.value;
-    const includeSubtitles = payload?.includeSubtitles || false;
-    const fastMode = payload?.fastMode || false;
-    const trimBoundarySilence = payload?.trimBoundarySilence || false;
-
-    if (clipsToExport.length === 0) return;
-    
-    status.value = "Exporting clips...";
-    isProcessing.value = true;
-    progressPercentage.value = null;
-    
-    try {
-        // Robust extension replacement
-        const outputDir = inputPath.value.replace(/\.[^/\\.]+$/, "") + "_clips";
-        
-        const prePadding = settings.value.preClipPadding || 0;
-        const postPadding = settings.value.postClipPadding || 0;
-        const maxDuration = videoRef.value?.duration || Infinity;
-
-        let clipSegments = clipsToExport.map(c => ({ 
-            segments: c.segments.map(s => {
-                const start = Math.max(0, parseTime(s.start) - prePadding);
-                const end = Math.min(maxDuration, parseTime(s.end) + postPadding);
-                return {
-                    start: formatTime(start),
-                    end: formatTime(end)
-                };
-            }),
-            label: c.title,
-            reason: c.reason
-        }));
-
-        if (trimBoundarySilence) {
-            try {
-                const silenceIntervals = await getClipExportSilenceIntervals();
-                clipSegments = clipSegments.map((clip) => ({
-                    ...clip,
-                    segments: trimClipBoundarySilence(clip.segments, silenceIntervals),
-                }));
-            } catch (e) {
-                console.warn("Failed to detect silence for clip export", e);
-                status.value = "Silence detection failed, exporting without boundary trimming...";
-            }
-        }
-        
-        console.log({outputDir});
-        
-        status.value = `Exporting to ${outputDir}...`;
-        await invoke("export_clips", {
-            inputPath: inputPath.value,
-            segments: clipSegments,
-            outputDir,
-            fastMode
-        });
-
-        if (includeSubtitles) {
-            status.value = "Generating subtitles...";
-            for (let i = 0; i < clipSegments.length; i++) {
-                const clip = clipSegments[i];
-                
-                // Reconstruct filename logic from Rust
-                const suffix = clip.label
-                    ? clip.label.replace(/[^a-zA-Z0-9-_]/g, "")
-                    : "";
-                const indexStr = (i + 1).toString().padStart(3, '0');
-                const filename = suffix ? `clip_${indexStr}_${suffix}.srt` : `clip_${indexStr}.srt`;
-                const outputPath = `${outputDir}\\${filename}`; // Assuming Windows based on context, but should use path separator
-
-                // Generate transcript for this clip
-                const clipTranscript: TranscriptSegment[] = [];
-                let currentOffset = 0;
-
-                for (const seg of clip.segments) {
-                    const segStart = parseTime(seg.start);
-                    const segEnd = parseTime(seg.end);
-                    const duration = segEnd - segStart;
-
-                    // Find overlapping segments in full transcript
-                    const overlapping = segments.value.filter(t => {
-                        const tStart = parseTime(t.start);
-                        const tEnd = parseTime(t.end);
-                        // Intersection > 0
-                        return Math.max(tStart, segStart) < Math.min(tEnd, segEnd);
-                    });
-
-                    for (const t of overlapping) {
-                        const tStart = parseTime(t.start);
-                        const tEnd = parseTime(t.end);
-                        
-                        const effStart = Math.max(tStart, segStart);
-                        const effEnd = Math.min(tEnd, segEnd);
-                        
-                        if (effEnd > effStart) {
-                            const relStart = currentOffset + (effStart - segStart);
-                            const relEnd = currentOffset + (effEnd - segStart);
-                            
-                            clipTranscript.push({
-                                start: formatTime(relStart),
-                                end: formatTime(relEnd),
-                                text: t.text,
-                                speaker: t.speaker
-                            });
-                        }
-                    }
-                    currentOffset += duration;
-                }
-
-                if (clipTranscript.length > 0) {
-                    const srtContent = generateSubtitleContent(clipTranscript, 'srt');
-                    await invoke("write_text_file", { path: outputPath, content: srtContent });
-                }
-            }
-        }
-        
-        lastExportPath.value = outputDir;
-        status.value = `Clips exported to ${outputDir}`;
-    } catch (e) {
-        status.value = `Error exporting clips: ${e}`;
-    } finally {
-        isProcessing.value = false;
-        progressPercentage.value = null;
-    }
-}
-
-async function openExportFolder() {
-    if (lastExportPath.value) {
-        await invoke("open_folder", { path: lastExportPath.value });
     }
 }
 
@@ -982,49 +964,6 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
     await saveTranscript();
 }
 
-function jumpTo(time: number) {
-    if (videoRef.value) {
-        videoRef.value.currentTime = time;
-        videoRef.value.play();
-    }
-}
-
-function onTimeUpdate() {
-    if (!videoRef.value || segments.value.length === 0) return;
-    
-    const currentTime = videoRef.value.currentTime;
-    
-    // Check if current time is inside any segment
-    // We assume segments are sorted by start time
-    let inside = false;
-    let nextStart = -1;
-
-    for (const seg of segments.value) {
-        const start = parseTime(seg.start);
-        const end = parseTime(seg.end);
-
-        if (currentTime >= start && currentTime < end) {
-            inside = true;
-            break;
-        }
-        if (start > currentTime) {
-            nextStart = start;
-            break;
-        }
-    }
-    
-    if (!inside && nextStart !== -1) {
-        // Jump to next segment
-        videoRef.value.currentTime = nextStart;
-    } else if (!inside && nextStart === -1) {
-        const lastEnd = parseTime(segments.value[segments.value.length - 1].end);
-        if (currentTime > lastEnd) {
-            // End of video
-            videoRef.value.pause();
-        }
-    }
-}
-
 function goToSettings() {
     router.push('/settings');
 }
@@ -1041,163 +980,59 @@ function updateProcessing(processing: boolean) {
 <template>
     <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30">
         <div class="max-w-5xl mx-auto">
-            <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
-
-                <!-- Settings Display -->
-                <div class="mb-8 flex items-center justify-between bg-black/20 p-4 rounded-2xl border border-white/5">
-                    <div class="flex items-center gap-4">
-                        <div class="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
-                            <LightningIcon class="h-6 w-6" />
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-400 uppercase tracking-wider">{{ currentEngineLabel }}</label>
-                            <div class="text-white font-medium">{{ currentModelDisplay }}</div>
-                        </div>
-                    </div>
-                    <button @click="goToSettings"
-                        class="px-6 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10">
-                        Settings
-                    </button>
-                </div>
-
-                <!-- File Selection Section -->
-                <FileSelector v-model="inputPath" @invalid-selection="updateStatus" />
-
-                <!-- Analysis Settings -->
-                <AnalysisSettings
-                    v-model:transcriptionBackend="settings.transcriptionBackend"
-                    v-model:context="context"
-                    v-model:glossary="settings.glossary"
-                    v-model:speakerCount="speakerCount"
-                    v-model:removeFillerWords="removeFillerWords"
-                    v-model:trimSilence="trimSilence"
-                />
-
-                <!-- Action Buttons -->
-                <div class="flex gap-4 mb-6">
-                    <button @click="processFile" :disabled="isProcessing || !hasBackendConfiguration || (hasTranscript && !settingsChanged)"
-                        class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2">
-                        <SpinnerIcon v-if="isProcessing" class="animate-spin h-5 w-5 text-white" />
-                        {{ isProcessing ? 'Processing...' : (hasTranscript && !settingsChanged ? 'Transcript Loaded' : (hasTranscript ? 'Re-analyze Media' : 'Analyze Media')) }}
-                    </button>
-                </div>
-            </div>
+            <HomeSourcePanel
+                :currentEngineLabel="currentEngineLabel"
+                :currentModelDisplay="currentModelDisplay"
+                :inputPath="inputPath"
+                :hasMediaFile="hasMediaFile"
+                :isProcessing="isProcessing"
+                :hasBackendConfiguration="hasBackendConfiguration"
+                :hasTranscript="hasTranscript"
+                :settingsChanged="settingsChanged"
+                :transcriptionBackend="settings.transcriptionBackend"
+                :context="context"
+                :glossary="settings.glossary"
+                :speakerCount="speakerCount"
+                :removeFillerWords="removeFillerWords"
+                :trimSilence="trimSilence"
+                @update:inputPath="inputPath = $event"
+                @update:transcriptionBackend="settings.transcriptionBackend = $event"
+                @update:context="context = $event"
+                @update:glossary="settings.glossary = $event"
+                @update:speakerCount="speakerCount = $event"
+                @update:removeFillerWords="removeFillerWords = $event"
+                @update:trimSilence="trimSilence = $event"
+                @invalid-selection="updateStatus"
+                @save-session="sessionPersistence.handleSaveSession"
+                @load-session="sessionPersistence.handleLoadSession"
+                @open-settings="goToSettings"
+                @process="processFile"
+            />
 
             <!-- Editor Section -->
             <transition name="fade">
-                <div v-if="segments.length > 0"
-                    class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
-                    
-                    <!-- Video Preview -->
-                    <div class="mb-8 bg-black rounded-xl overflow-hidden border border-white/10 shadow-2xl">
-                        <video 
-                            ref="videoRef"
-                            :src="convertFileSrc(inputPath)"
-                            class="w-full max-h-[500px] mx-auto"
-                            controls
-                            @timeupdate="onTimeUpdate"
-                        ></video>
-                    </div>
-
-                    <div class="flex justify-between items-center mb-6">
-                        <div class="flex items-center gap-4">
-                            <h2 class="text-2xl font-bold text-white">Transcript</h2>
-                            <span class="px-3 py-1 rounded-full bg-white/10 text-gray-300 text-xs font-bold border border-white/10">
-                                {{ displaySegments.length }} Segments
-                            </span>
-                        </div>
-                        <div class="flex items-center gap-3">
-                            <!-- Language Selector -->
-                            <div class="flex items-center gap-2 bg-black/20 rounded-lg p-1 border border-white/10">
-                                <select v-model="currentLanguage" class="bg-transparent text-xs text-gray-300 outline-none border-none py-1 pl-2 pr-2 cursor-pointer [&>option]:bg-gray-900">
-                                    <option value="Original">Original</option>
-                                    <option v-for="(_, lang) in translations" :key="lang" :value="lang">{{ lang }}</option>
-                                </select>
-                            </div>
-
-                            <!-- New Translation Dropdown -->
-                            <div class="relative">
-                                <div class="flex items-center gap-2">
-                                    <button @click="showLanguageDropdown = !showLanguageDropdown" 
-                                        class="flex items-center gap-2 w-32 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none hover:bg-white/10 transition-colors">
-                                        <span class="truncate flex-1 text-left">{{ targetLanguage || 'Select Language' }}</span>
-                                        <ChevronDownIcon class="h-3 w-3 text-gray-500" />
-                                    </button>
-                                    
-                                    <button @click="translateTranscript" :disabled="isTranslating || !targetLanguage || !!translations[targetLanguage]" 
-                                        class="p-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/20" title="Translate">
-                                        <TranslateIcon class="h-4 w-4" :class="{ 'animate-pulse': isTranslating }" />
-                                    </button>
-                                </div>
-
-                                <!-- Dropdown Menu -->
-                                <div v-if="showLanguageDropdown" 
-                                    class="absolute top-full left-0 mt-1 w-48 max-h-64 overflow-y-auto bg-gray-900 border border-white/10 rounded-lg shadow-xl z-50 py-1">
-                                    <button v-for="lang in SUPPORTED_LANGUAGES" :key="lang.code"
-                                        @click="selectLanguage(lang.name)"
-                                        class="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-white/10 flex items-center justify-between group">
-                                        <span class="flex items-center gap-2">
-                                            <span :class="`fi fi-${lang.country}`" class="rounded-sm"></span>
-                                            <span>{{ lang.name }}</span>
-                                        </span>
-                                        <CheckIcon v-if="translations[lang.name]" class="h-3 w-3 text-emerald-400" />
-                                    </button>
-                                </div>
-                                
-                                <!-- Backdrop to close -->
-                                <div v-if="showLanguageDropdown" @click="showLanguageDropdown = false" class="fixed inset-0 z-40 bg-transparent"></div>
-                            </div>
-
-                            <div class="w-px h-6 bg-white/10 mx-1"></div>
-
-                            <button @click="cutVideo" :disabled="segments.length === 0 || isProcessing"
-                                class="px-4 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                                title="Export the video with the current cuts applied">
-                                Export Video
-                            </button>
-
-                            <SubtitleExport :segments="displaySegments" :inputPath="inputPath" :language="currentLanguage" />
-                        </div>
-                    </div>
-                    
-                    <!-- Advanced Alignment Toggle (Placeholder for now) -->
-                    <div v-if="isLlmOnlyBackend" class="mb-4 p-4 bg-black/20 rounded-xl border border-white/5 flex items-center justify-between">
-                        <div>
-                            <h3 class="text-sm font-semibold text-gray-300">Advanced Alignment</h3>
-                            <p class="text-xs text-gray-500">Align AI transcript with local timestamps (Coming Soon)</p>
-                        </div>
-                        <button 
-                            @click="useAdvancedAlignment = !useAdvancedAlignment"
-                            class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
-                            :class="useAdvancedAlignment ? 'bg-blue-600' : 'bg-gray-700'"
-                        >
-                            <span class="sr-only">Enable advanced alignment</span>
-                            <span
-                                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                :class="useAdvancedAlignment ? 'translate-x-6' : 'translate-x-1'"
-                            />
-                        </button>
-                    </div>
-
-                    <!-- Speaker Management -->
-                    <div v-if="uniqueSpeakers.length > 0" class="mb-6 p-4 bg-black/20 rounded-xl border border-white/5">
-                        <h3 class="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wider">Speakers</h3>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                            <div v-for="speaker in uniqueSpeakers" :key="speaker" class="relative group">
-                                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <UserIcon class="h-4 w-4 text-gray-500" />
-                                </div>
-                                <input 
-                                    :value="speaker" 
-                                    @change="renameSpeaker(speaker, ($event.target as HTMLInputElement).value, $event.target as HTMLInputElement)"
-                                    class="w-full pl-9 pr-3 py-2 rounded-lg bg-white/5 border border-white/10 focus:border-blue-500/50 focus:bg-black/30 outline-none text-sm text-gray-300 transition-all"
-                                />
-                            </div>
-                        </div>
-                    </div>
-
-                    <Editor :segments="displaySegments" @jump-to="jumpTo" @update:segments="displaySegments = $event" />
-                </div>
+                <TranscriptWorkspacePanel
+                    v-if="segments.length > 0"
+                    :inputPath="inputPath"
+                    :hasMediaFile="hasMediaFile"
+                    :displaySegments="displaySegments"
+                    :originalSegments="segments"
+                    :translations="translations"
+                    :currentLanguage="currentLanguage"
+                    :targetLanguage="targetLanguage"
+                    :isTranslating="isTranslating"
+                    :isLlmOnlyBackend="isLlmOnlyBackend"
+                    :useAdvancedAlignment="useAdvancedAlignment"
+                    :uniqueSpeakers="uniqueSpeakers"
+                    :isProcessing="isProcessing"
+                    @update:currentLanguage="currentLanguage = $event"
+                    @update:targetLanguage="targetLanguage = $event"
+                    @translate="translateTranscript"
+                    @export-video="cutVideo"
+                    @update:useAdvancedAlignment="useAdvancedAlignment = $event"
+                    @rename-speaker="renameSpeaker($event.oldName, $event.newName, $event.inputElement)"
+                    @update:segments="displaySegments = $event"
+                />
             </transition>
 
             <!-- Viral Clips Generator -->
@@ -1206,9 +1041,12 @@ function updateProcessing(processing: boolean) {
                     v-if="segments.length > 0"
                     :segments="segments"
                     :inputPath="inputPath"
+                    :hasMediaFile="hasMediaFile"
+                    :state="viralClipsState"
                     class="mb-8"
                     @update:status="updateStatus"
                     @update:processing="updateProcessing"
+                    @update:state="viralClipsState = $event"
                 />
             </transition>
 
@@ -1218,9 +1056,12 @@ function updateProcessing(processing: boolean) {
                     v-if="segments.length > 0"
                     :segments="segments"
                     :inputPath="inputPath"
+                    :hasMediaFile="hasMediaFile"
+                    :state="podcastWorkspaceState"
                     class="mb-20"
                     @update:status="updateStatus"
                     @update:processing="updateProcessing"
+                    @update:state="podcastWorkspaceState = $event"
                 />
             </transition>
 
@@ -1234,15 +1075,24 @@ function updateProcessing(processing: boolean) {
                         v-model:topic="clipTopic"
                         v-model:splicing="allowSplicing"
                         :isProcessing="isProcessing"
-                        @generate="generateClips"
+                        @generate="clipGeneration.generateClips"
                     />
 
                     <ClipList
                         :clips="clips"
                         :lastExportPath="lastExportPath"
                         :isProcessing="isProcessing"
-                        @export="exportClips"
-                        @openFolder="openExportFolder"
+                        :hasMediaFile="hasMediaFile"
+                        :includeSubtitles="includeSubtitles"
+                        :fastMode="fastMode"
+                        :trimBoundarySilence="clipTrimBoundarySilence"
+                        :selectedClipIndices="selectedClipIndices"
+                        @export="clipGeneration.exportClips"
+                        @openFolder="clipGeneration.openExportFolder"
+                        @update:includeSubtitles="includeSubtitles = $event"
+                        @update:fastMode="fastMode = $event"
+                        @update:trimBoundarySilence="clipTrimBoundarySilence = $event"
+                        @update:selectedClipIndices="selectedClipIndices = $event"
                     />
                 </div>
             </transition>

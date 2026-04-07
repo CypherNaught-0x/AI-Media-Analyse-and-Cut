@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { TranscriptSegment, Clip, SilenceInterval } from '../types';
+import type { TranscriptSegment, SilenceInterval, ViralClipsWorkspaceState } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
 
@@ -10,6 +10,8 @@ import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 interface Props {
   segments: TranscriptSegment[];
   inputPath: string;
+  hasMediaFile: boolean;
+  state: ViralClipsWorkspaceState;
 }
 
 const props = defineProps<Props>();
@@ -17,20 +19,47 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'update:status': [message: string];
   'update:processing': [isProcessing: boolean];
+  'update:state': [state: ViralClipsWorkspaceState];
 }>();
 
 const { settings } = useSettings();
 
-const clips = ref<Clip[]>([]);
-const clipCount = ref(3);
-const clipMinDuration = ref(10);
-const clipMaxDuration = ref(120);
-const clipTopic = ref("");
-const allowSplicing = ref(false);
-const lastExportPath = ref("");
 const isProcessing = ref(false);
-const trimBoundarySilence = ref(false);
 const silenceIntervalsCache = ref<SilenceInterval[] | null>(null);
+
+function updateState(patch: Partial<ViralClipsWorkspaceState>) {
+  emit('update:state', {
+    ...props.state,
+    ...patch,
+  });
+}
+
+const clips = computed(() => props.state.clips);
+const clipCount = computed({
+  get: () => props.state.count,
+  set: (value: number) => updateState({ count: value }),
+});
+const clipMinDuration = computed({
+  get: () => props.state.minDuration,
+  set: (value: number) => updateState({ minDuration: value }),
+});
+const clipMaxDuration = computed({
+  get: () => props.state.maxDuration,
+  set: (value: number) => updateState({ maxDuration: value }),
+});
+const clipTopic = computed({
+  get: () => props.state.topic,
+  set: (value: string) => updateState({ topic: value }),
+});
+const allowSplicing = computed({
+  get: () => props.state.allowSplicing,
+  set: (value: boolean) => updateState({ allowSplicing: value }),
+});
+const lastExportPath = computed(() => props.state.lastExportPath);
+const trimBoundarySilence = computed({
+  get: () => props.state.trimBoundarySilence,
+  set: (value: boolean) => updateState({ trimBoundarySilence: value }),
+});
 
 function showError(message: string, rawResponse: string, parseError: string = "") {
   // Emit to parent for now - can be improved later
@@ -69,16 +98,18 @@ async function generateClips() {
         if (!Array.isArray(parsed)) throw new Error("Response is not an array");
 
         // Normalize clips to always have 'segments'
-        clips.value = parsed.map((c: any) => {
+        updateState({
+          clips: parsed.map((c: any) => {
           if (c.segments) return c;
           // Backward compatibility for AI response without segments
           return {
             ...c,
             segments: [{ start: c.start, end: c.end }]
           };
+          }),
         });
 
-        emit('update:status', `Found ${clips.value.length} clips.`);
+        emit('update:status', `Found ${parsed.length} clips.`);
       } catch (e) {
         console.error("JSON Parse Error", e);
         showError(
@@ -104,6 +135,10 @@ async function generateClips() {
 
 async function exportClips() {
   if (clips.value.length === 0) return;
+  if (!props.hasMediaFile) {
+    emit('update:status', "Select a valid media file before exporting clips.");
+    return;
+  }
 
   emit('update:status', "Exporting clips...");
   isProcessing.value = true;
@@ -140,7 +175,7 @@ async function exportClips() {
       outputDir
     });
 
-    lastExportPath.value = outputDir;
+    updateState({ lastExportPath: outputDir });
     emit('update:status', `Clips exported to ${outputDir}`);
   } catch (e) {
     emit('update:status', `Error exporting clips: ${e}`);
@@ -234,7 +269,7 @@ async function openExportFolder() {
       </div>
 
       <div class="flex gap-4 mt-6">
-        <button @click="exportClips" :disabled="isProcessing"
+        <button @click="exportClips" :disabled="isProcessing || !hasMediaFile"
           class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
           Export All Clips
         </button>

@@ -96,3 +96,80 @@ export interface PodcastSettings {
   introPath?: string;
   outroPath?: string;
 }
+
+export interface LastAnalyzedSettings {
+  context: string;
+  glossary: string;
+  speakerCount: number | null;
+  removeFillerWords: boolean;
+  trimSilence: boolean;
+  transcriptionBackend: TranscriptionBackend;
+  parakeetModelPath: string;
+  sortformerModelPath: string;
+}
+
+export interface TranscriptWorkspaceState {
+  inputPath: string;
+  segments: TranscriptSegment[];
+  translations: Record<string, TranscriptSegment[]>;
+  currentLanguage: string;
+  targetLanguage: string;
+  context: string;
+  speakerCount: number | null;
+  removeFillerWords: boolean;
+  trimSilence: boolean;
+  useAdvancedAlignment: boolean;
+  speakerOrder: string[];
+  lastAnalyzedSettings: LastAnalyzedSettings;
+  settingsSnapshot: {
+    glossary: string;
+    transcriptionBackend: TranscriptionBackend;
+    parakeetModelPath: string;
+    sortformerModelPath: string;
+  };
+}
+
+export interface ClipWorkspaceState {
+  count: number;
+  minDuration: number;
+  maxDuration: number;
+  topic: string;
+  allowSplicing: boolean;
+  clips: Clip[];
+  lastExportPath: string;
+  includeSubtitles: boolean;
+  fastMode: boolean;
+  trimBoundarySilence: boolean;
+  selectedClipIndices: number[];
+}
+
+export interface ViralClipsWorkspaceState {
+  count: number;
+  minDuration: number;
+  maxDuration: number;
+  topic: string;
+  allowSplicing: boolean;
+  clips: Clip[];
+  lastExportPath: string;
+  trimBoundarySilence: boolean;
+}
+
+export interface PodcastWorkspaceState {
+  minDurationMinutes: number;
+  maxDurationMinutes: number;
+  startPadding: number;
+  endPadding: number;
+  introPath: string;
+  outroPath: string;
+  podcastScript: PodcastScript | null;
+  lastExportPath: string;
+}
+
+export interface EditSessionV1 {
+  version: 1;
+  savedAt: string;
+  transcriptWorkspace: TranscriptWorkspaceState;
+  clipWorkspace: ClipWorkspaceState;
+  viralClipsWorkspace: ViralClipsWorkspaceState;
+  podcastWorkspace: PodcastWorkspaceState;
+}
