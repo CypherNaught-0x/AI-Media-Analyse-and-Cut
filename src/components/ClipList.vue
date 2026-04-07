@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import type { Clip, ClipExportPayload } from '../types';
 
@@ -7,31 +7,57 @@ const props = defineProps<{
   clips: Clip[];
   lastExportPath: string;
   isProcessing: boolean;
+  hasMediaFile: boolean;
+  includeSubtitles: boolean;
+  fastMode: boolean;
+  trimBoundarySilence: boolean;
+  selectedClipIndices: number[];
 }>();
 
 const emit = defineEmits<{
   (e: 'export', payload: ClipExportPayload): void;
   (e: 'openFolder'): void;
+  (e: 'update:includeSubtitles', value: boolean): void;
+  (e: 'update:fastMode', value: boolean): void;
+  (e: 'update:trimBoundarySilence', value: boolean): void;
+  (e: 'update:selectedClipIndices', value: number[]): void;
 }>();
 
-const selectedIndices = ref<Set<number>>(new Set());
-const includeSubtitles = ref(true);
-const fastMode = ref(true);
-const trimBoundarySilence = ref(false);
+const selectedIndices = computed({
+    get: () => new Set(props.selectedClipIndices),
+    set: (indices: Set<number>) => emit('update:selectedClipIndices', Array.from(indices).sort((a, b) => a - b)),
+});
+
+const includeSubtitles = computed({
+    get: () => props.includeSubtitles,
+    set: (value: boolean) => emit('update:includeSubtitles', value),
+});
+
+const fastMode = computed({
+    get: () => props.fastMode,
+    set: (value: boolean) => emit('update:fastMode', value),
+});
+
+const trimBoundarySilence = computed({
+    get: () => props.trimBoundarySilence,
+    set: (value: boolean) => emit('update:trimBoundarySilence', value),
+});
 
 const toggleSelection = (index: number) => {
-    if (selectedIndices.value.has(index)) {
-        selectedIndices.value.delete(index);
+    const next = new Set(selectedIndices.value);
+    if (next.has(index)) {
+        next.delete(index);
     } else {
-        selectedIndices.value.add(index);
+        next.add(index);
     }
+    selectedIndices.value = next;
 };
 
 const toggleAll = () => {
     if (selectedIndices.value.size === props.clips.length) {
-        selectedIndices.value.clear();
+        selectedIndices.value = new Set();
     } else {
-        props.clips.forEach((_, i) => selectedIndices.value.add(i));
+        selectedIndices.value = new Set(props.clips.map((_, i) => i));
     }
 };
 
@@ -62,7 +88,6 @@ const selectionLabel = computed(() => {
                 <label class="flex items-center gap-2 cursor-pointer text-sm text-gray-400 hover:text-gray-300">
                     <input type="checkbox" 
                         :checked="selectedIndices.size === clips.length && clips.length > 0"
-                        :indeterminate="selectedIndices.size > 0 && selectedIndices.size < clips.length"
                         @change="toggleAll"
                         class="rounded bg-white/10 border-white/20 text-blue-500 focus:ring-blue-500/50" />
                     Select All
@@ -111,7 +136,7 @@ const selectionLabel = computed(() => {
         </div>
 
         <div class="flex gap-4 mt-6">
-            <button @click="handleExport" :disabled="isProcessing"
+            <button @click="handleExport" :disabled="isProcessing || !hasMediaFile"
                 class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all flex items-center justify-center gap-2">
                 <span>{{ selectionLabel }}</span>
                 <span v-if="includeSubtitles" class="text-xs bg-black/20 px-2 py-0.5 rounded text-gray-300">+ Subs</span>

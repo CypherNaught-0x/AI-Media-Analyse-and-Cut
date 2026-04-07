@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { TranscriptSegment, PodcastSegment, PodcastScript } from '../types';
+import type { PodcastScript, PodcastSegment, PodcastWorkspaceState, TranscriptSegment } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { formatDuration, calculateSegmentsDuration } from '../composables/useTimeFormat';
 
@@ -12,6 +12,8 @@ import SpinnerIcon from '../assets/icons/spinner.svg?component';
 interface Props {
   segments: TranscriptSegment[];
   inputPath: string;
+  hasMediaFile: boolean;
+  state: PodcastWorkspaceState;
 }
 
 const props = defineProps<Props>();
@@ -19,23 +21,13 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   'update:status': [message: string];
   'update:processing': [isProcessing: boolean];
+  'update:state': [state: PodcastWorkspaceState];
 }>();
 
 const { settings } = useSettings();
 
-// Generation settings
-const minDurationMinutes = ref(10);
-const maxDurationMinutes = ref(15);
-const startPadding = ref(0.5); // seconds to add before each segment
-const endPadding = ref(0.5); // seconds to add after each segment
-const introPath = ref<string>("");
-const outroPath = ref<string>("");
-
-// Generated podcast state
-const podcastScript = ref<PodcastScript | null>(null);
 const isGenerating = ref(false);
 const isExporting = ref(false);
-const lastExportPath = ref("");
 
 // Segment being edited
 const editingSegmentIndex = ref<number | null>(null);
@@ -46,6 +38,54 @@ const showAddSegmentModal = ref(false);
 
 // Drag state
 const draggedIndex = ref<number | null>(null);
+
+function updateState(patch: Partial<PodcastWorkspaceState>) {
+  emit('update:state', {
+    ...props.state,
+    ...patch,
+  });
+}
+
+function clonePodcastScript(script: PodcastScript): PodcastScript {
+  return {
+    ...script,
+    segments: script.segments.map((segment) => ({ ...segment })),
+  };
+}
+
+function updatePodcastScript(mutator: (script: PodcastScript) => void) {
+  if (!props.state.podcastScript) return;
+  const next = clonePodcastScript(props.state.podcastScript);
+  mutator(next);
+  updateState({ podcastScript: next });
+}
+
+const minDurationMinutes = computed({
+  get: () => props.state.minDurationMinutes,
+  set: (value: number) => updateState({ minDurationMinutes: value }),
+});
+const maxDurationMinutes = computed({
+  get: () => props.state.maxDurationMinutes,
+  set: (value: number) => updateState({ maxDurationMinutes: value }),
+});
+const startPadding = computed({
+  get: () => props.state.startPadding,
+  set: (value: number) => updateState({ startPadding: value }),
+});
+const endPadding = computed({
+  get: () => props.state.endPadding,
+  set: (value: number) => updateState({ endPadding: value }),
+});
+const introPath = computed({
+  get: () => props.state.introPath,
+  set: (value: string) => updateState({ introPath: value }),
+});
+const outroPath = computed({
+  get: () => props.state.outroPath,
+  set: (value: string) => updateState({ outroPath: value }),
+});
+const podcastScript = computed(() => props.state.podcastScript);
+const lastExportPath = computed(() => props.state.lastExportPath);
 
 // Computed values (preview playback variables will be used in future implementation)
 const minDurationSeconds = computed(() => minDurationMinutes.value * 60);
@@ -175,7 +215,7 @@ async function generatePodcast() {
 
     // Calculate final duration
     script.totalDuration = calculateSegmentsDuration(script.segments);
-    podcastScript.value = script;
+    updateState({ podcastScript: script });
 
     emit('update:status', `Podcast script generated: "${script.title}" (${formatDuration(script.totalDuration)})`);
   } catch (e) {
@@ -218,9 +258,10 @@ function parseScriptResponse(response: string): PodcastScript | null {
 
 // Segment Editor Functions
 function removeSegment(index: number) {
-  if (!podcastScript.value) return;
-  podcastScript.value.segments.splice(index, 1);
-  podcastScript.value.totalDuration = calculateSegmentsDuration(podcastScript.value.segments);
+  updatePodcastScript((script) => {
+    script.segments.splice(index, 1);
+    script.totalDuration = calculateSegmentsDuration(script.segments);
+  });
 }
 
 function startEditing(index: number, field: 'start' | 'end') {
@@ -229,13 +270,13 @@ function startEditing(index: number, field: 'start' | 'end') {
 }
 
 function finishEditing(index: number, field: 'start' | 'end', value: string) {
-  if (!podcastScript.value) return;
-
   // Validate time format
   const trimmed = value.trim();
   if (trimmed.match(/^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/)) {
-    podcastScript.value.segments[index][field] = trimmed;
-    podcastScript.value.totalDuration = calculateSegmentsDuration(podcastScript.value.segments);
+    updatePodcastScript((script) => {
+      script.segments[index][field] = trimmed;
+      script.totalDuration = calculateSegmentsDuration(script.segments);
+    });
   }
 
   editingSegmentIndex.value = null;
@@ -250,14 +291,13 @@ function onDragStart(index: number) {
 function onDragOver(e: DragEvent, index: number) {
   e.preventDefault();
   if (draggedIndex.value === null || draggedIndex.value === index) return;
-
-  if (!podcastScript.value) return;
-
-  const segments = podcastScript.value.segments;
-  const draggedSegment = segments[draggedIndex.value];
-  segments.splice(draggedIndex.value, 1);
-  segments.splice(index, 0, draggedSegment);
-  draggedIndex.value = index;
+  updatePodcastScript((script) => {
+    const segments = script.segments;
+    const draggedSegment = segments[draggedIndex.value!];
+    segments.splice(draggedIndex.value!, 1);
+    segments.splice(index, 0, draggedSegment);
+    draggedIndex.value = index;
+  });
 }
 
 function onDragEnd() {
@@ -270,8 +310,6 @@ function openAddSegmentModal() {
 }
 
 function addSegmentFromTranscript(segment: TranscriptSegment) {
-  if (!podcastScript.value) return;
-
   const newSegment: PodcastSegment = {
     start: segment.start,
     end: segment.end,
@@ -281,15 +319,15 @@ function addSegmentFromTranscript(segment: TranscriptSegment) {
     includeReason: "Manually added"
   };
 
-  podcastScript.value.segments.push(newSegment);
-  const contentSegments = podcastScript.value.segments.filter(s => s.type === 'content');
-  podcastScript.value.totalDuration = calculateSegmentsDuration(contentSegments);
+  updatePodcastScript((script) => {
+    script.segments.push(newSegment);
+    const contentSegments = script.segments.filter(s => s.type === 'content');
+    script.totalDuration = calculateSegmentsDuration(contentSegments);
+  });
   showAddSegmentModal.value = false;
 }
 
 function addVoiceoverSegment(afterIndex: number) {
-  if (!podcastScript.value) return;
-
   const newSegment: PodcastSegment = {
     start: "00:00",
     end: "00:00",
@@ -300,7 +338,9 @@ function addVoiceoverSegment(afterIndex: number) {
   };
 
   // Insert after the specified index
-  podcastScript.value.segments.splice(afterIndex + 1, 0, newSegment);
+  updatePodcastScript((script) => {
+    script.segments.splice(afterIndex + 1, 0, newSegment);
+  });
 }
 
 // Check if a transcript segment is already in the podcast
@@ -314,6 +354,10 @@ function isSegmentIncluded(segment: TranscriptSegment): boolean {
 // Export Functions
 async function exportPodcast() {
   if (!podcastScript.value || podcastScript.value.segments.length === 0) return;
+  if (!props.hasMediaFile) {
+    emit('update:status', "Select a valid media file before exporting the podcast.");
+    return;
+  }
 
   // Check if there are any content segments
   const contentSegments = podcastScript.value.segments.filter(s => s.type === 'content');
@@ -347,7 +391,7 @@ async function exportPodcast() {
       outputPath
     });
 
-    lastExportPath.value = outputPath;
+    updateState({ lastExportPath: outputPath });
     emit('update:status', `Podcast exported to ${outputPath}`);
   } catch (e) {
     emit('update:status', `Error exporting podcast: ${e}`);
@@ -360,6 +404,10 @@ async function exportPodcast() {
 
 async function exportClips() {
   if (!podcastScript.value || podcastScript.value.segments.length === 0) return;
+  if (!props.hasMediaFile) {
+    emit('update:status', "Select a valid media file before exporting podcast clips.");
+    return;
+  }
 
   // Check if there are any content segments
   const contentSegments = podcastScript.value.segments.filter(s => s.type === 'content');
@@ -391,7 +439,7 @@ async function exportClips() {
       outputDir
     });
 
-    lastExportPath.value = outputDir;
+    updateState({ lastExportPath: outputDir });
     emit('update:status', `Podcast clips exported to ${outputDir}`);
   } catch (e) {
     emit('update:status', `Error exporting clips: ${e}`);
@@ -638,12 +686,12 @@ async function openExportFolder() {
 
       <!-- Export Buttons -->
       <div class="flex gap-4 mt-6">
-        <button @click="exportPodcast" :disabled="isExporting"
+        <button @click="exportPodcast" :disabled="isExporting || !hasMediaFile"
           class="flex-1 bg-teal-600 hover:bg-teal-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
           <SpinnerIcon v-if="isExporting" class="animate-spin h-5 w-5" />
           Export Podcast
         </button>
-        <button @click="exportClips" :disabled="isExporting"
+        <button @click="exportClips" :disabled="isExporting || !hasMediaFile"
           class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
           Export Clips
         </button>
