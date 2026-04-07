@@ -9,6 +9,7 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 
 const packageJsonPath = path.join(repoRoot, "package.json");
+const cargoTomlPath = path.join(repoRoot, "src-tauri", "Cargo.toml");
 const semverPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
@@ -89,6 +90,15 @@ const run = async () => {
 
   if (syncResult.status !== 0) {
     process.exit(syncResult.status ?? 1);
+  }
+
+  const lockfileResult = spawnSync("cargo", ["generate-lockfile", "--manifest-path", cargoTomlPath], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+
+  if (lockfileResult.status !== 0) {
+    process.exit(lockfileResult.status ?? 1);
   }
 
   console.log(`Bumped version to ${nextVersion}`);
