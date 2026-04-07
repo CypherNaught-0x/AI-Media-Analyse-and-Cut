@@ -3,7 +3,21 @@ const props = defineProps<{
   status: string;
   isProcessing: boolean;
   progressPercentage: number | null;
+  progressEtaSeconds?: number | null;
 }>();
+
+function formatEta(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 1) {
+    return '';
+  }
+
+  const rounded = Math.ceil(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const remainingSeconds = rounded % 60;
+  return minutes > 0
+    ? `ETA ${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+    : `ETA 0:${remainingSeconds.toString().padStart(2, '0')}`;
+}
 </script>
 
 <template>
@@ -16,6 +30,9 @@ const props = defineProps<{
                 <div class="w-2 h-2 rounded-full"
                     :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
                 <span class="text-sm font-mono text-gray-400 truncate">{{ status }}</span>
+                <span v-if="progressEtaSeconds !== null && progressEtaSeconds !== undefined && progressPercentage !== null && progressPercentage < 100" class="text-xs font-mono text-gray-500 whitespace-nowrap">
+                    {{ formatEta(progressEtaSeconds) }}
+                </span>
             </div>
         </div>
     </div>

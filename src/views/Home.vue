@@ -55,6 +55,7 @@ const errorDetails = ref({
     parseError: ""
 });
 const progressPercentage = ref<number | null>(null);
+const progressEtaSeconds = ref<number | null>(null);
 const executionHistory = ref<{type: string, inputSize: number, duration: number, timestamp: number}[]>([]);
 const inputPath = ref("");
 const inputPathExists = ref(false);
@@ -354,6 +355,7 @@ onMounted(async () => {
             const payload = event.payload;
             if (typeof payload === 'number') {
                  status.value = `Processing... ${payload.toFixed(1)}s`;
+                 progressEtaSeconds.value = null;
             } else if (typeof payload === 'object') {
                  if (payload.percentage !== undefined) {
                      if (progressInterval) {
@@ -361,6 +363,9 @@ onMounted(async () => {
                          progressInterval = null;
                      }
                      progressPercentage.value = payload.percentage;
+                     progressEtaSeconds.value = typeof payload.etaSeconds === 'number'
+                        ? payload.etaSeconds
+                        : null;
                      let statusMsg = `Processing... ${payload.percentage.toFixed(1)}%`;
                      
                      if (payload.current_clip && payload.total_clips) {
@@ -572,6 +577,7 @@ let progressInterval: number | null = null;
 function startSimulatedProgress(estimatedSeconds: number) {
     if (progressInterval) clearInterval(progressInterval);
     progressPercentage.value = 0;
+    progressEtaSeconds.value = estimatedSeconds;
     const startTime = Date.now();
     
     progressInterval = window.setInterval(() => {
@@ -579,6 +585,7 @@ function startSimulatedProgress(estimatedSeconds: number) {
         const p = (elapsed / estimatedSeconds) * 100;
         // Cap at 99% so it doesn't look finished until it actually is
         progressPercentage.value = Math.min(p, 99);
+        progressEtaSeconds.value = Math.max(estimatedSeconds - elapsed, 0);
     }, 100);
 }
 
@@ -588,6 +595,7 @@ function stopSimulatedProgress() {
         progressInterval = null;
     }
     progressPercentage.value = 100;
+    progressEtaSeconds.value = null;
 }
 
 function estimateTime(type: 'analysis' | 'generation', inputSize: number): number {
@@ -696,6 +704,7 @@ async function processFile() {
 
     isProcessing.value = true;
     progressPercentage.value = null;
+    progressEtaSeconds.value = null;
     status.value = "Preparing audio...";
     segments.value = [];
 
@@ -891,6 +900,7 @@ async function processFile() {
     } finally {
         isProcessing.value = false;
         progressPercentage.value = null;
+        progressEtaSeconds.value = null;
     }
 }
 
@@ -904,6 +914,7 @@ async function cutVideo() {
     status.value = "Cutting media...";
     isProcessing.value = true;
     progressPercentage.value = null;
+    progressEtaSeconds.value = null;
 
     try {
         const cutSegments = segments.value.map(s => ({ start: s.start, end: s.end }));
@@ -921,6 +932,7 @@ async function cutVideo() {
     } finally {
         isProcessing.value = false;
         progressPercentage.value = null;
+        progressEtaSeconds.value = null;
     }
 }
 
@@ -1108,6 +1120,9 @@ function updateProcessing(processing: boolean) {
                 <div class="w-2 h-2 rounded-full"
                     :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
                 <span class="text-sm font-mono text-gray-400 truncate">{{ status }}</span>
+                <span v-if="progressEtaSeconds !== null && progressPercentage !== null && progressPercentage < 100" class="text-xs font-mono text-gray-500 whitespace-nowrap">
+                    ETA {{ Math.floor(Math.ceil(progressEtaSeconds) / 60) }}:{{ (Math.ceil(progressEtaSeconds) % 60).toString().padStart(2, '0') }}
+                </span>
             </div>
         </div>
     </div>
@@ -1125,6 +1140,7 @@ function updateProcessing(processing: boolean) {
         :status="status"
         :isProcessing="isProcessing"
         :progressPercentage="progressPercentage"
+        :progressEtaSeconds="progressEtaSeconds"
     />
 </template>
 

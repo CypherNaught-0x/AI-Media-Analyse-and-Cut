@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import Editor from './Editor.vue';
 import SubtitleExport from './SubtitleExport.vue';
@@ -55,6 +55,32 @@ const emit = defineEmits<{
 
 const showLanguageDropdown = ref(false);
 const videoRef = ref<HTMLVideoElement | null>(null);
+const showOnlyReviewSegments = ref(false);
+const reviewThresholdPercent = ref(85);
+
+const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
+  if (segment.mergeStatus && segment.mergeStatus !== 'matched') {
+    return true;
+  }
+
+  if (segment.similarityScore !== undefined) {
+    return segment.similarityScore < reviewThresholdPercent.value / 100;
+  }
+
+  return false;
+};
+
+const hasReviewMetadata = computed(() =>
+  props.displaySegments.some((segment) =>
+    segment.mergeStatus !== undefined ||
+    segment.similarityScore !== undefined ||
+    (segment.alternatives?.length ?? 0) > 0
+  )
+);
+
+const reviewSegmentCount = computed(() =>
+  props.displaySegments.filter(segmentNeedsReview).length
+);
 
 function selectLanguage(langName: string) {
   emit('update:targetLanguage', langName);
@@ -192,6 +218,44 @@ function onTimeUpdate() {
       </div>
     </div>
 
+    <div
+      v-if="hasReviewMetadata"
+      class="mb-4 rounded-xl border border-white/5 bg-black/20 p-4"
+    >
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h3 class="text-sm font-semibold text-gray-300">Review Filter</h3>
+          <p class="text-xs text-gray-500">
+            {{ reviewSegmentCount }} segments are flagged missing/conflicting or below {{ reviewThresholdPercent }}% similarity.
+          </p>
+        </div>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <label class="flex items-center gap-2 text-xs text-gray-300">
+            <input
+              v-model="showOnlyReviewSegments"
+              data-testid="review-filter-toggle"
+              type="checkbox"
+              class="h-4 w-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500/40"
+            />
+            Show only review items
+          </label>
+          <label class="flex items-center gap-3 text-xs text-gray-300">
+            <span>Review below</span>
+            <input
+              v-model.number="reviewThresholdPercent"
+              data-testid="review-filter-threshold"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              class="w-32 accent-blue-500"
+            />
+            <span class="w-10 text-right font-mono text-gray-400">{{ reviewThresholdPercent }}%</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
     <div v-if="isLlmOnlyBackend" class="mb-4 p-4 bg-black/20 rounded-xl border border-white/5 flex items-center justify-between">
       <div>
         <h3 class="text-sm font-semibold text-gray-300">Advanced Alignment</h3>
@@ -225,6 +289,8 @@ function onTimeUpdate() {
 
     <Editor
       :segments="displaySegments"
+      :showOnlyReviewSegments="showOnlyReviewSegments"
+      :reviewThreshold="reviewThresholdPercent / 100"
       @jump-to="jumpTo"
       @update:segments="$emit('update:segments', $event)"
     />
