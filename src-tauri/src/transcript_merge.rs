@@ -1,4 +1,5 @@
 use log::info;
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use crate::video::{
@@ -274,7 +275,7 @@ fn materialize_alignment(
         }
     }
 
-    merged
+    apply_inferred_speaker_labels(primary, merged)
 }
 
 fn build_matched_segments(
@@ -494,7 +495,7 @@ fn group_has_single_speaker(group: &[TranscriptSegment]) -> bool {
 }
 
 fn preferred_group_speaker(group: &[TranscriptSegment]) -> Option<String> {
-    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut counts = BTreeMap::<String, usize>::new();
     let mut first_seen = Vec::<String>::new();
 
     for segment in group {
@@ -754,6 +755,139 @@ fn token_overlap_similarity(left: &str, right: &str) -> f32 {
     intersection / union
 }
 
+fn apply_inferred_speaker_labels(
+    primary: &[TranscriptSegment],
+    merged: Vec<TranscriptSegment>,
+) -> Vec<TranscriptSegment> {
+    let speaker_orders = primary_speaker_orders(primary);
+    let mut cooccurrence_by_parakeet = BTreeMap::<String, BTreeMap<String, usize>>::new();
+    let mut cooccurrence_by_order = BTreeMap::<usize, BTreeMap<String, usize>>::new();
+
+    merged
+        .into_iter()
+        .map(|mut segment| {
+            let parakeet_speaker = alternative_speaker(&segment, TranscriptAlternativeSource::Parakeet)
+                .or_else(|| segment.words.as_ref().and_then(|words| {
+                    words.iter()
+                        .find_map(|word| word.speaker.clone().filter(|speaker| !speaker.trim().is_empty()))
+                }));
+            let speaker_order = parakeet_speaker
+                .as_ref()
+                .and_then(|speaker| speaker_orders.get(speaker).copied());
+            let google_speaker =
+                alternative_speaker(&segment, TranscriptAlternativeSource::Google);
+
+            if let Some(google_speaker) = google_speaker {
+                segment.speaker = google_speaker.clone();
+
+                if let Some(parakeet_speaker) = &parakeet_speaker {
+                    record_cooccurrence(
+                        &mut cooccurrence_by_parakeet,
+                        parakeet_speaker.clone(),
+                        google_speaker.clone(),
+                    );
+                }
+
+                if let Some(speaker_order) = speaker_order {
+                    record_cooccurrence(
+                        &mut cooccurrence_by_order,
+                        speaker_order,
+                        google_speaker,
+                    );
+                }
+
+                return segment;
+            }
+
+            if let Some(parakeet_speaker) = parakeet_speaker {
+                if let Some(inferred) = infer_speaker_from_cooccurrences(
+                    &cooccurrence_by_parakeet,
+                    &cooccurrence_by_order,
+                    &parakeet_speaker,
+                    speaker_order,
+                ) {
+                    segment.speaker = inferred;
+                }
+            }
+
+            segment
+        })
+        .collect()
+}
+
+fn record_cooccurrence<K: Ord>(
+    counts_by_key: &mut BTreeMap<K, BTreeMap<String, usize>>,
+    key: K,
+    speaker: String,
+) {
+    let counts = counts_by_key.entry(key).or_default();
+    *counts.entry(speaker).or_insert(0) += 1;
+}
+
+fn infer_speaker_from_cooccurrences(
+    counts_by_parakeet: &BTreeMap<String, BTreeMap<String, usize>>,
+    counts_by_order: &BTreeMap<usize, BTreeMap<String, usize>>,
+    parakeet_speaker: &str,
+    speaker_order: Option<usize>,
+) -> Option<String> {
+    let mut combined = BTreeMap::<String, usize>::new();
+
+    if let Some(counts) = counts_by_parakeet.get(parakeet_speaker) {
+        for (speaker, count) in counts {
+            *combined.entry(speaker.clone()).or_insert(0) += count * 2;
+        }
+    }
+
+    if let Some(speaker_order) = speaker_order {
+        if let Some(counts) = counts_by_order.get(&speaker_order) {
+            for (speaker, count) in counts {
+                *combined.entry(speaker.clone()).or_insert(0) += count;
+            }
+        }
+    }
+
+    combined
+        .into_iter()
+        .max_by(|(left_speaker, left_count), (right_speaker, right_count)| {
+            left_count
+                .cmp(right_count)
+                .then_with(|| right_speaker.cmp(left_speaker))
+        })
+        .map(|(speaker, _)| speaker)
+}
+
+fn primary_speaker_orders(primary: &[TranscriptSegment]) -> BTreeMap<String, usize> {
+    let mut orders = BTreeMap::new();
+    let mut next_order = 0usize;
+
+    for segment in primary {
+        if !orders.contains_key(&segment.speaker) {
+            orders.insert(segment.speaker.clone(), next_order);
+            next_order += 1;
+        }
+    }
+
+    orders
+}
+
+fn alternative_speaker(
+    segment: &TranscriptSegment,
+    source: TranscriptAlternativeSource,
+) -> Option<String> {
+    segment
+        .alternatives
+        .as_ref()
+        .and_then(|alternatives| {
+            alternatives
+                .iter()
+                .find(|alternative| alternative.source == source)
+        })
+        .and_then(|alternative| alternative.speaker.as_ref())
+        .map(|speaker| speaker.trim())
+        .filter(|speaker| !speaker.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,5 +1107,85 @@ mod tests {
         assert_eq!(merged[2].text, "welcome back");
         assert_eq!(merged[2].start, "00:02.500");
         assert_eq!(merged[2].end, "00:04.000");
+    }
+
+    #[test]
+    fn infers_later_parakeet_only_speaker_from_previous_google_match() {
+        let merged = merge_transcript_hypotheses(
+            vec![
+                segment("00:00.000", "00:01.000", "Speaker 1", "hello"),
+                segment(
+                    "00:01.000",
+                    "00:02.000",
+                    "Speaker 1",
+                    "completely unrelated closing remark",
+                ),
+            ],
+            vec![segment("00:00.000", "00:01.000", "Dirk Leopold", "hello")],
+        );
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].speaker, "Dirk Leopold");
+        assert_eq!(merged[1].merge_status, Some(TranscriptMergeStatus::MissingGoogle));
+        assert_eq!(merged[1].speaker, "Dirk Leopold");
+    }
+
+    #[test]
+    fn infers_speaker_by_primary_appearance_order_when_google_named_that_slot_earlier() {
+        let merged = merge_transcript_hypotheses(
+            vec![
+                segment("00:00.000", "00:01.000", "Speaker 1", "host intro"),
+                segment("00:01.000", "00:02.000", "Speaker 2", "guest answer"),
+                segment(
+                    "00:02.000",
+                    "00:03.000",
+                    "Speaker 2",
+                    "completely unrelated guest follow up",
+                ),
+            ],
+            vec![
+                segment("00:00.000", "00:01.000", "Dirk Leopold", "host intro"),
+                segment("00:01.000", "00:02.000", "Alice Example", "guest answer"),
+            ],
+        );
+
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].speaker, "Dirk Leopold");
+        assert_eq!(merged[1].speaker, "Alice Example");
+        assert_eq!(merged[2].merge_status, Some(TranscriptMergeStatus::MissingGoogle));
+        assert_eq!(merged[2].speaker, "Alice Example");
+    }
+
+    #[test]
+    fn prefers_highest_cooccurrence_mapping_for_missing_google_segments() {
+        let mut counts_by_parakeet = BTreeMap::<String, BTreeMap<String, usize>>::new();
+        let mut counts_by_order = BTreeMap::<usize, BTreeMap<String, usize>>::new();
+
+        record_cooccurrence(
+            &mut counts_by_parakeet,
+            "Speaker 1".to_string(),
+            "Dirk Leopold".to_string(),
+        );
+        record_cooccurrence(
+            &mut counts_by_parakeet,
+            "Speaker 1".to_string(),
+            "Dirk Leopold".to_string(),
+        );
+        record_cooccurrence(
+            &mut counts_by_parakeet,
+            "Speaker 1".to_string(),
+            "Moderator".to_string(),
+        );
+        record_cooccurrence(&mut counts_by_order, 0usize, "Dirk Leopold".to_string());
+
+        assert_eq!(
+            infer_speaker_from_cooccurrences(
+                &counts_by_parakeet,
+                &counts_by_order,
+                "Speaker 1",
+                Some(0),
+            ),
+            Some("Dirk Leopold".to_string())
+        );
     }
 }
