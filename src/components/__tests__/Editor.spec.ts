@@ -337,4 +337,21 @@ describe('Editor.vue', () => {
     expect(updatedSegments[1].text).toBe('Needs checked checked');
     expect(updatedSegments[2].text).toBe('Also aligned');
   });
+
+  it('hides segments for speakers marked invisible', () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        speakerVisibility: {
+          'Speaker 1': false,
+          'Speaker 2': true,
+        },
+      },
+    });
+
+    const segments = wrapper.findAll('.segment');
+    expect(segments).toHaveLength(1);
+    expect(wrapper.text()).not.toContain('Hello world');
+    expect(wrapper.text()).toContain('How are you?');
+  });
 });
