@@ -13,6 +13,7 @@
 *   **Smart Filler Word Removal**: Toggle to automatically remove filler words (um, uh, like) and non-voice sounds for cleaner cuts.
 *   **Advanced Editor**: Multi-select segments (Shift+Click) to merge or delete multiple parts at once.
 *   **Real-time Preview**: Built-in video player that simulates the final cut by skipping deleted segments during playback.
+*   **Transcript Blacklist Warnings**: Flag word-level matches from language-specific blacklist files directly in the transcript review UI.
 *   **Viral Clips Generator**: AI analyzes your content to extract short, engaging clips suitable for TikTok, Shorts, or Reels. Includes "Smart Splicing" to combine non-contiguous relevant segments.
 *   **Multi-Language Translation**: Translate transcripts into 15+ languages (Spanish, French, German, Japanese, etc.) while preserving original timestamps.
 *   **Export Options**: Export subtitles (SRT, VTT, TXT) or the cut video file directly.
@@ -121,6 +122,7 @@ If these variables are not set, the real pipeline tests will be skipped automati
     *   **Preview**: Use the built-in video player to preview your cuts. It automatically skips deleted segments during playback.
     *   **Silence Removal**: The app automatically filters out silent parts based on audio analysis (configurable minimum duration).
     *   **Rename Speakers**: Click on speaker names (e.g., "Speaker 1") to rename them globally.
+    *   **Blacklist Warnings**: Review filter results now also include word-level blacklist matches. The transcript panel shows a summary, and each affected segment shows the matched word(s).
 
 5.  **Translate** (Optional): 
     *   Select a target language from the dropdown (e.g., 🇪🇸 Spanish).
@@ -135,6 +137,19 @@ If these variables are not set, the real pipeline tests will be skipped automati
 7.  **Export**:
     *   Click **Export Video** to render the final edited video based on your transcript.
     *   Use the **SRT / VTT / TXT** buttons to export subtitles.
+
+## Transcript Blacklists
+
+Language-specific blacklist files live in [`src/assets/transcript-blacklists/`](src/assets/transcript-blacklists/). Each file should use the language code as its filename, for example `de.txt`.
+
+Rules:
+
+*   One candidate term per line.
+*   Matching is word-level only, not substring-based.
+*   Leading and trailing punctuation is ignored during matching.
+*   Multi-word entries are ignored by the matcher.
+
+To extend blacklist coverage for another language, add a new `xx.txt` file in that folder. The frontend auto-discovers all available blacklist files at build time.
 
 ## Tech Stack
 

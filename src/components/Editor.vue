@@ -7,14 +7,17 @@ import type {
   TranscriptSegment,
   TranscriptWord
 } from '../types';
+import type { TranscriptBlacklistMatch } from '../utils/transcriptBlacklist';
 
 const props = withDefaults(defineProps<{
   segments: TranscriptSegment[];
   showOnlyReviewSegments?: boolean;
   reviewThreshold?: number;
+  blacklistMatchesBySegment?: Record<number, TranscriptBlacklistMatch[]>;
 }>(), {
   showOnlyReviewSegments: false,
-  reviewThreshold: 0.85
+  reviewThreshold: 0.85,
+  blacklistMatchesBySegment: () => ({})
 });
 
 const emit = defineEmits<{
@@ -32,22 +35,28 @@ const reviewThreshold = computed(() => {
   return Math.min(Math.max(props.reviewThreshold, 0), 1);
 });
 
-const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
-  if (segment.mergeStatus && segment.mergeStatus !== 'matched') {
-    return true;
-  }
+const getBlacklistMatches = (originalIndex: number): TranscriptBlacklistMatch[] =>
+  props.blacklistMatchesBySegment[originalIndex] ?? [];
 
+const segmentNeedsReview = (segment: TranscriptSegment, originalIndex: number): boolean => {
   if (segment.similarityScore !== undefined) {
-    return segment.similarityScore < reviewThreshold.value;
+    return (
+      segment.similarityScore < reviewThreshold.value ||
+      getBlacklistMatches(originalIndex).length > 0
+    );
   }
 
-  return false;
+  return (
+    segment.mergeStatus === 'missing_google' ||
+    segment.mergeStatus === 'missing_parakeet' ||
+    getBlacklistMatches(originalIndex).length > 0
+  );
 };
 
 const visibleSegments = computed(() =>
   props.segments
     .map((segment, originalIndex) => ({ segment, originalIndex }))
-    .filter(({ segment }) => !props.showOnlyReviewSegments || segmentNeedsReview(segment))
+    .filter(({ segment, originalIndex }) => !props.showOnlyReviewSegments || segmentNeedsReview(segment, originalIndex))
 );
 
 const parseTime = (timeStr: string): number => {
@@ -114,6 +123,20 @@ const mergeStatusClass = (status?: TranscriptMergeStatus): string => {
   if (status === 'missing_parakeet') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
   if (status === 'conflict') return 'bg-orange-500/15 text-orange-200 border-orange-500/30';
   return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
+};
+
+const getUniqueBlacklistWords = (originalIndex: number): string[] => {
+  const words: string[] = [];
+  const seen = new Set<string>();
+
+  for (const match of getBlacklistMatches(originalIndex)) {
+    if (!seen.has(match.normalizedWord)) {
+      seen.add(match.normalizedWord);
+      words.push(match.matchedText);
+    }
+  }
+
+  return words;
 };
 
 const selectAlternative = (originalIndex: number, source: TranscriptAlternativeSource) => {
@@ -267,10 +290,31 @@ const mergeDown = (originalIndex: number) => {
             >
               {{ Math.round(segment.similarityScore * 100) }}%
             </span>
+            <span
+              v-if="getBlacklistMatches(originalIndex).length > 0"
+              class="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-100"
+            >
+              {{ getBlacklistMatches(originalIndex).length }} blacklist match{{ getBlacklistMatches(originalIndex).length > 1 ? 'es' : '' }}
+            </span>
           </div>
           <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
         </div>
         <p class="text-gray-200 cursor-pointer leading-relaxed">{{ segment.text }}</p>
+
+        <div
+          v-if="getBlacklistMatches(originalIndex).length > 0"
+          class="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-xs font-semibold uppercase tracking-wide text-amber-100">Blacklist Warning</span>
+            <span class="text-[11px] text-amber-200/80">
+              {{ getBlacklistMatches(originalIndex)[0].start }}{{ getBlacklistMatches(originalIndex).length > 1 ? ` +${getBlacklistMatches(originalIndex).length - 1}` : '' }}
+            </span>
+          </div>
+          <p class="mt-1 text-sm text-amber-100">
+            Matched words: {{ getUniqueBlacklistWords(originalIndex).join(', ') }}
+          </p>
+        </div>
 
         <div v-if="segment.alternatives?.length" class="mt-3 grid gap-2 md:grid-cols-2">
           <div
