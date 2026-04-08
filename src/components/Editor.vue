@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { ask } from '@tauri-apps/plugin-dialog';
 import type {
   TranscriptAlternativeSource,
@@ -29,6 +29,19 @@ const editingIndex = ref<number | null>(null);
 const tempSegment = ref<TranscriptSegment | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
 const alternativeSources: TranscriptAlternativeSource[] = ['google', 'parakeet'];
+const searchQuery = ref('');
+const replaceQuery = ref('');
+const wholeWordMatch = ref(false);
+const currentMatchIndex = ref(0);
+const segmentRefs = new Map<number, HTMLDivElement>();
+
+interface SearchMatch {
+  matchIndex: number;
+  visibleIndex: number;
+  originalIndex: number;
+  start: number;
+  end: number;
+}
 
 const reviewThreshold = computed(() => {
   if (Number.isNaN(props.reviewThreshold)) return 0.85;
@@ -58,6 +71,137 @@ const visibleSegments = computed(() =>
     .map((segment, originalIndex) => ({ segment, originalIndex }))
     .filter(({ segment, originalIndex }) => !props.showOnlyReviewSegments || segmentNeedsReview(segment, originalIndex))
 );
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const escapeHtml = (value: string): string => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildSearchPattern = (query: string, wholeWord: boolean): RegExp | null => {
+  if (!query) return null;
+  const source = wholeWord ? `\\b${escapeRegExp(query)}\\b` : escapeRegExp(query);
+  return new RegExp(source, 'g');
+};
+
+const getMatchRanges = (text: string, query: string, wholeWord: boolean) => {
+  const pattern = buildSearchPattern(query, wholeWord);
+  if (!pattern) return [];
+
+  const matches: Array<{ start: number; end: number }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    matches.push({
+      start: match.index,
+      end: match.index + match[0].length
+    });
+  }
+
+  return matches;
+};
+
+const searchMatches = computed<SearchMatch[]>(() => {
+  if (!searchQuery.value) return [];
+
+  const matches: SearchMatch[] = [];
+
+  visibleSegments.value.forEach(({ segment, originalIndex }, visibleIndex) => {
+    for (const range of getMatchRanges(segment.text, searchQuery.value, wholeWordMatch.value)) {
+      matches.push({
+        matchIndex: matches.length,
+        visibleIndex,
+        originalIndex,
+        start: range.start,
+        end: range.end
+      });
+    }
+  });
+
+  return matches;
+});
+
+const searchMatchesBySegment = computed(() => {
+  const map = new Map<number, SearchMatch[]>();
+
+  for (const match of searchMatches.value) {
+    const segmentMatches = map.get(match.originalIndex);
+    if (segmentMatches) {
+      segmentMatches.push(match);
+    } else {
+      map.set(match.originalIndex, [match]);
+    }
+  }
+
+  return map;
+});
+
+const currentSearchMatch = computed(() =>
+  searchMatches.value.length > 0 ? searchMatches.value[currentMatchIndex.value] : null
+);
+
+const searchStatusLabel = computed(() => {
+  if (!searchQuery.value) return 'Enter text to search';
+  if (searchMatches.value.length === 0) return 'No matches';
+  return `${currentMatchIndex.value + 1} of ${searchMatches.value.length} matches`;
+});
+
+const setSegmentRef = (originalIndex: number, element: HTMLDivElement | null) => {
+  if (element) {
+    segmentRefs.set(originalIndex, element);
+  } else {
+    segmentRefs.delete(originalIndex);
+  }
+};
+
+const scrollToMatch = (match: SearchMatch | null) => {
+  if (!match) return;
+
+  nextTick(() => {
+    const element = segmentRefs.get(match.originalIndex);
+    if (element && typeof element.scrollIntoView === 'function') {
+      element.scrollIntoView({
+        block: 'nearest',
+        behavior: 'smooth'
+      });
+    }
+  });
+};
+
+const goToMatch = (nextIndex: number) => {
+  if (searchMatches.value.length === 0) return;
+
+  const normalizedIndex = (nextIndex + searchMatches.value.length) % searchMatches.value.length;
+  currentMatchIndex.value = normalizedIndex;
+  scrollToMatch(searchMatches.value[normalizedIndex]);
+};
+
+const goToPreviousMatch = () => {
+  goToMatch(currentMatchIndex.value - 1);
+};
+
+const goToNextMatch = () => {
+  goToMatch(currentMatchIndex.value + 1);
+};
+
+watch([searchQuery, wholeWordMatch], () => {
+  currentMatchIndex.value = 0;
+  scrollToMatch(searchMatches.value[0] ?? null);
+});
+
+watch(searchMatches, (matches) => {
+  if (matches.length === 0) {
+    currentMatchIndex.value = 0;
+    return;
+  }
+
+  if (currentMatchIndex.value >= matches.length) {
+    currentMatchIndex.value = matches.length - 1;
+  }
+});
 
 const parseTime = (timeStr: string): number => {
   const [mm, ss] = timeStr.split(':').map(Number);
@@ -111,6 +255,35 @@ const sourceLabel = (source: TranscriptAlternativeSource): string => {
   return source === 'google' ? 'Google' : 'Parakeet';
 };
 
+const renderSegmentText = (text: string, originalIndex: number): string => {
+  const segmentMatches = searchMatchesBySegment.value.get(originalIndex) ?? [];
+  if (segmentMatches.length === 0) return escapeHtml(text);
+
+  const parts: string[] = [];
+  let cursor = 0;
+
+  for (const match of segmentMatches) {
+    parts.push(escapeHtml(text.slice(cursor, match.start)));
+    parts.push(
+      `<mark class="${
+        match.matchIndex === currentMatchIndex.value
+          ? 'rounded bg-teal-300 px-0.5 text-gray-950'
+          : 'rounded bg-amber-300/70 px-0.5 text-gray-950'
+      }">${escapeHtml(text.slice(match.start, match.end))}</mark>`
+    );
+    cursor = match.end;
+  }
+
+  parts.push(escapeHtml(text.slice(cursor)));
+  return parts.join('');
+};
+
+const isSearchResultSegment = (originalIndex: number): boolean =>
+  searchMatchesBySegment.value.has(originalIndex);
+
+const isCurrentSearchSegment = (originalIndex: number): boolean =>
+  currentSearchMatch.value?.originalIndex === originalIndex;
+
 const mergeStatusLabel = (status?: TranscriptMergeStatus): string => {
   if (status === 'missing_google') return 'Missing In Google';
   if (status === 'missing_parakeet') return 'Missing In Parakeet';
@@ -158,6 +331,53 @@ const selectAlternative = (originalIndex: number, source: TranscriptAlternativeS
 const cancelEdit = () => {
   editingIndex.value = null;
   tempSegment.value = null;
+};
+
+const emitUpdatedSegments = (updates: Array<{ originalIndex: number; text: string }>) => {
+  if (updates.length === 0) return;
+
+  const newSegments = [...props.segments];
+
+  for (const update of updates) {
+    newSegments[update.originalIndex] = stripMergeMetadata({
+      ...props.segments[update.originalIndex],
+      text: update.text
+    });
+  }
+
+  emit('update:segments', newSegments);
+};
+
+const replaceCurrentMatch = () => {
+  if (editingIndex.value !== null) return;
+
+  const match = currentSearchMatch.value;
+  if (!match) return;
+
+  const segment = props.segments[match.originalIndex];
+  const updatedText = `${segment.text.slice(0, match.start)}${replaceQuery.value}${segment.text.slice(match.end)}`;
+
+  emitUpdatedSegments([{ originalIndex: match.originalIndex, text: updatedText }]);
+};
+
+const replaceAllMatches = () => {
+  if (editingIndex.value !== null || !searchQuery.value) return;
+
+  const updates = visibleSegments.value
+    .map(({ segment, originalIndex }) => {
+      const ranges = getMatchRanges(segment.text, searchQuery.value, wholeWordMatch.value);
+      if (ranges.length === 0) return null;
+
+      const updatedText = segment.text.replace(
+        buildSearchPattern(searchQuery.value, wholeWordMatch.value)!,
+        () => replaceQuery.value
+      );
+
+      return { originalIndex, text: updatedText };
+    })
+    .filter((update): update is { originalIndex: number; text: string } => update !== null);
+
+  emitUpdatedSegments(updates);
 };
 
 const saveEdit = () => {
@@ -254,7 +474,73 @@ const mergeDown = (originalIndex: number) => {
 
 <template>
   <div class="editor-container p-4 bg-black/20 backdrop-blur-md border border-white/10 rounded-xl overflow-y-auto max-h-[600px] relative">
-    
+    <div class="mb-4 rounded-lg border border-white/10 bg-black/30 p-3">
+      <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <input
+          v-model="searchQuery"
+          data-testid="editor-search-input"
+          type="text"
+          placeholder="Search transcript"
+          class="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-all focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50"
+          @keydown.enter.prevent="goToNextMatch"
+        >
+        <input
+          v-model="replaceQuery"
+          data-testid="editor-replace-input"
+          type="text"
+          placeholder="Replace with"
+          class="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-all focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50"
+        >
+        <label class="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-gray-300">
+          <input
+            v-model="wholeWordMatch"
+            data-testid="editor-whole-word-toggle"
+            type="checkbox"
+            class="h-4 w-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500/40"
+          >
+          Whole word
+        </label>
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <span class="text-xs text-gray-400">{{ searchStatusLabel }}</span>
+        <div class="flex flex-wrap gap-2">
+          <button
+            data-testid="editor-search-prev"
+            class="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="searchMatches.length === 0"
+            @click="goToPreviousMatch"
+          >
+            Prev
+          </button>
+          <button
+            data-testid="editor-search-next"
+            class="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="searchMatches.length === 0"
+            @click="goToNextMatch"
+          >
+            Next
+          </button>
+          <button
+            data-testid="editor-replace-current"
+            class="rounded border border-emerald-500/30 bg-emerald-500/15 px-3 py-1.5 text-xs text-emerald-200 transition-colors hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="searchMatches.length === 0 || editingIndex !== null"
+            @click="replaceCurrentMatch"
+          >
+            Replace
+          </button>
+          <button
+            data-testid="editor-replace-all"
+            class="rounded border border-blue-500/30 bg-blue-500/15 px-3 py-1.5 text-xs text-blue-200 transition-colors hover:bg-blue-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="searchMatches.length === 0 || editingIndex !== null"
+            @click="replaceAllMatches"
+          >
+            Replace All
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Multi-selection Toolbar -->
     <div v-if="selectedIndices.size > 0" class="sticky top-0 z-50 mb-4 p-2 bg-blue-600/20 backdrop-blur-md border border-blue-500/30 rounded-lg flex items-center justify-between">
         <span class="text-sm text-blue-200 font-medium px-2">{{ selectedIndices.size }} selected</span>
@@ -266,9 +552,16 @@ const mergeDown = (originalIndex: number) => {
     </div>
 
     <div v-for="{ segment, originalIndex } in visibleSegments" :key="`${originalIndex}-${segment.start}-${segment.end}`" 
+         :ref="(element) => setSegmentRef(originalIndex, element as HTMLDivElement | null)"
          class="segment mb-4 p-4 rounded-lg transition-all duration-300 group relative border"
          :class="[
-            selectedIndices.has(originalIndex) ? 'bg-blue-500/20 border-blue-500/50' : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/20'
+            selectedIndices.has(originalIndex)
+              ? 'bg-blue-500/20 border-blue-500/50'
+              : isCurrentSearchSegment(originalIndex)
+                ? 'bg-teal-500/10 border-teal-500/40'
+                : isSearchResultSegment(originalIndex)
+                  ? 'bg-amber-500/10 border-amber-500/30'
+                  : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/20'
          ]"
          @click="handleSegmentClick(originalIndex, $event)">
       
@@ -299,7 +592,7 @@ const mergeDown = (originalIndex: number) => {
           </div>
           <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
         </div>
-        <p class="text-gray-200 cursor-pointer leading-relaxed">{{ segment.text }}</p>
+        <p class="text-gray-200 cursor-pointer leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
 
         <div
           v-if="getBlacklistMatches(originalIndex).length > 0"
