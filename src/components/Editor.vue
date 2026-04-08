@@ -14,10 +14,12 @@ const props = withDefaults(defineProps<{
   showOnlyReviewSegments?: boolean;
   reviewThreshold?: number;
   blacklistMatchesBySegment?: Record<number, TranscriptBlacklistMatch[]>;
+  speakerVisibility?: Record<string, boolean>;
 }>(), {
   showOnlyReviewSegments: false,
   reviewThreshold: 0.85,
-  blacklistMatchesBySegment: () => ({})
+  blacklistMatchesBySegment: () => ({}),
+  speakerVisibility: () => ({})
 });
 
 const emit = defineEmits<{
@@ -69,8 +71,21 @@ const segmentNeedsReview = (segment: TranscriptSegment, originalIndex: number): 
 const visibleSegments = computed(() =>
   props.segments
     .map((segment, originalIndex) => ({ segment, originalIndex }))
+    .filter(({ segment }) => props.speakerVisibility[segment.speaker] ?? true)
     .filter(({ segment, originalIndex }) => !props.showOnlyReviewSegments || segmentNeedsReview(segment, originalIndex))
 );
+
+watch(visibleSegments, (segments) => {
+  const visibleIndices = new Set(segments.map(({ originalIndex }) => originalIndex));
+
+  selectedIndices.value = new Set(
+    Array.from(selectedIndices.value).filter((index) => visibleIndices.has(index))
+  );
+
+  if (editingIndex.value !== null && !visibleIndices.has(editingIndex.value)) {
+    cancelEdit();
+  }
+});
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
