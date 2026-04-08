@@ -136,6 +136,76 @@ describe('Editor.vue', () => {
     expect(segments[1].text()).toContain('Missing in Google');
   });
 
+  it('treats blacklist hits as review items and renders a warning badge', () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        showOnlyReviewSegments: true,
+        blacklistMatchesBySegment: {
+          1: [
+            {
+              languageCode: 'de',
+              matchedText: 'Arsch',
+              normalizedWord: 'arsch',
+              segmentIndex: 1,
+              speaker: 'Speaker 2',
+              start: '00:10',
+              end: '00:11',
+              segmentText: 'How are you?',
+            },
+          ],
+        },
+      },
+    });
+
+    const segments = wrapper.findAll('.segment');
+    expect(segments).toHaveLength(1);
+    expect(segments[0].text()).toContain('blacklist match');
+    expect(segments[0].text()).toContain('Matched words: Arsch');
+  });
+
+  it('does not show higher-similarity conflict segments below a stricter threshold', () => {
+    const reviewSegments: TranscriptSegment[] = [
+      {
+        start: '00:00',
+        end: '00:05',
+        speaker: 'Speaker 1',
+        text: 'Conflict but acceptable',
+        mergeStatus: 'conflict',
+        similarityScore: 0.72,
+      },
+      {
+        start: '00:05',
+        end: '00:10',
+        speaker: 'Speaker 2',
+        text: 'Actually low confidence',
+        mergeStatus: 'conflict',
+        similarityScore: 0.41,
+      },
+      {
+        start: '00:10',
+        end: '00:15',
+        speaker: 'Speaker 3',
+        text: 'Missing in Google',
+        mergeStatus: 'missing_google',
+      },
+    ];
+
+    const wrapper = mount(Editor, {
+      props: {
+        segments: reviewSegments,
+        showOnlyReviewSegments: true,
+        reviewThreshold: 0.5,
+      },
+    });
+
+    const segments = wrapper.findAll('.segment');
+    expect(segments).toHaveLength(2);
+    expect(wrapper.text()).toContain('Actually low confidence');
+    expect(wrapper.text()).toContain('Missing in Google');
+    expect(wrapper.text()).not.toContain('Conflict but acceptable');
+  });
+
   it('edits the correct original segment while filtered', async () => {
     const reviewSegments: TranscriptSegment[] = [
       { start: '00:00', end: '00:05', speaker: 'Speaker 1', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.96 },
