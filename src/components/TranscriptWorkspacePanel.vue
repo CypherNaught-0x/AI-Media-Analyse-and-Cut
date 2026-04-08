@@ -5,28 +5,12 @@ import Editor from './Editor.vue';
 import SubtitleExport from './SubtitleExport.vue';
 import type { TranscriptSegment } from '../types';
 import { parseTime } from '../composables/useTimeFormat';
+import { detectTranscriptBlacklistMatches } from '../utils/transcriptBlacklist';
+import { SUPPORTED_TRANSCRIPT_LANGUAGES } from '../utils/transcriptLanguages';
 import UserIcon from '../assets/icons/user.svg?component';
 import TranslateIcon from '../assets/icons/translate.svg?component';
 import CheckIcon from '../assets/icons/check.svg?component';
 import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
-
-const SUPPORTED_LANGUAGES = [
-  { code: 'en', name: 'English', country: 'us' },
-  { code: 'es', name: 'Spanish', country: 'es' },
-  { code: 'fr', name: 'French', country: 'fr' },
-  { code: 'de', name: 'German', country: 'de' },
-  { code: 'it', name: 'Italian', country: 'it' },
-  { code: 'pt', name: 'Portuguese', country: 'pt' },
-  { code: 'nl', name: 'Dutch', country: 'nl' },
-  { code: 'ru', name: 'Russian', country: 'ru' },
-  { code: 'ja', name: 'Japanese', country: 'jp' },
-  { code: 'zh', name: 'Chinese', country: 'cn' },
-  { code: 'ko', name: 'Korean', country: 'kr' },
-  { code: 'hi', name: 'Hindi', country: 'in' },
-  { code: 'ar', name: 'Arabic', country: 'sa' },
-  { code: 'tr', name: 'Turkish', country: 'tr' },
-  { code: 'pl', name: 'Polish', country: 'pl' },
-];
 
 const props = defineProps<{
   inputPath: string;
@@ -59,27 +43,36 @@ const showOnlyReviewSegments = ref(false);
 const reviewThresholdPercent = ref(85);
 
 const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
-  if (segment.mergeStatus && segment.mergeStatus !== 'matched') {
-    return true;
-  }
-
   if (segment.similarityScore !== undefined) {
     return segment.similarityScore < reviewThresholdPercent.value / 100;
   }
 
-  return false;
+  return segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_parakeet';
 };
 
+const blacklistWarnings = computed(() =>
+  detectTranscriptBlacklistMatches(props.displaySegments, props.currentLanguage),
+);
+
+const hasBlacklistWarnings = computed(() => blacklistWarnings.value.matches.length > 0);
+const blacklistSegmentCount = computed(() => Object.keys(blacklistWarnings.value.matchesBySegment).length);
+const previewBlacklistWords = computed(() => blacklistWarnings.value.uniqueWords.slice(0, 8));
+const remainingBlacklistWordCount = computed(() =>
+  Math.max(blacklistWarnings.value.uniqueWords.length - previewBlacklistWords.value.length, 0),
+);
+
+const segmentNeedsAttention = (segment: TranscriptSegment, index: number): boolean =>
+  segmentNeedsReview(segment) || (blacklistWarnings.value.matchesBySegment[index]?.length ?? 0) > 0;
+
 const hasReviewMetadata = computed(() =>
-  props.displaySegments.some((segment) =>
-    segment.mergeStatus !== undefined ||
-    segment.similarityScore !== undefined ||
+  props.displaySegments.some((segment, index) =>
+    segmentNeedsAttention(segment, index) ||
     (segment.alternatives?.length ?? 0) > 0
   )
 );
 
 const reviewSegmentCount = computed(() =>
-  props.displaySegments.filter(segmentNeedsReview).length
+  props.displaySegments.filter((segment, index) => segmentNeedsAttention(segment, index)).length
 );
 
 function selectLanguage(langName: string) {
@@ -187,7 +180,7 @@ function onTimeUpdate() {
             class="absolute top-full left-0 mt-1 w-48 max-h-64 overflow-y-auto bg-gray-900 border border-white/10 rounded-lg shadow-xl z-50 py-1"
           >
             <button
-              v-for="lang in SUPPORTED_LANGUAGES"
+              v-for="lang in SUPPORTED_TRANSCRIPT_LANGUAGES"
               :key="lang.code"
               @click="selectLanguage(lang.name)"
               class="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-white/10 flex items-center justify-between group"
@@ -219,6 +212,37 @@ function onTimeUpdate() {
     </div>
 
     <div
+      v-if="hasBlacklistWarnings"
+      data-testid="blacklist-warnings"
+      class="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4"
+    >
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h3 class="text-sm font-semibold text-amber-100">Blacklist Warnings</h3>
+          <p class="text-xs text-amber-200/80">
+            {{ blacklistWarnings.matches.length }} word-level matches across {{ blacklistSegmentCount }} segments using the
+            {{ blacklistWarnings.languageLabel ?? blacklistWarnings.languageCode }} list.
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span
+            v-for="word in previewBlacklistWords"
+            :key="word"
+            class="rounded-full border border-amber-400/20 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-100"
+          >
+            {{ word }}
+          </span>
+          <span
+            v-if="remainingBlacklistWordCount > 0"
+            class="rounded-full border border-amber-400/20 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-amber-100"
+          >
+            +{{ remainingBlacklistWordCount }} more
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div
       v-if="hasReviewMetadata"
       class="mb-4 rounded-xl border border-white/5 bg-black/20 p-4"
     >
@@ -226,7 +250,7 @@ function onTimeUpdate() {
         <div>
           <h3 class="text-sm font-semibold text-gray-300">Review Filter</h3>
           <p class="text-xs text-gray-500">
-            {{ reviewSegmentCount }} segments are flagged missing/conflicting or below {{ reviewThresholdPercent }}% similarity.
+            {{ reviewSegmentCount }} segments need attention because they are missing a counterpart, below {{ reviewThresholdPercent }}% similarity, or match the blacklist.
           </p>
         </div>
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -291,6 +315,7 @@ function onTimeUpdate() {
       :segments="displaySegments"
       :showOnlyReviewSegments="showOnlyReviewSegments"
       :reviewThreshold="reviewThresholdPercent / 100"
+      :blacklistMatchesBySegment="blacklistWarnings.matchesBySegment"
       @jump-to="jumpTo"
       @update:segments="$emit('update:segments', $event)"
     />
