@@ -14,9 +14,10 @@ vi.mock('../Editor.vue', () => ({
         class="mock-editor"
         :data-show-only-review-segments="String(showOnlyReviewSegments)"
         :data-review-threshold="String(reviewThreshold)"
+        :data-blacklist-match-count="String(Object.keys(blacklistMatchesBySegment ?? {}).length)"
       ></div>
     `,
-    props: ['segments', 'showOnlyReviewSegments', 'reviewThreshold'],
+    props: ['segments', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment'],
   },
 }));
 
@@ -95,5 +96,41 @@ describe('TranscriptWorkspacePanel', () => {
     const editor = wrapper.get('.mock-editor');
     expect(editor.attributes('data-show-only-review-segments')).toBe('true');
     expect(editor.attributes('data-review-threshold')).toBe('0.7');
+  });
+
+  it('shows blacklist warnings and passes segment matches to the editor', () => {
+    const warningSegments: TranscriptSegment[] = [
+      {
+        start: '00:00',
+        end: '00:04',
+        speaker: 'Host',
+        text: 'Du Arsch',
+        words: [
+          { start: '00:00', end: '00:01', text: 'Du' },
+          { start: '00:01', end: '00:02', text: 'Arsch' },
+        ],
+      },
+    ];
+
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        displaySegments: warningSegments,
+        originalSegments: warningSegments,
+        translations: { German: warningSegments },
+        currentLanguage: 'German',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: false,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host'],
+        isProcessing: false,
+      },
+    });
+
+    expect(wrapper.get('[data-testid="blacklist-warnings"]').text()).toContain('Blacklist Warnings');
+    expect(wrapper.text()).toContain('Arsch');
+    expect(wrapper.get('.mock-editor').attributes('data-blacklist-match-count')).toBe('1');
   });
 });
