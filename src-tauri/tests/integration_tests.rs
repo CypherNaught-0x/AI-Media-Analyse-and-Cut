@@ -3,6 +3,7 @@ use ai_media_cutter_lib::video::TranscriptSegment;
 use mockito::Server;
 use serde_json::json;
 use std::env;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -52,8 +53,28 @@ async fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
+async fn ensure_loopback_access(test_name: &str) -> bool {
+    match TcpListener::bind("127.0.0.1:0").await {
+        Ok(listener) => {
+            drop(listener);
+            true
+        }
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!(
+                "Skipping {test_name}: loopback sockets are not permitted in this environment ({err})"
+            );
+            false
+        }
+        Err(err) => panic!("Failed to bind loopback socket for {test_name}: {err}"),
+    }
+}
+
 #[tokio::test]
 async fn test_transcription_mock() {
+    if !ensure_loopback_access("test_transcription_mock").await {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     // Since base_url is localhost, GeminiClient treats it as OpenAI-compatible
     let mock = server
@@ -112,6 +133,10 @@ async fn test_transcription_mock() {
 
 #[tokio::test]
 async fn test_transcription_mock_with_structured_content() {
+    if !ensure_loopback_access("test_transcription_mock_with_structured_content").await {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -161,6 +186,10 @@ async fn test_transcription_mock_with_structured_content() {
 
 #[tokio::test]
 async fn test_transcription_invalid_json_body_includes_raw_preview() {
+    if !ensure_loopback_access("test_transcription_invalid_json_body_includes_raw_preview").await {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -191,6 +220,10 @@ async fn test_transcription_invalid_json_body_includes_raw_preview() {
 
 #[tokio::test]
 async fn test_translation_mock() {
+    if !ensure_loopback_access("test_translation_mock").await {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     // Since base_url is localhost, GeminiClient treats it as OpenAI-compatible
     let mock = server
@@ -246,6 +279,11 @@ async fn test_translation_mock() {
 
 #[tokio::test]
 async fn test_transcription_request_includes_json_schema_when_enabled() {
+    if !ensure_loopback_access("test_transcription_request_includes_json_schema_when_enabled").await
+    {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -294,6 +332,12 @@ async fn test_transcription_request_includes_json_schema_when_enabled() {
 
 #[tokio::test]
 async fn test_transcription_request_succeeds_when_json_schema_disabled() {
+    if !ensure_loopback_access("test_transcription_request_succeeds_when_json_schema_disabled")
+        .await
+    {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/chat/completions")
@@ -341,7 +385,18 @@ async fn test_transcription_request_succeeds_when_json_schema_disabled() {
 
 #[tokio::test]
 async fn test_transcription_retries_without_json_schema_on_body_decode_error() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = match TcpListener::bind("127.0.0.1:0").await {
+        Ok(listener) => listener,
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            eprintln!(
+                "Skipping test_transcription_retries_without_json_schema_on_body_decode_error: loopback sockets are not permitted in this environment ({err})"
+            );
+            return;
+        }
+        Err(err) => panic!(
+            "Failed to bind loopback socket for test_transcription_retries_without_json_schema_on_body_decode_error: {err}"
+        ),
+    };
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let requests_for_server = Arc::clone(&requests);
@@ -412,6 +467,10 @@ async fn test_transcription_retries_without_json_schema_on_body_decode_error() {
 
 #[tokio::test]
 async fn test_generate_clips_mock() {
+    if !ensure_loopback_access("test_generate_clips_mock").await {
+        return;
+    }
+
     let mut server = Server::new_async().await;
     let mock = server
         .mock("POST", "/v1/chat/completions")

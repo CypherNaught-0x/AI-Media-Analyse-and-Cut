@@ -12,11 +12,14 @@ vi.mock('../Editor.vue', () => ({
     template: `
       <div
         class="mock-editor"
+        :data-segment-count="String(segments.length)"
         :data-show-only-review-segments="String(showOnlyReviewSegments)"
         :data-review-threshold="String(reviewThreshold)"
+        :data-blacklist-match-count="String(Object.keys(blacklistMatchesBySegment ?? {}).length)"
+        :data-speaker-visibility="JSON.stringify(speakerVisibility ?? {})"
       ></div>
     `,
-    props: ['segments', 'showOnlyReviewSegments', 'reviewThreshold'],
+    props: ['segments', 'speakerVisibility', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment'],
   },
 }));
 
@@ -95,5 +98,104 @@ describe('TranscriptWorkspacePanel', () => {
     const editor = wrapper.get('.mock-editor');
     expect(editor.attributes('data-show-only-review-segments')).toBe('true');
     expect(editor.attributes('data-review-threshold')).toBe('0.7');
+  });
+
+  it('shows blacklist warnings and passes segment matches to the editor', () => {
+    const warningSegments: TranscriptSegment[] = [
+      {
+        start: '00:00',
+        end: '00:04',
+        speaker: 'Host',
+        text: 'Du Arsch',
+        words: [
+          { start: '00:00', end: '00:01', text: 'Du' },
+          { start: '00:01', end: '00:02', text: 'Arsch' },
+        ],
+      },
+    ];
+
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        displaySegments: warningSegments,
+        originalSegments: warningSegments,
+        translations: { German: warningSegments },
+        currentLanguage: 'German',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: false,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host'],
+        isProcessing: false,
+      },
+    });
+
+    expect(wrapper.get('[data-testid="blacklist-warnings"]').text()).toContain('Blacklist Warnings');
+    expect(wrapper.text()).toContain('Arsch');
+    expect(wrapper.get('.mock-editor').attributes('data-blacklist-match-count')).toBe('1');
+  });
+
+  it('toggles individual speaker visibility for transcript segments', async () => {
+    const multiSpeakerSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
+      { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Hi there' },
+    ];
+
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        displaySegments: multiSpeakerSegments,
+        originalSegments: multiSpeakerSegments,
+        translations: {},
+        currentLanguage: 'Original',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: false,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host', 'Guest'],
+        isProcessing: false,
+      },
+    });
+
+    await wrapper.get('[data-testid="speaker-visibility-toggle-Host"]').trigger('click');
+
+    const editor = wrapper.get('.mock-editor');
+    expect(editor.attributes('data-speaker-visibility')).toBe(JSON.stringify({ Host: false, Guest: true }));
+    expect(wrapper.text()).toContain('1 of 2 Segments');
+  });
+
+  it('shift-click solos a speaker in the transcript', async () => {
+    const multiSpeakerSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
+      { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Hi there' },
+      { start: '00:10', end: '00:15', speaker: 'Narrator', text: 'Closing note' },
+    ];
+
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        displaySegments: multiSpeakerSegments,
+        originalSegments: multiSpeakerSegments,
+        translations: {},
+        currentLanguage: 'Original',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: false,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host', 'Guest', 'Narrator'],
+        isProcessing: false,
+      },
+    });
+
+    await wrapper.get('[data-testid="speaker-visibility-toggle-Guest"]').trigger('click', { shiftKey: true });
+
+    const editor = wrapper.get('.mock-editor');
+    expect(editor.attributes('data-speaker-visibility')).toBe(
+      JSON.stringify({ Host: false, Guest: true, Narrator: false })
+    );
+    expect(wrapper.text()).toContain('1 of 3 Segments');
   });
 });
