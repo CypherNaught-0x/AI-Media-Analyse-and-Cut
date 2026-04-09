@@ -373,6 +373,25 @@ function onTimeUpdate() {
           <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <UserIcon class="h-4 w-4 text-gray-500" />
           </div>
+          <button
+            :data-testid="`speaker-visibility-toggle-${speaker}`"
+            type="button"
+            class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 transition-colors hover:text-blue-300"
+            :class="isSpeakerVisible(speaker) ? 'text-blue-300' : 'text-gray-600'"
+            :title="isSpeakerVisible(speaker) ? `Hide ${speaker}` : `Show ${speaker}`"
+            @click="toggleSpeakerVisibility(speaker, $event)"
+          >
+            <svg v-if="isSpeakerVisible(speaker)" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+            <svg v-else class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M10.6 10.7A3 3 0 0 0 13.3 13.4" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9.9 5.2A11.3 11.3 0 0 1 12 5c6.5 0 10 7 10 7a18.2 18.2 0 0 1-4 4.8" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 6.4C3.5 8.1 2 12 2 12s3.5 7 10 7c1 0 1.9-.1 2.7-.3" />
+            </svg>
+          </button>
           <input
             :value="speaker"
             @change="$emit('rename-speaker', { oldName: speaker, newName: ($event.target as HTMLInputElement).value, inputElement: $event.target as HTMLInputElement })"
