@@ -1,10 +1,12 @@
 use crate::{format_ffmpeg_spawn_error, format_path_io_error};
+use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use log::{debug, info};
 use regex::Regex;
 use serde::Serialize;
 use std::path::PathBuf;
+use tauri::State;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct SilenceInterval {
@@ -28,15 +30,28 @@ pub struct ProcessedAudio {
 
 #[tauri::command]
 pub async fn detect_silence(
+    run_id: Option<u64>,
     path: String,
     min_duration: Option<f64>,
+    run_control: State<'_, RunControl>,
 ) -> Result<Vec<SilenceInterval>, String> {
-    detect_silence_internal(&path, min_duration.unwrap_or(0.5)).await
+    let requested_run_id = run_id.unwrap_or(0);
+    detect_silence_internal(
+        &path,
+        min_duration.unwrap_or(0.5),
+        if requested_run_id == 0 {
+            None
+        } else {
+            Some((requested_run_id, run_control.inner()))
+        },
+    )
+    .await
 }
 
 async fn detect_silence_internal(
     path: &str,
     min_duration: f64,
+    run_control: Option<(u64, &RunControl)>,
 ) -> Result<Vec<SilenceInterval>, String> {
     let input_path = PathBuf::from(path);
     if !input_path.exists() {
@@ -49,7 +64,11 @@ async fn detect_silence_internal(
     );
 
     // ffmpeg -i input.mp4 -af silencedetect=noise=-30dB:d=min_duration -f null -
-    let events = FfmpegCommand::new()
+    if let Some((run_id, run_control)) = run_control {
+        run_control.ensure_active(run_id)?;
+    }
+
+    let mut child = FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
         .args(&[
             "-af",
@@ -59,7 +78,14 @@ async fn detect_silence_internal(
             "-",
         ])
         .spawn()
-        .map_err(|e| format_ffmpeg_spawn_error("detect silence", &input_path, None, &e))?
+        .map_err(|e| format_ffmpeg_spawn_error("detect silence", &input_path, None, &e))?;
+
+    let pid = child.as_inner().id();
+    if let Some((run_id, run_control)) = run_control {
+        run_control.register_pid(run_id, pid)?;
+    }
+
+    let events = child
         .iter()
         .map_err(|e| {
             format!(
@@ -78,6 +104,12 @@ async fn detect_silence_internal(
     let re_end = Regex::new(r"silence_end: (\d+(\.\d+)?)").unwrap();
 
     for event in events {
+        if let Some((run_id, run_control)) = run_control {
+            if run_control.is_cancelled(run_id) {
+                break;
+            }
+        }
+
         if let FfmpegEvent::Log(_, line) = event {
             // debug!("[FFmpeg] {}", line); // Too verbose
             if let Some(caps) = re_start.captures(&line) {
@@ -110,6 +142,13 @@ async fn detect_silence_internal(
         }
     }
 
+    if let Some((run_id, run_control)) = run_control {
+        run_control.clear_pid(run_id, pid);
+        if run_control.is_cancelled(run_id) {
+            return Err(RUN_CANCELLED_MESSAGE.to_string());
+        }
+    }
+
     info!(
         "Silence detection complete. Found {} intervals.",
         intervals.len()
@@ -119,11 +158,31 @@ async fn detect_silence_internal(
 
 #[tauri::command]
 pub async fn remove_silence(
+    run_id: Option<u64>,
     path: String,
     min_duration: Option<f64>,
+    run_control: State<'_, RunControl>,
+) -> Result<ProcessedAudio, String> {
+    let requested_run_id = run_id.unwrap_or(0);
+    remove_silence_internal(
+        path,
+        min_duration,
+        if requested_run_id == 0 {
+            None
+        } else {
+            Some((requested_run_id, run_control.inner()))
+        },
+    )
+    .await
+}
+
+async fn remove_silence_internal(
+    path: String,
+    min_duration: Option<f64>,
+    run_context: Option<(u64, &RunControl)>,
 ) -> Result<ProcessedAudio, String> {
     let min_duration_val = min_duration.unwrap_or(10.0);
-    let silence_intervals = detect_silence_internal(&path, min_duration_val).await?;
+    let silence_intervals = detect_silence_internal(&path, min_duration_val, run_context).await?;
     let input_path = PathBuf::from(&path);
 
     if silence_intervals.is_empty() {
@@ -208,7 +267,11 @@ pub async fn remove_silence(
 
     let mut last_error = None;
 
-    FfmpegCommand::new()
+    if let Some((run_id, run_control)) = run_context {
+        run_control.ensure_active(run_id)?;
+    }
+
+    let mut child = FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
         .args(&[
             "-y",
@@ -225,7 +288,14 @@ pub async fn remove_silence(
         .spawn()
         .map_err(|e| {
             format_ffmpeg_spawn_error("remove silence", &input_path, Some(&output_path), &e)
-        })?
+        })?;
+
+    let pid = child.as_inner().id();
+    if let Some((run_id, run_control)) = run_context {
+        run_control.register_pid(run_id, pid)?;
+    }
+
+    child
         .iter()
         .map_err(|e| {
             format!(
@@ -243,6 +313,13 @@ pub async fn remove_silence(
             }
             _ => {}
         });
+
+    if let Some((run_id, run_control)) = run_context {
+        run_control.clear_pid(run_id, pid);
+        if run_control.is_cancelled(run_id) {
+            return Err(RUN_CANCELLED_MESSAGE.to_string());
+        }
+    }
 
     if !output_path.exists() {
         let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
@@ -356,7 +433,7 @@ mod tests {
         assert!(test_file_path.exists());
 
         // 1. Test Detect Silence
-        let intervals = detect_silence_internal(test_file_path.to_str().unwrap(), 0.5)
+        let intervals = detect_silence_internal(test_file_path.to_str().unwrap(), 0.5, None)
             .await
             .unwrap();
 
@@ -372,7 +449,11 @@ mod tests {
         );
 
         // 2. Test Remove Silence
-        let processed = remove_silence(test_file_path.to_str().unwrap().to_string(), Some(0.5))
+        let processed = remove_silence_internal(
+            test_file_path.to_str().unwrap().to_string(),
+            Some(0.5),
+            None,
+        )
             .await
             .unwrap();
 

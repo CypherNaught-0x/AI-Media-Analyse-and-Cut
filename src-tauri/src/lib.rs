@@ -13,6 +13,7 @@ use log::{error, info, warn};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
+use tauri::State;
 
 fn describe_ffmpeg_lookup() -> String {
     let resolved_path = ffmpeg_path();
@@ -193,9 +194,12 @@ fn get_media_duration(input_path: &str) -> Option<f64> {
 
 #[tauri::command]
 async fn prepare_audio_for_ai(
+    run_id: u64,
     window: tauri::Window,
     input_path: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<AudioInfo, String> {
+    run_control.ensure_active(run_id)?;
     use crate::time_utils::parse_timestamp_to_seconds_raw;
 
     let input = PathBuf::from(&input_path);
@@ -208,7 +212,7 @@ async fn prepare_audio_for_ai(
     let mut last_error = None;
 
     // Normalize input to OGG/Opus for downstream silence removal and AI upload.
-    FfmpegCommand::new()
+    let mut child = FfmpegCommand::new()
         .input(input.to_str().unwrap())
         .args(&["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
         .output(output_path.to_str().unwrap())
@@ -220,7 +224,12 @@ async fn prepare_audio_for_ai(
                 Some(&output_path),
                 &e,
             )
-        })?
+        })?;
+
+    let pid = child.as_inner().id();
+    run_control.register_pid(run_id, pid)?;
+
+    child
         .iter()
         .map_err(|e| {
             format!(
@@ -262,6 +271,12 @@ async fn prepare_audio_for_ai(
             _ => {}
         });
 
+    run_control.clear_pid(run_id, pid);
+
+    if run_control.is_cancelled(run_id) {
+        return Err(RUN_CANCELLED_MESSAGE.to_string());
+    }
+
     if !output_path.exists() {
         let msg = last_error
             .unwrap_or_else(|| "FFmpeg finished without creating the output file".to_string());
@@ -291,6 +306,7 @@ pub mod gemini;
 mod parakeet;
 pub mod podcast;
 pub mod retry;
+mod run_control;
 pub mod silence;
 pub mod time_utils;
 mod transcript_merge;
@@ -304,6 +320,7 @@ use crate::podcast::{
     calculate_segments_duration as calc_duration, export_podcast as export_podcast_fn,
     export_podcast_clips as export_podcast_clips_fn, PodcastSegment,
 };
+use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
 use crate::silence::{detect_silence, remove_silence};
 use crate::transcript_merge::merge_transcript_hypotheses_with_progress as merge_transcript_hypotheses_fn;
 use crate::upload::upload_file_and_wait;
@@ -314,28 +331,37 @@ use crate::video::{
 
 #[tauri::command]
 async fn translate_transcript(
+    run_id: u64,
     api_key: String,
     base_url: String,
     model: String,
     transcript: Vec<TranscriptSegment>,
     target_language: String,
     context: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
+    run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
-    client
-        .translate_transcript(transcript, target_language, context)
+    run_control
+        .run_cancellable(
+            run_id,
+            client.translate_transcript(transcript, target_language, context),
+        )
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn upload_file(
+    run_id: u64,
     api_key: String,
     base_url: String,
     path: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<Option<String>, String> {
+    run_control.ensure_active(run_id)?;
     let path_buf = PathBuf::from(path);
-    upload_file_and_wait(&api_key, &base_url, &path_buf)
+    run_control
+        .run_cancellable(run_id, upload_file_and_wait(&api_key, &base_url, &path_buf))
         .await
         .map_err(|e| {
             format!(
@@ -349,6 +375,7 @@ async fn upload_file(
 
 #[tauri::command]
 async fn analyze_audio(
+    run_id: u64,
     api_key: String,
     base_url: String,
     model: String,
@@ -359,17 +386,22 @@ async fn analyze_audio(
     remove_filler_words: bool,
     audio_uri: Option<String>,
     audio_base64: Option<String>,
+    run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
+    run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
-    client
-        .analyze_audio(
-            &context,
-            &glossary,
-            speaker_count,
-            remove_filler_words,
-            enforce_json_schema,
-            audio_uri.as_deref(),
-            audio_base64.as_deref(),
+    run_control
+        .run_cancellable(
+            run_id,
+            client.analyze_audio(
+                &context,
+                &glossary,
+                speaker_count,
+                remove_filler_words,
+                enforce_json_schema,
+                audio_uri.as_deref(),
+                audio_base64.as_deref(),
+            ),
         )
         .await
         .map_err(|e| {
@@ -382,6 +414,7 @@ async fn analyze_audio(
 
 #[tauri::command]
 async fn cleanup_parakeet_transcript(
+    run_id: u64,
     api_key: String,
     base_url: String,
     model: String,
@@ -389,10 +422,15 @@ async fn cleanup_parakeet_transcript(
     context: String,
     glossary: String,
     remove_filler_words: bool,
+    run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, String> {
+    run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
-    client
-        .cleanup_parakeet_transcript(transcript, &context, &glossary, remove_filler_words)
+    run_control
+        .run_cancellable(
+            run_id,
+            client.cleanup_parakeet_transcript(transcript, &context, &glossary, remove_filler_words),
+        )
         .await
         .map_err(|e| {
             format!(
@@ -404,15 +442,21 @@ async fn cleanup_parakeet_transcript(
 
 #[tauri::command]
 async fn merge_transcript_hypotheses(
+    run_id: u64,
     window: tauri::Window,
     primary_transcript: Vec<TranscriptSegment>,
     reference_transcript: Vec<TranscriptSegment>,
+    run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, String> {
+    run_control.ensure_active(run_id)?;
     let started_at = std::time::Instant::now();
     Ok(merge_transcript_hypotheses_fn(
         primary_transcript,
         reference_transcript,
         |percentage, message| {
+            if run_control.is_cancelled(run_id) {
+                return;
+            }
             let elapsed_seconds = started_at.elapsed().as_secs_f32();
             let eta_seconds = if percentage > 0.0 && percentage < 100.0 {
                 Some((elapsed_seconds * ((100.0 - percentage) / percentage)).max(0.0))
@@ -434,11 +478,14 @@ async fn merge_transcript_hypotheses(
 
 #[tauri::command]
 async fn cut_video(
+    run_id: u64,
     window: tauri::Window,
     input_path: String,
     segments: Vec<Segment>,
     output_path: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<(), String> {
+    run_control.ensure_active(run_id)?;
     use crate::time_utils::parse_timestamp_to_seconds_raw;
 
     let input = PathBuf::from(input_path);
@@ -453,7 +500,7 @@ async fn cut_video(
         })
         .sum();
 
-    cut_video_fn(&input, &segments, &output, move |time| {
+    cut_video_fn(&input, &segments, &output, run_id, run_control.inner(), move |time| {
         let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
         let percentage = if total_duration > 0.0 {
             (current / total_duration) * 100.0
@@ -471,12 +518,15 @@ async fn cut_video(
 
 #[tauri::command]
 async fn export_clips(
+    run_id: u64,
     window: tauri::Window,
     input_path: String,
     segments: Vec<ClipSegment>,
     output_dir: String,
     fast_mode: bool,
+    run_control: State<'_, RunControl>,
 ) -> Result<(), String> {
+    run_control.ensure_active(run_id)?;
     use crate::time_utils::parse_timestamp_to_seconds_raw;
 
     let input = PathBuf::from(input_path);
@@ -504,6 +554,8 @@ async fn export_clips(
         &segments,
         &output,
         fast_mode,
+        run_id,
+        run_control.inner(),
         move |clip_idx, total_clips, time| {
             let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
 
@@ -546,6 +598,7 @@ async fn read_file_as_base64(path: String) -> Result<String, String> {
 
 #[tauri::command]
 async fn generate_clips(
+    run_id: u64,
     api_key: String,
     base_url: String,
     model: String,
@@ -555,19 +608,23 @@ async fn generate_clips(
     max_duration: u32,
     topic: Option<String>,
     splicing: bool,
+    run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
+    run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
-    client
-        .generate_clips(
-            &transcript,
-            count,
-            min_duration,
-            max_duration,
-            topic,
-            splicing,
+    run_control
+        .run_cancellable(
+            run_id,
+            client.generate_clips(
+                &transcript,
+                count,
+                min_duration,
+                max_duration,
+                topic,
+                splicing,
+            ),
         )
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -649,6 +706,7 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), Stri
 
 #[tauri::command]
 async fn generate_podcast(
+    run_id: u64,
     api_key: String,
     base_url: String,
     model: String,
@@ -656,16 +714,21 @@ async fn generate_podcast(
     min_duration: u32,
     max_duration: u32,
     context: Option<String>,
+    run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
+    run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
-    client
-        .generate_podcast(&transcript, min_duration, max_duration, context)
+    run_control
+        .run_cancellable(
+            run_id,
+            client.generate_podcast(&transcript, min_duration, max_duration, context),
+        )
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn refine_podcast(
+    run_id: u64,
     api_key: String,
     base_url: String,
     model: String,
@@ -674,22 +737,27 @@ async fn refine_podcast(
     current_duration: f64,
     target_min: u32,
     target_max: u32,
+    run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
+    run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
-    client
-        .refine_podcast(
-            &original_transcript,
-            &current_script,
-            current_duration,
-            target_min,
-            target_max,
+    run_control
+        .run_cancellable(
+            run_id,
+            client.refine_podcast(
+                &original_transcript,
+                &current_script,
+                current_duration,
+                target_min,
+                target_max,
+            ),
         )
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn export_podcast(
+    run_id: u64,
     window: tauri::Window,
     input_path: String,
     segments: Vec<PodcastSegment>,
@@ -698,7 +766,9 @@ async fn export_podcast(
     start_padding: f64,
     end_padding: f64,
     output_path: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<(), String> {
+    run_control.ensure_active(run_id)?;
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_path);
     let intro = intro_path.map(PathBuf::from);
@@ -712,6 +782,8 @@ async fn export_podcast(
         start_padding,
         end_padding,
         &output,
+        run_id,
+        run_control.inner(),
         move |time| {
             let _ = window.emit("progress", time);
         },
@@ -721,13 +793,16 @@ async fn export_podcast(
 
 #[tauri::command]
 async fn export_podcast_clips(
+    run_id: u64,
     window: tauri::Window,
     input_path: String,
     segments: Vec<PodcastSegment>,
     start_padding: f64,
     end_padding: f64,
     output_dir: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<(), String> {
+    run_control.ensure_active(run_id)?;
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_dir);
 
@@ -737,6 +812,8 @@ async fn export_podcast_clips(
         start_padding,
         end_padding,
         &output,
+        run_id,
+        run_control.inner(),
         move |time| {
             let _ = window.emit("progress", time);
         },
@@ -749,9 +826,20 @@ fn calculate_segments_duration(segments: Vec<PodcastSegment>) -> f64 {
     calc_duration(&segments)
 }
 
+#[tauri::command]
+fn begin_run(run_control: State<'_, RunControl>) -> u64 {
+    run_control.begin_run()
+}
+
+#[tauri::command]
+fn cancel_current_run(run_control: State<'_, RunControl>) -> Result<(), String> {
+    run_control.cancel_current_run()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(RunControl::default())
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -759,6 +847,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            begin_run,
+            cancel_current_run,
             init_ffmpeg,
             prepare_audio_for_ai,
             upload_file,

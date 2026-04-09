@@ -21,13 +21,11 @@ import type {
     TranscriptWorkspaceState,
     ViralClipsWorkspaceState
 } from "../types";
-import ClipGenerator from "../components/ClipGenerator.vue";
-import ClipList from "../components/ClipList.vue";
 import StatusBar from "../components/StatusBar.vue";
-import { useClipGeneration } from "../composables/useClipGeneration";
 import { useSettings } from "../composables/useSettings";
 import { useHomeSessionPersistence } from "../composables/useHomeSessionPersistence";
 import { adjustTimestamp } from "../composables/useTimeFormat";
+import { beginRun, isRunCancelled } from "../composables/useRunCancellation";
 import { parseTranscriptResponse } from "../utils/transcriptParsing";
 import { buildTranscriptSidecar, parseTranscriptSidecar } from "../utils/transcriptSidecar";
 import {
@@ -46,6 +44,9 @@ const { settings } = useSettings();
 
 const status = ref("Initializing...");
 const isProcessing = ref(false);
+const isCancelling = ref(false);
+const cancelGeneration = ref(0);
+const activeRunId = ref<number | null>(null);
 
 // Error overlay state
 const showErrorOverlay = ref(false);
@@ -313,29 +314,6 @@ const sessionPersistence = useHomeSessionPersistence({
     applyClipWorkspace,
 });
 
-const clipGeneration = useClipGeneration({
-    settings,
-    status,
-    isProcessing,
-    progressPercentage,
-    inputPath,
-    hasMediaFile,
-    segments,
-    clipCount,
-    clipMinDuration,
-    clipMaxDuration,
-    clipTopic,
-    allowSplicing,
-    clips,
-    selectedClipIndices,
-    lastExportPath,
-    clipExportSilenceCache,
-    estimateTime,
-    logExecution,
-    startSimulatedProgress,
-    stopSimulatedProgress,
-});
-
 onMounted(async () => {
     const history = localStorage.getItem('executionHistory');
     if (history) {
@@ -511,6 +489,36 @@ async function saveTranscript() {
     }
 }
 
+function assertActiveRun(runId: number) {
+    if (activeRunId.value !== runId) {
+        throw new Error("Run cancelled.");
+    }
+}
+
+async function cancelCurrentRun() {
+    if (!isProcessing.value || isCancelling.value) {
+        return;
+    }
+
+    isCancelling.value = true;
+    cancelGeneration.value += 1;
+    activeRunId.value = null;
+    stopSimulatedProgress();
+    progressPercentage.value = null;
+    progressEtaSeconds.value = null;
+    status.value = "Cancelling run...";
+
+    try {
+        await invoke("cancel_current_run");
+        status.value = "Run cancelled.";
+    } catch (error) {
+        status.value = `Failed to cancel run: ${error}`;
+    } finally {
+        isProcessing.value = false;
+        isCancelling.value = false;
+    }
+}
+
 async function translateTranscript() {
     if (!targetLanguage.value || segments.value.length === 0) return;
     
@@ -520,11 +528,16 @@ async function translateTranscript() {
         return;
     }
 
+    const runId = await beginRun();
+    activeRunId.value = runId;
+    isCancelling.value = false;
     isTranslating.value = true;
+    isProcessing.value = true;
     status.value = `Translating to ${lang}...`;
 
     try {
         const response = await invoke<string>("translate_transcript", {
+            runId,
             transcript: segments.value,
             targetLanguage: lang,
             context: context.value,
@@ -532,11 +545,13 @@ async function translateTranscript() {
             baseUrl: settings.value.baseUrl,
             model: settings.value.model
         });
+        assertActiveRun(runId);
 
         const jsonMatch = response.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
             try {
                 translations.value[lang] = parseTranscriptResponse(response);
+                assertActiveRun(runId);
                 currentLanguage.value = lang;
                 status.value = `Translation to ${lang} complete.`;
             } catch (e) {
@@ -555,10 +570,19 @@ async function translateTranscript() {
             );
         }
     } catch (e) {
+        if (isRunCancelled(e)) {
+            status.value = "Run cancelled.";
+            return;
+        }
         console.error("Translation failed:", e);
         status.value = `Translation failed: ${e}`;
     } finally {
-        isTranslating.value = false;
+        if (activeRunId.value === runId) {
+            activeRunId.value = null;
+            isTranslating.value = false;
+            isProcessing.value = false;
+            isCancelling.value = false;
+        }
     }
 }
 
@@ -617,6 +641,7 @@ function logExecution(type: 'analysis' | 'generation', inputSize: number, durati
 }
 
 async function analyzeWithLlmTranscript(
+    runId: number,
     analysisAudioPath: string,
     adjustTimestamps?: boolean,
     processedOffsets?: ProcessedAudio['offsets'],
@@ -628,10 +653,12 @@ async function analyzeWithLlmTranscript(
     if (isGoogleApi) {
         status.value = "Uploading file...";
         uri = await invoke<string | null>("upload_file", {
+            runId,
             apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
             path: analysisAudioPath
         });
+        assertActiveRun(runId);
 
         if (uri) {
             status.value = "File uploaded successfully";
@@ -639,10 +666,12 @@ async function analyzeWithLlmTranscript(
     } else {
         status.value = "Encoding audio as base64...";
         audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
+        assertActiveRun(runId);
         status.value = "Audio encoded successfully";
     }
 
     const response = await invoke<string>("analyze_audio", {
+        runId,
         apiKey: settings.value.apiKey,
         baseUrl: settings.value.baseUrl,
         model: settings.value.model,
@@ -654,6 +683,7 @@ async function analyzeWithLlmTranscript(
         audioUri: uri,
         audioBase64: audioBase64
     });
+    assertActiveRun(runId);
 
     const timestampAdjuster = adjustTimestamps && processedOffsets
         ? (timestamp: string) => adjustTimestamp(timestamp, processedOffsets)
@@ -702,6 +732,9 @@ async function processFile() {
         return;
     }
 
+    const runId = await beginRun();
+    activeRunId.value = runId;
+    isCancelling.value = false;
     isProcessing.value = true;
     progressPercentage.value = null;
     progressEtaSeconds.value = null;
@@ -710,6 +743,9 @@ async function processFile() {
 
     try {
         const failStage = (stage: string, error: unknown) => {
+            if (isRunCancelled(error)) {
+                throw new Error("Run cancelled.");
+            }
             const details = error instanceof Error ? error.message : String(error);
             const message = `${stage} failed.`;
             showError(message, details);
@@ -719,7 +755,8 @@ async function processFile() {
 
         let audioInfo: AudioInfo;
         try {
-            audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { inputPath: inputPath.value });
+            audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { runId, inputPath: inputPath.value });
+            assertActiveRun(runId);
         } catch (error) {
             failStage("Audio preparation", error);
             return;
@@ -730,7 +767,8 @@ async function processFile() {
         if (trimSilence.value) {
             status.value = "Removing silence...";
             try {
-                processedAudio = await invoke<ProcessedAudio>("remove_silence", { path: audioInfo.path });
+                processedAudio = await invoke<ProcessedAudio>("remove_silence", { runId, path: audioInfo.path });
+                assertActiveRun(runId);
             } catch (error) {
                 failStage("Silence removal", error);
                 return;
@@ -764,6 +802,7 @@ async function processFile() {
             if (isLlmOnlyBackend.value) {
                 try {
                     nextSegments = await analyzeWithLlmTranscript(
+                        runId,
                         analysisAudioPath,
                         true,
                         processedAudio.offsets,
@@ -780,6 +819,7 @@ async function processFile() {
                         parakeetModelPath: settings.value.parakeetModelPath,
                         sortformerModelPath: settings.value.sortformerModelPath,
                     });
+                    assertActiveRun(runId);
                 } catch (error) {
                     failStage("Parakeet transcription", error);
                     return;
@@ -790,6 +830,7 @@ async function processFile() {
                     const originalSegments = parakeetSegments;
                     try {
                         nextSegments = await invoke<TranscriptSegment[]>("cleanup_parakeet_transcript", {
+                            runId,
                             apiKey: settings.value.apiKey,
                             baseUrl: settings.value.baseUrl,
                             model: settings.value.model,
@@ -798,6 +839,7 @@ async function processFile() {
                             glossary: settings.value.glossary,
                             removeFillerWords: removeFillerWords.value,
                         });
+                        assertActiveRun(runId);
                     } catch (error) {
                         console.warn("Hybrid cleanup failed, using Parakeet transcript", error);
                         nextSegments = originalSegments;
@@ -807,7 +849,7 @@ async function processFile() {
                     status.value = "Querying remote transcript for merge...";
                     let referenceTranscript: TranscriptSegment[];
                     try {
-                        referenceTranscript = await analyzeWithLlmTranscript(analysisAudioPath);
+                        referenceTranscript = await analyzeWithLlmTranscript(runId, analysisAudioPath);
                     } catch (error) {
                         console.warn("Merged hybrid remote transcript failed, using Parakeet transcript", error);
                         nextSegments = parakeetSegments;
@@ -819,9 +861,11 @@ async function processFile() {
                         status.value = "Merging Parakeet and remote transcripts...";
                         try {
                             nextSegments = await invoke<TranscriptSegment[]>("merge_transcript_hypotheses", {
+                                runId,
                                 primaryTranscript: parakeetSegments,
                                 referenceTranscript,
                             });
+                            assertActiveRun(runId);
                         } catch (error) {
                             console.warn("Merged hybrid reconciliation failed, using Parakeet transcript", error);
                             nextSegments = parakeetSegments;
@@ -846,6 +890,7 @@ async function processFile() {
         const duration = (Date.now() - startTime) / 1000;
         logExecution('analysis', audioInfo.duration, duration);
 
+        assertActiveRun(runId);
         segments.value = nextSegments;
         status.value = isLlmOnlyBackend.value
             ? `Analysis complete. Found ${segments.value.length} segments.`
@@ -871,6 +916,7 @@ async function processFile() {
         };
 
         await saveTranscript();
+        assertActiveRun(runId);
 
         if (isLlmOnlyBackend.value && useAdvancedAlignment.value && segments.value.length > 0) {
             status.value = "Aligning transcript with local model...";
@@ -879,9 +925,11 @@ async function processFile() {
                     audioPath: audioInfo.path,
                     transcript: segments.value
                 });
+                assertActiveRun(runId);
                 segments.value = alignedSegments;
                 status.value = `Alignment complete. Adjusted ${segments.value.length} segments.`;
                 await saveTranscript();
+                assertActiveRun(runId);
             } catch (e) {
                 console.error("Alignment failed", e);
                 status.value = `Alignment failed: ${e}. Using original timestamps.`;
@@ -889,6 +937,10 @@ async function processFile() {
         }
 
     } catch (e) {
+        if (isRunCancelled(e)) {
+            status.value = "Run cancelled.";
+            return;
+        }
         const message = e instanceof Error ? e.message : String(e);
         if (!showErrorOverlay.value) {
             showError(
@@ -898,9 +950,13 @@ async function processFile() {
         }
         status.value = message;
     } finally {
-        isProcessing.value = false;
-        progressPercentage.value = null;
-        progressEtaSeconds.value = null;
+        if (activeRunId.value === runId) {
+            activeRunId.value = null;
+            isProcessing.value = false;
+            isCancelling.value = false;
+            progressPercentage.value = null;
+            progressEtaSeconds.value = null;
+        }
     }
 }
 
@@ -911,6 +967,9 @@ async function cutVideo() {
         return;
     }
 
+    const runId = await beginRun();
+    activeRunId.value = runId;
+    isCancelling.value = false;
     status.value = "Cutting media...";
     isProcessing.value = true;
     progressPercentage.value = null;
@@ -921,18 +980,28 @@ async function cutVideo() {
         const outputPath = inputPath.value.replace(/(\.[\ w\d]+)$/, "_cut$1");
 
         await invoke("cut_video", {
+            runId,
             inputPath: inputPath.value,
             segments: cutSegments,
             outputPath
         });
+        assertActiveRun(runId);
 
         status.value = `Media cut successfully to ${outputPath}`;
     } catch (e) {
+        if (isRunCancelled(e)) {
+            status.value = "Run cancelled.";
+            return;
+        }
         status.value = `Error cutting media: ${e}`;
     } finally {
-        isProcessing.value = false;
-        progressPercentage.value = null;
-        progressEtaSeconds.value = null;
+        if (activeRunId.value === runId) {
+            activeRunId.value = null;
+            isProcessing.value = false;
+            isCancelling.value = false;
+            progressPercentage.value = null;
+            progressEtaSeconds.value = null;
+        }
     }
 }
 
@@ -1055,6 +1124,7 @@ function updateProcessing(processing: boolean) {
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
                     :state="viralClipsState"
+                    :cancelGeneration="cancelGeneration"
                     class="mb-8"
                     @update:status="updateStatus"
                     @update:processing="updateProcessing"
@@ -1070,6 +1140,7 @@ function updateProcessing(processing: boolean) {
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
                     :state="podcastWorkspaceState"
+                    :cancelGeneration="cancelGeneration"
                     class="mb-20"
                     @update:status="updateStatus"
                     @update:processing="updateProcessing"
@@ -1077,53 +1148,6 @@ function updateProcessing(processing: boolean) {
                 />
             </transition>
 
-            <!-- Clip Generator -->
-            <transition name="fade">
-                <div v-if="segments.length > 0" class="mb-20">
-                    <ClipGenerator
-                        v-model:count="clipCount"
-                        v-model:minDuration="clipMinDuration"
-                        v-model:maxDuration="clipMaxDuration"
-                        v-model:topic="clipTopic"
-                        v-model:splicing="allowSplicing"
-                        :isProcessing="isProcessing"
-                        @generate="clipGeneration.generateClips"
-                    />
-
-                    <ClipList
-                        :clips="clips"
-                        :lastExportPath="lastExportPath"
-                        :isProcessing="isProcessing"
-                        :hasMediaFile="hasMediaFile"
-                        :includeSubtitles="includeSubtitles"
-                        :fastMode="fastMode"
-                        :trimBoundarySilence="clipTrimBoundarySilence"
-                        :selectedClipIndices="selectedClipIndices"
-                        @export="clipGeneration.exportClips"
-                        @openFolder="clipGeneration.openExportFolder"
-                        @update:includeSubtitles="includeSubtitles = $event"
-                        @update:fastMode="fastMode = $event"
-                        @update:trimBoundarySilence="clipTrimBoundarySilence = $event"
-                        @update:selectedClipIndices="selectedClipIndices = $event"
-                    />
-                </div>
-            </transition>
-        </div>
-    </div>
-    <!-- Status Bar (Outside main container to ensure fixed positioning works) -->
-    <div class="fixed bottom-0 left-0 right-0 p-4 bg-black/50 backdrop-blur-md border-t border-white/10 flex items-center justify-between z-50">
-        <div class="max-w-5xl mx-auto w-full flex flex-col gap-2">
-            <div v-if="progressPercentage !== null" class="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                <div class="bg-blue-500 h-full transition-all duration-300 ease-out" :style="{ width: `${progressPercentage}%` }"></div>
-            </div>
-            <div class="flex items-center gap-3">
-                <div class="w-2 h-2 rounded-full"
-                    :class="isProcessing ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'"></div>
-                <span class="text-sm font-mono text-gray-400 truncate">{{ status }}</span>
-                <span v-if="progressEtaSeconds !== null && progressPercentage !== null && progressPercentage < 100" class="text-xs font-mono text-gray-500 whitespace-nowrap">
-                    ETA {{ Math.floor(Math.ceil(progressEtaSeconds) / 60) }}:{{ (Math.ceil(progressEtaSeconds) % 60).toString().padStart(2, '0') }}
-                </span>
-            </div>
         </div>
     </div>
 
@@ -1141,6 +1165,8 @@ function updateProcessing(processing: boolean) {
         :isProcessing="isProcessing"
         :progressPercentage="progressPercentage"
         :progressEtaSeconds="progressEtaSeconds"
+        :isCancelling="isCancelling"
+        @cancel="cancelCurrentRun"
     />
 </template>
 
