@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use log::{debug, error, info};
@@ -82,11 +83,16 @@ pub fn export_podcast<F>(
     start_padding: f64,
     end_padding: f64,
     output_path: &Path,
+    run_id: u64,
+    run_control: &RunControl,
     on_progress: F,
 ) -> Result<()>
 where
     F: Fn(String) + Send + 'static,
 {
+    run_control
+        .ensure_active(run_id)
+        .map_err(|error| anyhow::anyhow!(error))?;
     // Filter out voiceover segments - only export actual content
     let content_segments: Vec<_> = segments
         .iter()
@@ -129,7 +135,7 @@ where
         cmd.input(outro.to_str().unwrap());
     }
 
-    cmd.args(&[
+    let mut child = cmd.args(&[
         "-y",
         "-filter_complex",
         &filter_complex,
@@ -142,7 +148,14 @@ where
     ])
     .output(output_path.to_str().unwrap())
     .spawn()
-    .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
+    .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
+
+    let pid = child.as_inner().id();
+    run_control
+        .register_pid(run_id, pid)
+        .map_err(|error| anyhow::anyhow!(error))?;
+
+    child
     .iter()
     .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
     .for_each(|event| match event {
@@ -156,6 +169,12 @@ where
         }
         _ => {}
     });
+
+    run_control.clear_pid(run_id, pid);
+
+    if run_control.is_cancelled(run_id) {
+        return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
+    }
 
     if !output_path.exists() {
         let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
@@ -232,11 +251,16 @@ pub fn export_podcast_clips<F>(
     start_padding: f64,
     end_padding: f64,
     output_dir: &Path,
+    run_id: u64,
+    run_control: &RunControl,
     on_progress: F,
 ) -> Result<()>
 where
     F: Fn(String) + Send + Sync + 'static + Clone,
 {
+    run_control
+        .ensure_active(run_id)
+        .map_err(|error| anyhow::anyhow!(error))?;
     if output_dir.exists() {
         if !output_dir.is_dir() {
             return Err(anyhow::anyhow!(
@@ -266,6 +290,9 @@ where
     );
 
     for (i, segment) in content_segments.iter().enumerate() {
+        run_control
+            .ensure_active(run_id)
+            .map_err(|error| anyhow::anyhow!(error))?;
         let output_filename = format!("podcast_clip_{:03}.m4a", i + 1);
         let output_path = output_dir.join(&output_filename);
 
@@ -289,7 +316,7 @@ where
         let mut last_error = None;
 
         let cb = on_progress.clone();
-        FfmpegCommand::new()
+        let mut child = FfmpegCommand::new()
             .input(input_path.to_str().unwrap())
             .args(&[
                 "-y",
@@ -305,7 +332,14 @@ where
             ])
             .output(output_path.to_str().unwrap())
             .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
+
+        let pid = child.as_inner().id();
+        run_control
+            .register_pid(run_id, pid)
+            .map_err(|error| anyhow::anyhow!(error))?;
+
+        child
             .iter()
             .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
             .for_each(|event| match event {
@@ -319,6 +353,12 @@ where
                 }
                 _ => {}
             });
+
+        run_control.clear_pid(run_id, pid);
+
+        if run_control.is_cancelled(run_id) {
+            return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
+        }
 
         if !output_path.exists() {
             let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());

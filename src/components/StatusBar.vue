@@ -4,6 +4,11 @@ const props = defineProps<{
   isProcessing: boolean;
   progressPercentage: number | null;
   progressEtaSeconds?: number | null;
+  isCancelling?: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: 'cancel'): void;
 }>();
 
 function formatEta(seconds: number | null | undefined): string {
@@ -33,6 +38,14 @@ function formatEta(seconds: number | null | undefined): string {
                 <span v-if="progressEtaSeconds !== null && progressEtaSeconds !== undefined && progressPercentage !== null && progressPercentage < 100" class="text-xs font-mono text-gray-500 whitespace-nowrap">
                     {{ formatEta(progressEtaSeconds) }}
                 </span>
+                <button
+                    v-if="isProcessing"
+                    @click="emit('cancel')"
+                    :disabled="isCancelling"
+                    class="ml-auto rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {{ isCancelling ? 'Cancelling...' : 'Cancel' }}
+                </button>
             </div>
         </div>
     </div>

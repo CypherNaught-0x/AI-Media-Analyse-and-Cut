@@ -1,3 +1,4 @@
+use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
 use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
@@ -80,11 +81,16 @@ pub fn cut_video<F>(
     input_path: &Path,
     segments: &[Segment],
     output_path: &Path,
+    run_id: u64,
+    run_control: &RunControl,
     on_progress: F,
 ) -> Result<()>
 where
     F: Fn(String) + Send + 'static,
 {
+    run_control
+        .ensure_active(run_id)
+        .map_err(|error| anyhow::anyhow!(error))?;
     // Optimization: Use filter_complex to cut and concat in a single pass.
     // Example:
     // ffmpeg -i input.mp4 -filter_complex
@@ -106,7 +112,7 @@ where
 
     let mut last_error = None;
 
-    FfmpegCommand::new()
+    let mut child = FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
         .args(&[
             "-y",
@@ -119,7 +125,14 @@ where
         ])
         .output(output_path.to_str().unwrap())
         .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
+
+    let pid = child.as_inner().id();
+    run_control
+        .register_pid(run_id, pid)
+        .map_err(|error| anyhow::anyhow!(error))?;
+
+    child
         .iter()
         .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
         .for_each(|event| match event {
@@ -133,6 +146,12 @@ where
             }
             _ => {}
         });
+
+    run_control.clear_pid(run_id, pid);
+
+    if run_control.is_cancelled(run_id) {
+        return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
+    }
 
     if !output_path.exists() {
         let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
@@ -180,11 +199,16 @@ pub fn export_clips<F>(
     segments: &[ClipSegment],
     output_dir: &Path,
     fast_mode: bool,
+    run_id: u64,
+    run_control: &RunControl,
     on_progress: F,
 ) -> Result<()>
 where
     F: Fn(usize, usize, String) + Send + Sync + 'static + Clone,
 {
+    run_control
+        .ensure_active(run_id)
+        .map_err(|error| anyhow::anyhow!(error))?;
     if output_dir.exists() {
         if !output_dir.is_dir() {
             return Err(anyhow::anyhow!(
@@ -208,6 +232,9 @@ where
     let total_clips = segments.len();
 
     for (i, segment) in segments.iter().enumerate() {
+        run_control
+            .ensure_active(run_id)
+            .map_err(|error| anyhow::anyhow!(error))?;
         let output_filename = build_clip_output_filename(i, segment);
         let output_path = output_dir.join(&output_filename);
 
@@ -241,9 +268,16 @@ where
                 ]);
             }
 
-            cmd.output(output_path.to_str().unwrap())
+            let mut child = cmd.output(output_path.to_str().unwrap())
                 .spawn()
-                .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
+
+            let pid = child.as_inner().id();
+            run_control
+                .register_pid(run_id, pid)
+                .map_err(|error| anyhow::anyhow!(error))?;
+
+            child
                 .iter()
                 .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
                 .for_each(|event| match event {
@@ -258,6 +292,12 @@ where
                     _ => {}
                 });
 
+            run_control.clear_pid(run_id, pid);
+
+            if run_control.is_cancelled(run_id) {
+                return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
+            }
+
             if !output_path.exists() {
                 let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
                 return Err(anyhow::anyhow!(
@@ -268,9 +308,16 @@ where
             }
         } else {
             // Use existing cut_video logic which handles concat
-            cut_video(input_path, &segment.segments, &output_path, move |time| {
-                cb(i, total_clips, time);
-            })?;
+            cut_video(
+                input_path,
+                &segment.segments,
+                &output_path,
+                run_id,
+                run_control,
+                move |time| {
+                    cb(i, total_clips, time);
+                },
+            )?;
         }
     }
     Ok(())

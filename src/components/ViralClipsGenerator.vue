@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { TranscriptSegment, SilenceInterval, ViralClipsWorkspaceState } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
+import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 
@@ -12,6 +13,7 @@ interface Props {
   inputPath: string;
   hasMediaFile: boolean;
   state: ViralClipsWorkspaceState;
+  cancelGeneration: number;
 }
 
 const props = defineProps<Props>();
@@ -26,6 +28,21 @@ const { settings } = useSettings();
 
 const isProcessing = ref(false);
 const silenceIntervalsCache = ref<SilenceInterval[] | null>(null);
+const activeRunId = ref<number | null>(null);
+
+function invalidateRun() {
+  activeRunId.value = null;
+  isProcessing.value = false;
+  emit('update:processing', false);
+}
+
+function assertActiveRun(runId: number) {
+  if (activeRunId.value !== runId) {
+    throw new Error('Run cancelled.');
+  }
+}
+
+watch(() => props.cancelGeneration, invalidateRun);
 
 function updateState(patch: Partial<ViralClipsWorkspaceState>) {
   emit('update:state', {
@@ -70,6 +87,8 @@ function showError(message: string, rawResponse: string, parseError: string = ""
 async function generateClips() {
   if (props.segments.length === 0) return;
 
+  const runId = await beginRun();
+  activeRunId.value = runId;
   emit('update:status', "Generating clips...");
   isProcessing.value = true;
   emit('update:processing', true);
@@ -80,6 +99,7 @@ async function generateClips() {
       .join("\n");
 
     const response = await invoke<string>("generate_clips", {
+      runId,
       apiKey: settings.value.apiKey,
       baseUrl: settings.value.baseUrl,
       model: settings.value.model,
@@ -90,6 +110,7 @@ async function generateClips() {
       topic: clipTopic.value || null,
       splicing: allowSplicing.value
     });
+    assertActiveRun(runId);
 
     const jsonMatch = response.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
@@ -108,6 +129,7 @@ async function generateClips() {
           };
           }),
         });
+        assertActiveRun(runId);
 
         emit('update:status', `Found ${parsed.length} clips.`);
       } catch (e) {
@@ -126,10 +148,17 @@ async function generateClips() {
       );
     }
   } catch (e) {
+    if (isRunCancelled(e)) {
+      emit('update:status', 'Run cancelled.');
+      return;
+    }
     emit('update:status', `Error generating clips: ${e}`);
   } finally {
-    isProcessing.value = false;
-    emit('update:processing', false);
+    if (activeRunId.value === runId) {
+      activeRunId.value = null;
+      isProcessing.value = false;
+      emit('update:processing', false);
+    }
   }
 }
 
@@ -140,6 +169,8 @@ async function exportClips() {
     return;
   }
 
+  const runId = await beginRun();
+  activeRunId.value = runId;
   emit('update:status', "Exporting clips...");
   isProcessing.value = true;
   emit('update:processing', true);
@@ -158,8 +189,10 @@ async function exportClips() {
 
       if (!silenceIntervalsCache.value) {
         silenceIntervalsCache.value = await invoke<SilenceInterval[]>("detect_silence", {
+          runId,
           path: props.inputPath,
         });
+        assertActiveRun(runId);
       }
 
       clipSegments = clipSegments.map((clip) => ({
@@ -170,18 +203,27 @@ async function exportClips() {
 
     emit('update:status', `Exporting to ${outputDir}...`);
     await invoke("export_clips", {
+      runId,
       inputPath: props.inputPath,
       segments: clipSegments,
       outputDir
     });
+    assertActiveRun(runId);
 
     updateState({ lastExportPath: outputDir });
     emit('update:status', `Clips exported to ${outputDir}`);
   } catch (e) {
+    if (isRunCancelled(e)) {
+      emit('update:status', 'Run cancelled.');
+      return;
+    }
     emit('update:status', `Error exporting clips: ${e}`);
   } finally {
-    isProcessing.value = false;
-    emit('update:processing', false);
+    if (activeRunId.value === runId) {
+      activeRunId.value = null;
+      isProcessing.value = false;
+      emit('update:processing', false);
+    }
   }
 }
 
