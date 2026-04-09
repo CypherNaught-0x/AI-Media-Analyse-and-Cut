@@ -159,11 +159,19 @@ describe('TranscriptWorkspacePanel', () => {
       },
     });
 
-    await wrapper.get('[data-testid="speaker-visibility-toggle-Host"]').trigger('click');
+    const hostToggle = wrapper.get('[data-testid="speaker-visibility-toggle-Host"]');
+    expect(hostToggle.classes()).toContain('z-10');
+
+    await hostToggle.trigger('click');
 
     const editor = wrapper.get('.mock-editor');
     expect(editor.attributes('data-speaker-visibility')).toBe(JSON.stringify({ Host: false, Guest: true }));
     expect(wrapper.text()).toContain('1 of 2 Segments');
+
+    await hostToggle.trigger('click');
+
+    expect(editor.attributes('data-speaker-visibility')).toBe(JSON.stringify({ Host: true, Guest: true }));
+    expect(wrapper.text()).toContain('2 Segments');
   });
 
   it('shift-click solos a speaker in the transcript', async () => {

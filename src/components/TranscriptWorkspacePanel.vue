@@ -373,10 +373,16 @@ function onTimeUpdate() {
           <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
             <UserIcon class="h-4 w-4 text-gray-500" />
           </div>
+          <input
+            :value="speaker"
+            @change="$emit('rename-speaker', { oldName: speaker, newName: ($event.target as HTMLInputElement).value, inputElement: $event.target as HTMLInputElement })"
+            class="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-10 text-sm text-gray-300 transition-all outline-none focus:border-blue-500/50 focus:bg-black/30"
+            :class="isSpeakerVisible(speaker) ? '' : 'opacity-60'"
+          />
           <button
             :data-testid="`speaker-visibility-toggle-${speaker}`"
             type="button"
-            class="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 transition-colors hover:text-blue-300"
+            class="absolute inset-y-0 right-0 z-10 flex items-center pr-3 text-gray-500 transition-colors hover:text-blue-300"
             :class="isSpeakerVisible(speaker) ? 'text-blue-300' : 'text-gray-600'"
             :title="isSpeakerVisible(speaker) ? `Hide ${speaker}` : `Show ${speaker}`"
             @click="toggleSpeakerVisibility(speaker, $event)"
@@ -392,12 +398,6 @@ function onTimeUpdate() {
               <path stroke-linecap="round" stroke-linejoin="round" d="M6 6.4C3.5 8.1 2 12 2 12s3.5 7 10 7c1 0 1.9-.1 2.7-.3" />
             </svg>
           </button>
-          <input
-            :value="speaker"
-            @change="$emit('rename-speaker', { oldName: speaker, newName: ($event.target as HTMLInputElement).value, inputElement: $event.target as HTMLInputElement })"
-            class="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-10 text-sm text-gray-300 transition-all outline-none focus:border-blue-500/50 focus:bg-black/30"
-            :class="isSpeakerVisible(speaker) ? '' : 'opacity-60'"
-          />
         </div>
       </div>
     </div>
