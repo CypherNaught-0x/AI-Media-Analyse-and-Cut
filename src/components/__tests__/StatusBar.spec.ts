@@ -29,4 +29,21 @@ describe('StatusBar.vue', () => {
     expect(wrapper.find('.bg-blue-500').attributes('style')).toContain('width: 50%');
     expect(wrapper.text()).toContain('ETA 1:35');
   });
+
+  it('shows a cancel button while processing', async () => {
+    const wrapper = mount(StatusBar, {
+      props: {
+        status: 'Processing',
+        isProcessing: true,
+        progressPercentage: 10,
+        isCancelling: false,
+      },
+    });
+
+    const button = wrapper.get('button');
+    expect(button.text()).toBe('Cancel');
+
+    await button.trigger('click');
+    expect(wrapper.emitted('cancel')).toHaveLength(1);
+  });
 });

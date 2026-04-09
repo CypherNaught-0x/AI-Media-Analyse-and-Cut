@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { PodcastScript, PodcastSegment, PodcastWorkspaceState, TranscriptSegment } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { formatDuration, calculateSegmentsDuration } from '../composables/useTimeFormat';
+import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -14,6 +15,7 @@ interface Props {
   inputPath: string;
   hasMediaFile: boolean;
   state: PodcastWorkspaceState;
+  cancelGeneration: number;
 }
 
 const props = defineProps<Props>();
@@ -28,6 +30,7 @@ const { settings } = useSettings();
 
 const isGenerating = ref(false);
 const isExporting = ref(false);
+const activeRunId = ref<number | null>(null);
 
 // Segment being edited
 const editingSegmentIndex = ref<number | null>(null);
@@ -38,6 +41,21 @@ const showAddSegmentModal = ref(false);
 
 // Drag state
 const draggedIndex = ref<number | null>(null);
+
+function invalidateRun() {
+  activeRunId.value = null;
+  isGenerating.value = false;
+  isExporting.value = false;
+  emit('update:processing', false);
+}
+
+function assertActiveRun(runId: number) {
+  if (activeRunId.value !== runId) {
+    throw new Error('Run cancelled.');
+  }
+}
+
+watch(() => props.cancelGeneration, invalidateRun);
 
 function updateState(patch: Partial<PodcastWorkspaceState>) {
   emit('update:state', {
@@ -150,6 +168,8 @@ async function selectOutroFile() {
 async function generatePodcast() {
   if (props.segments.length === 0) return;
 
+  const runId = await beginRun();
+  activeRunId.value = runId;
   emit('update:status', "Generating podcast script...");
   isGenerating.value = true;
   emit('update:processing', true);
@@ -162,6 +182,7 @@ async function generatePodcast() {
 
     // Initial generation
     let response = await invoke<string>("generate_podcast", {
+      runId,
       apiKey: settings.value.apiKey,
       baseUrl: settings.value.baseUrl,
       model: settings.value.model,
@@ -170,6 +191,7 @@ async function generatePodcast() {
       maxDuration: maxDurationSeconds.value,
       context: null
     });
+    assertActiveRun(runId);
 
     let script = parseScriptResponse(response);
     if (!script) {
@@ -194,6 +216,7 @@ async function generatePodcast() {
       emit('update:status', `Refining podcast script (iteration ${iterations})...`);
 
       response = await invoke<string>("refine_podcast", {
+        runId,
         apiKey: settings.value.apiKey,
         baseUrl: settings.value.baseUrl,
         model: settings.value.model,
@@ -203,6 +226,7 @@ async function generatePodcast() {
         targetMin: minDurationSeconds.value,
         targetMax: maxDurationSeconds.value
       });
+      assertActiveRun(runId);
 
       const refinedScript = parseScriptResponse(response);
       if (refinedScript) {
@@ -215,15 +239,23 @@ async function generatePodcast() {
 
     // Calculate final duration
     script.totalDuration = calculateSegmentsDuration(script.segments);
+    assertActiveRun(runId);
     updateState({ podcastScript: script });
 
     emit('update:status', `Podcast script generated: "${script.title}" (${formatDuration(script.totalDuration)})`);
   } catch (e) {
+    if (isRunCancelled(e)) {
+      emit('update:status', 'Run cancelled.');
+      return;
+    }
     emit('update:status', `Error generating podcast: ${e}`);
     console.error("Podcast generation error:", e);
   } finally {
-    isGenerating.value = false;
-    emit('update:processing', false);
+    if (activeRunId.value === runId) {
+      activeRunId.value = null;
+      isGenerating.value = false;
+      emit('update:processing', false);
+    }
   }
 }
 
@@ -366,6 +398,8 @@ async function exportPodcast() {
     return;
   }
 
+  const runId = await beginRun();
+  activeRunId.value = runId;
   emit('update:status', "Exporting podcast...");
   isExporting.value = true;
   emit('update:processing', true);
@@ -374,6 +408,7 @@ async function exportPodcast() {
     const outputPath = props.inputPath.replace(/\.[^/\\.]+$/, "_podcast.m4a");
 
     await invoke("export_podcast", {
+      runId,
       inputPath: props.inputPath,
       segments: podcastScript.value.segments.map(s => ({
         start: s.start,
@@ -390,15 +425,23 @@ async function exportPodcast() {
       endPadding: endPadding.value,
       outputPath
     });
+    assertActiveRun(runId);
 
     updateState({ lastExportPath: outputPath });
     emit('update:status', `Podcast exported to ${outputPath}`);
   } catch (e) {
+    if (isRunCancelled(e)) {
+      emit('update:status', 'Run cancelled.');
+      return;
+    }
     emit('update:status', `Error exporting podcast: ${e}`);
     console.error("Export error:", e);
   } finally {
-    isExporting.value = false;
-    emit('update:processing', false);
+    if (activeRunId.value === runId) {
+      activeRunId.value = null;
+      isExporting.value = false;
+      emit('update:processing', false);
+    }
   }
 }
 
@@ -416,6 +459,8 @@ async function exportClips() {
     return;
   }
 
+  const runId = await beginRun();
+  activeRunId.value = runId;
   emit('update:status', "Exporting podcast clips...");
   isExporting.value = true;
   emit('update:processing', true);
@@ -424,6 +469,7 @@ async function exportClips() {
     const outputDir = props.inputPath.replace(/\.[^/\\.]+$/, "_podcast_clips");
 
     await invoke("export_podcast_clips", {
+      runId,
       inputPath: props.inputPath,
       segments: podcastScript.value.segments.map(s => ({
         start: s.start,
@@ -438,15 +484,23 @@ async function exportClips() {
       endPadding: endPadding.value,
       outputDir
     });
+    assertActiveRun(runId);
 
     updateState({ lastExportPath: outputDir });
     emit('update:status', `Podcast clips exported to ${outputDir}`);
   } catch (e) {
+    if (isRunCancelled(e)) {
+      emit('update:status', 'Run cancelled.');
+      return;
+    }
     emit('update:status', `Error exporting clips: ${e}`);
     console.error("Export clips error:", e);
   } finally {
-    isExporting.value = false;
-    emit('update:processing', false);
+    if (activeRunId.value === runId) {
+      activeRunId.value = null;
+      isExporting.value = false;
+      emit('update:processing', false);
+    }
   }
 }
 

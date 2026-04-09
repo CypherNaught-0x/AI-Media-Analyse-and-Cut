@@ -209,6 +209,10 @@ describe('Home.vue', () => {
     expect(wrapper.text()).toContain('Transcript');
     expect(wrapper.text()).toContain('1 Segments');
     expect(wrapper.text()).not.toContain('Media file missing');
+    expect(wrapper.find('.mock-viral-clips-generator').exists()).toBe(true);
+    expect(wrapper.find('.mock-podcast-generator').exists()).toBe(true);
+    expect(wrapper.find('.mock-clip-generator').exists()).toBe(false);
+    expect(wrapper.find('.mock-clip-list').exists()).toBe(false);
   });
 
   it('loads a session file from disk', async () => {
