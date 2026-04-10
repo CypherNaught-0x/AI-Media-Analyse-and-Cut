@@ -9,7 +9,7 @@ import {
   type SubtitleSplitOptions,
   type SubtitleValidationError 
 } from '../utils/subtitleValidation';
-import { formatSubtitleTimestamp } from '../utils/subtitle';
+import { formatSubtitleTimeRange } from '../utils/subtitle';
 
 const props = defineProps<{
   segments: TranscriptSegment[];
@@ -60,16 +60,14 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
         
         if (format === 'srt') {
             content = processedSegments.map((s, i) => {
-                const start = formatSubtitleTimestamp(s.start, ',');
-                const end = formatSubtitleTimestamp(s.end, ',');
+                const { start, end } = formatSubtitleTimeRange(s.start, s.end, ',');
                 // Handle multi-line text properly
                 const text = s.text.split('\n').join('\n');
                 return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${text}\n`;
             }).join('\n');
         } else if (format === 'vtt') {
             content = "WEBVTT\n\n" + processedSegments.map((s) => {
-                const start = formatSubtitleTimestamp(s.start, '.');
-                const end = formatSubtitleTimestamp(s.end, '.');
+                const { start, end } = formatSubtitleTimeRange(s.start, s.end, '.');
                 // Convert newlines to <br> for VTT
                 const text = s.text.split('\n').join('<br>');
                 return `${start} --> ${end}\n<v ${s.speaker}>${text}`;

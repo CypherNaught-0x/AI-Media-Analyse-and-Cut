@@ -55,6 +55,11 @@ describe('subtitleValidation', () => {
       expect(timeToMs('1:30:00')).toBe(5400000);
       expect(timeToMs('0:00:30')).toBe(30000);
     });
+
+    it('should preserve milliseconds when parsing', () => {
+      expect(timeToMs('34:40.654')).toBe(2080654);
+      expect(timeToMs('1:01:06.720')).toBe(3666720);
+    });
   });
 
   describe('msToTime', () => {
@@ -66,6 +71,11 @@ describe('subtitleValidation', () => {
     it('should convert milliseconds to HH:MM:SS when needed', () => {
       expect(msToTime(5400000)).toBe('1:30:00');
       expect(msToTime(3661000)).toBe('1:01:01');
+    });
+
+    it('should preserve milliseconds when needed', () => {
+      expect(msToTime(2080654)).toBe('34:40.654');
+      expect(msToTime(3666720)).toBe('1:01:06.720');
     });
   });
 
@@ -114,6 +124,21 @@ describe('subtitleValidation', () => {
       result.forEach(seg => {
         expect(seg.speaker).toBe('John Doe');
       });
+    });
+
+    it('should not split a long cue when there is no duration to distribute', () => {
+      const segment: TranscriptSegment = {
+        start: '55:50.894',
+        end: '55:50.894',
+        text: 'Wie sind deine Erfahrungen bei der Verwendung von LLMs oder Machine-Learning-Modellen',
+        speaker: 'Speaker 1',
+      };
+
+      const result = splitSubtitleEntry(segment, { maxCharsPerLine: 42, maxLines: 2 });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].start).toBe('55:50.894');
+      expect(result[0].end).toBe('55:50.894');
     });
   });
 
@@ -203,6 +228,16 @@ describe('subtitleValidation', () => {
       const cpsErrors = errors.filter(e => e.field === 'cps');
       expect(cpsErrors.length).toBeGreaterThan(0);
     });
+
+    it('should detect reversed timestamps as an error', () => {
+      const segments: TranscriptSegment[] = [
+        { start: '34:41', end: '34:40.654', text: 'Broken cue', speaker: 'Speaker 1' },
+      ];
+      const errors = validateSubtitles(segments);
+      const durationErrors = errors.filter(e => e.field === 'duration');
+      expect(durationErrors.length).toBeGreaterThan(0);
+      expect(durationErrors[0].severity).toBe('error');
+    });
   });
 
   describe('processSubtitlesForDisplay', () => {
@@ -229,6 +264,25 @@ describe('subtitleValidation', () => {
       expect(result.segments).toHaveLength(1);
       // No errors expected for a simple valid segment
       expect(result.errors.filter(e => e.severity === 'error')).toHaveLength(0);
+    });
+
+    it('should not create reversed cues when a long cue has zero duration', () => {
+      const segments: TranscriptSegment[] = [
+        {
+          start: '55:50.894',
+          end: '55:50.894',
+          text: 'Wie sind deine Erfahrungen bei der Verwendung von LLMs oder Machine-Learning-Modellen',
+          speaker: 'Speaker 1',
+        },
+      ];
+      const result = processSubtitlesForDisplay(segments, { maxCharsPerLine: 42, maxLines: 2 });
+
+      expect(result.segments).toHaveLength(1);
+      expect(
+        result.errors.some(
+          error => error.field === 'duration' && error.message.includes('before start'),
+        ),
+      ).toBe(false);
     });
   });
 
