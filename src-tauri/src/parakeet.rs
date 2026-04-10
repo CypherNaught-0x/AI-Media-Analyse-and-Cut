@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
+use crate::time_utils::format_time;
 use crate::video::{TranscriptSegment, TranscriptWord};
 
 const SAMPLE_RATE: usize = 16_000;
@@ -53,12 +54,7 @@ fn emit_progress(window: &tauri::Window, message: &str) -> Result<()> {
 }
 
 fn format_timestamp(seconds: f32) -> String {
-    let total_millis = (seconds.max(0.0) * 1000.0).round() as u64;
-    let total_seconds = total_millis / 1000;
-    let millis = total_millis % 1000;
-    let minutes = total_seconds / 60;
-    let secs = total_seconds % 60;
-    format!("{:02}:{:02}.{:03}", minutes, secs, millis)
+    format_time(seconds.max(0.0) as f64)
 }
 
 fn is_punctuation_only(text: &str) -> bool {
@@ -897,5 +893,12 @@ mod tests {
                 .map(|word| word.text.as_str()),
             Some("Kümmern")
         );
+    }
+
+    #[test]
+    fn format_timestamp_normalizes_hour_boundaries() {
+        assert_eq!(format_timestamp(61.5), "01:01.500");
+        assert_eq!(format_timestamp(3600.0), "01:00:00.000");
+        assert_eq!(format_timestamp(3666.72), "01:01:06.720");
     }
 }

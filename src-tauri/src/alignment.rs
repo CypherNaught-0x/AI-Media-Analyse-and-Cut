@@ -1,3 +1,4 @@
+use crate::time_utils::format_time;
 use crate::video::Segment;
 use anyhow::{anyhow, Context, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
@@ -580,10 +581,7 @@ struct BatchTranscriptionResult {
 }
 
 fn format_timestamp(seconds: f32) -> String {
-    let mm = (seconds / 60.0).floor() as u32;
-    let ss = (seconds % 60.0).floor() as u32;
-    let ms = ((seconds % 1.0) * 1000.0).round() as u32;
-    format!("{:02}:{:02}.{:03}", mm, ss, ms)
+    format_time(seconds.max(0.0) as f64)
 }
 
 // --- Audio Loading ---
@@ -831,7 +829,7 @@ mod tests {
     fn test_format_timestamp() {
         assert_eq!(format_timestamp(0.0), "00:00.000");
         assert_eq!(format_timestamp(61.5), "01:01.500");
-        assert_eq!(format_timestamp(3600.0), "60:00.000"); // Simple MM:SS logic might overflow MM if > 59, but that's what the code does.
+        assert_eq!(format_timestamp(3600.0), "01:00:00.000");
         assert_eq!(format_timestamp(12.3456), "00:12.346");
     }
 }
