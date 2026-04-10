@@ -96,45 +96,49 @@ export function splitSubtitleEntry(
   }
   
   const chunks = splitTextIntoChunks(segment.text, opts.maxCharsPerLine);
-  const splitSegments: TranscriptSegment[] = [];
+  const groupedChunks: string[] = [];
+  for (let i = 0; i < chunks.length; i += opts.maxLines) {
+    groupedChunks.push(chunks.slice(i, i + opts.maxLines).join('\n'));
+  }
+
+  if (groupedChunks.length <= 1) {
+    return [{ ...segment, text: groupedChunks[0] ?? segment.text }];
+  }
   
-  // Calculate time per character for proportional splitting
   const startMs = timeToMs(segment.start);
   const endMs = timeToMs(segment.end);
   const totalDuration = endMs - startMs;
-  const totalChars = segment.text.length;
-  const msPerChar = totalDuration / totalChars;
-  
-  let currentTime = startMs;
-  
-  // Group chunks into subtitle entries respecting maxLines
-  for (let i = 0; i < chunks.length; i += opts.maxLines) {
-    const chunkGroup = chunks.slice(i, i + opts.maxLines);
-    const chunkText = chunkGroup.join('\n');
-    const chunkChars = chunkGroup.join(' ').length;
-    
-    const chunkDuration = Math.max(
-      opts.minDurationMs,
-      Math.min(chunkChars * msPerChar, opts.maxDurationMs)
-    );
-    
-    const chunkStart = msToTime(currentTime);
-    currentTime += chunkDuration;
-    const chunkEnd = msToTime(Math.min(currentTime, endMs));
-    
+
+  // If the source cue has no usable duration, keep it as a single cue.
+  if (totalDuration <= 0) {
+    return [segment];
+  }
+
+  const weights = groupedChunks.map((chunk) => Math.max(chunk.replace(/\n/g, ' ').length, 1));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const splitSegments: TranscriptSegment[] = [];
+  let consumedWeight = 0;
+
+  for (let i = 0; i < groupedChunks.length; i++) {
+    const chunkText = groupedChunks[i];
+    const chunkStartMs =
+      i === 0
+        ? startMs
+        : startMs + Math.round((totalDuration * consumedWeight) / totalWeight);
+    consumedWeight += weights[i];
+    const chunkEndMs =
+      i === groupedChunks.length - 1
+        ? endMs
+        : startMs + Math.round((totalDuration * consumedWeight) / totalWeight);
+
     splitSegments.push({
-      start: chunkStart,
-      end: chunkEnd,
+      start: msToTime(chunkStartMs),
+      end: msToTime(Math.max(chunkStartMs, chunkEndMs)),
       text: chunkText,
       speaker: segment.speaker,
     });
   }
-  
-  // Ensure the last segment ends at the original end time
-  if (splitSegments.length > 0) {
-    splitSegments[splitSegments.length - 1].end = segment.end;
-  }
-  
+
   return splitSegments;
 }
 
@@ -142,11 +146,13 @@ export function splitSubtitleEntry(
  * Convert time string (MM:SS or HH:MM:SS) to milliseconds
  */
 export function timeToMs(time: string): number {
-  const parts = time.split(':').map(Number);
+  const [base, fractional = '0'] = time.split(/[.,]/);
+  const parts = base.split(':').map(Number);
+  const milliseconds = Number(fractional.padEnd(3, '0').slice(0, 3));
   if (parts.length === 2) {
-    return (parts[0] * 60 + parts[1]) * 1000;
+    return (parts[0] * 60 + parts[1]) * 1000 + milliseconds;
   } else if (parts.length === 3) {
-    return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+    return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000 + milliseconds;
   }
   return 0;
 }
@@ -155,15 +161,19 @@ export function timeToMs(time: string): number {
  * Convert milliseconds to time string (HH:MM:SS)
  */
 export function msToTime(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
+  const safeMs = Math.max(0, Math.round(ms));
+  const totalSeconds = Math.floor(safeMs / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
+  const milliseconds = safeMs % 1000;
   
   if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    const base = `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    return milliseconds > 0 ? `${base}.${milliseconds.toString().padStart(3, '0')}` : base;
   }
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  const base = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  return milliseconds > 0 ? `${base}.${milliseconds.toString().padStart(3, '0')}` : base;
 }
 
 /**
@@ -201,7 +211,14 @@ export function validateSubtitles(
     
     // Check duration
     const duration = timeToMs(segment.end) - timeToMs(segment.start);
-    if (duration < opts.minDurationMs) {
+    if (duration < 0) {
+      errors.push({
+        segmentIndex: index,
+        field: 'duration',
+        message: `End timestamp ${segment.end} is before start ${segment.start}`,
+        severity: 'error',
+      });
+    } else if (duration < opts.minDurationMs) {
       errors.push({
         segmentIndex: index,
         field: 'duration',
@@ -221,7 +238,7 @@ export function validateSubtitles(
     
     // Check characters per second
     const textLength = segment.text.replace('\n', ' ').length;
-    const cps = textLength / (duration / 1000);
+    const cps = duration > 0 ? textLength / (duration / 1000) : Infinity;
     if (cps > opts.maxCps) {
       errors.push({
         segmentIndex: index,

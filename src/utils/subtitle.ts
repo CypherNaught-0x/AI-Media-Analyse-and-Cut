@@ -20,17 +20,29 @@ export function formatSubtitleTimestamp(time: string | number, separator: string
     return formatTime(parseTime(time), separator);
 }
 
+export function formatSubtitleTimeRange(
+    start: string | number,
+    end: string | number,
+    separator: string = ',',
+): { start: string; end: string } {
+    const startSeconds = parseTime(start);
+    const endSeconds = Math.max(startSeconds, parseTime(end));
+
+    return {
+        start: formatTime(startSeconds, separator),
+        end: formatTime(endSeconds, separator),
+    };
+}
+
 export function generateSubtitleContent(segments: TranscriptSegment[], format: 'srt' | 'vtt' | 'txt'): string {
     if (format === 'srt') {
         return segments.map((s, i) => {
-            const start = formatSubtitleTimestamp(s.start, ',');
-            const end = formatSubtitleTimestamp(s.end, ',');
+            const { start, end } = formatSubtitleTimeRange(s.start, s.end, ',');
             return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${s.text}\n`;
         }).join('\n');
     } else if (format === 'vtt') {
         return "WEBVTT\n\n" + segments.map((s) => {
-            const start = formatSubtitleTimestamp(s.start, '.');
-            const end = formatSubtitleTimestamp(s.end, '.');
+            const { start, end } = formatSubtitleTimeRange(s.start, s.end, '.');
             return `${start} --> ${end}\n<v ${s.speaker}>${s.text}`;
         }).join('\n\n');
     } else {
