@@ -9,6 +9,7 @@ import {
   type SubtitleSplitOptions,
   type SubtitleValidationError 
 } from '../utils/subtitleValidation';
+import { formatSubtitleTimestamp } from '../utils/subtitle';
 
 const props = defineProps<{
   segments: TranscriptSegment[];
@@ -50,31 +51,6 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
     // Update validation state
     validationErrors.value = errors;
     
-    // Helper to ensure timestamps are HH:MM:SS,mmm (SRT) or HH:MM:SS.mmm (VTT)
-    const formatTime = (time: string, separator: string) => {
-        let [base, ms] = time.split(/[.,]/);
-        if (!ms) ms = "000";
-        ms = ms.padEnd(3, '0').slice(0, 3);
-
-        const parts = base.split(':');
-        let h = "00";
-        let m = "00";
-        let s = "00";
-
-        if (parts.length >= 3) {
-            h = parts[parts.length - 3].padStart(2, '0');
-            m = parts[parts.length - 2].padStart(2, '0');
-            s = parts[parts.length - 1].padStart(2, '0');
-        } else if (parts.length === 2) {
-            m = parts[0].padStart(2, '0');
-            s = parts[1].padStart(2, '0');
-        } else {
-            s = parts[0].padStart(2, '0');
-        }
-
-        return `${h}:${m}:${s}${separator}${ms}`;
-    };
-    
     try {
         let content = "";
         // Robustly remove extension
@@ -84,16 +60,16 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
         
         if (format === 'srt') {
             content = processedSegments.map((s, i) => {
-                const start = formatTime(s.start, ',');
-                const end = formatTime(s.end, ',');
+                const start = formatSubtitleTimestamp(s.start, ',');
+                const end = formatSubtitleTimestamp(s.end, ',');
                 // Handle multi-line text properly
                 const text = s.text.split('\n').join('\n');
                 return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${text}\n`;
             }).join('\n');
         } else if (format === 'vtt') {
             content = "WEBVTT\n\n" + processedSegments.map((s) => {
-                const start = formatTime(s.start, '.');
-                const end = formatTime(s.end, '.');
+                const start = formatSubtitleTimestamp(s.start, '.');
+                const end = formatSubtitleTimestamp(s.end, '.');
                 // Convert newlines to <br> for VTT
                 const text = s.text.split('\n').join('<br>');
                 return `${start} --> ${end}\n<v ${s.speaker}>${text}`;

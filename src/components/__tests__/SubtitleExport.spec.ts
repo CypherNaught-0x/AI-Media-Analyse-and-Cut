@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { ref, nextTick } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import SubtitleExport from '../SubtitleExport.vue';
 import * as subtitleValidation from '../../utils/subtitleValidation';
 import type { TranscriptSegment } from '../../types';
@@ -22,6 +23,7 @@ describe('SubtitleExport', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(invoke).mockResolvedValue(undefined);
   });
 
   it('should render export buttons', () => {
@@ -169,6 +171,48 @@ describe('SubtitleExport', () => {
         maxLines: 2,
       })
     );
+
+    processSpy.mockRestore();
+  });
+
+  it('should normalize post-hour timestamps when exporting legacy subtitle data', async () => {
+    const legacySegments: TranscriptSegment[] = [
+      {
+        start: '59:57.920',
+        end: '60:03.520',
+        text: 'Legacy first line',
+        speaker: 'Speaker 1',
+      },
+      {
+        start: '60:58.800',
+        end: '61:06.720',
+        text: 'Legacy second line',
+        speaker: 'Speaker 1',
+      },
+    ];
+    const processSpy = vi.spyOn(subtitleValidation, 'processSubtitlesForDisplay').mockReturnValue({
+      segments: legacySegments,
+      errors: [],
+    });
+
+    const wrapper = mount(SubtitleExport, {
+      props: {
+        segments: legacySegments,
+        inputPath: '/test/video.mp4',
+      },
+    });
+
+    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
+    await srtButton?.trigger('click');
+
+    const writeCall = vi.mocked(invoke).mock.calls.find(([command]) => command === 'write_text_file');
+    expect(writeCall).toBeDefined();
+
+    const payload = writeCall?.[1] as { content: string };
+    expect(payload.content).toContain('00:59:57,920 --> 01:00:03,520');
+    expect(payload.content).toContain('01:00:58,800 --> 01:01:06,720');
+    expect(payload.content).not.toContain('00:60:');
+    expect(payload.content).not.toContain('00:61:');
 
     processSpy.mockRestore();
   });
