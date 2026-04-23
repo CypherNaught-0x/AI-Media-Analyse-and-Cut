@@ -206,7 +206,8 @@ async function exportClips() {
       runId,
       inputPath: props.inputPath,
       segments: clipSegments,
-      outputDir
+      outputDir,
+      fastMode: true
     });
     assertActiveRun(runId);
 
