@@ -5,6 +5,7 @@ import type { LLMSettings } from './useSettings';
 import { parseTime, formatTime } from './useTimeFormat';
 import { generateSubtitleContent } from '../utils/subtitle';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
+import { beginRun, isRunCancelled } from './useRunCancellation';
 
 interface UseClipGenerationOptions {
   settings: Ref<LLMSettings>;
@@ -33,6 +34,7 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
   async function generateClips() {
     if (options.segments.value.length === 0) return;
 
+    const runId = await beginRun();
     options.status.value = 'Generating clips...';
     options.isProcessing.value = true;
     options.progressPercentage.value = null;
@@ -50,6 +52,7 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
       let response: string;
       try {
         response = await invoke<string>('generate_clips', {
+          runId,
           apiKey: options.settings.value.apiKey,
           baseUrl: options.settings.value.baseUrl,
           model: options.settings.value.model,
@@ -91,20 +94,27 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
         console.error(response);
       }
     } catch (error) {
-      options.status.value = `Error generating clips: ${error}`;
+      if (isRunCancelled(error)) {
+        options.status.value = 'Run cancelled.';
+      } else {
+        options.status.value = `Error generating clips: ${error}`;
+      }
     } finally {
       options.isProcessing.value = false;
       options.progressPercentage.value = null;
     }
   }
 
-  async function getClipExportSilenceIntervals(): Promise<SilenceInterval[]> {
+  async function getClipExportSilenceIntervals(runId: number): Promise<SilenceInterval[]> {
     if (options.clipExportSilenceCache.value?.path === options.inputPath.value) {
       return options.clipExportSilenceCache.value.intervals;
     }
 
     options.status.value = 'Detecting clip boundary silence...';
-    const intervals = await invoke<SilenceInterval[]>('detect_silence', { path: options.inputPath.value });
+    const intervals = await invoke<SilenceInterval[]>('detect_silence', {
+      runId,
+      path: options.inputPath.value,
+    });
     options.clipExportSilenceCache.value = { path: options.inputPath.value, intervals };
     return intervals;
   }
@@ -122,6 +132,7 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
 
     if (clipsToExport.length === 0) return;
 
+    const runId = await beginRun();
     options.status.value = 'Exporting clips...';
     options.isProcessing.value = true;
     options.progressPercentage.value = null;
@@ -148,12 +159,13 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
 
       if (trimBoundarySilenceValue) {
         try {
-          const silenceIntervals = await getClipExportSilenceIntervals();
+          const silenceIntervals = await getClipExportSilenceIntervals(runId);
           clipSegments = clipSegments.map((clip) => ({
             ...clip,
             segments: trimClipBoundarySilence(clip.segments, silenceIntervals),
           }));
         } catch (error) {
+          if (isRunCancelled(error)) throw error;
           console.warn('Failed to detect silence for clip export', error);
           options.status.value = 'Silence detection failed, exporting without boundary trimming...';
         }
@@ -161,6 +173,7 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
 
       options.status.value = `Exporting to ${outputDir}...`;
       await invoke('export_clips', {
+        runId,
         inputPath: options.inputPath.value,
         segments: clipSegments,
         outputDir,
@@ -221,7 +234,11 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
       options.lastExportPath.value = outputDir;
       options.status.value = `Clips exported to ${outputDir}`;
     } catch (error) {
-      options.status.value = `Error exporting clips: ${error}`;
+      if (isRunCancelled(error)) {
+        options.status.value = 'Run cancelled.';
+      } else {
+        options.status.value = `Error exporting clips: ${error}`;
+      }
     } finally {
       options.isProcessing.value = false;
       options.progressPercentage.value = null;
