@@ -1,10 +1,6 @@
 import { formatTime, parseTime } from '../composables/useTimeFormat';
+import type { ClipTimeSegment } from './clips';
 import type { SilenceInterval } from '../types';
-
-export interface ClipTimeSegment {
-  start: string;
-  end: string;
-}
 
 const EPSILON = 0.001;
 
