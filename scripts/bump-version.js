@@ -101,6 +101,15 @@ const run = async () => {
     process.exit(lockfileResult.status ?? 1);
   }
 
+  const tauriVersionResult = spawnSync("node", ["scripts/check-tauri-versions.js"], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+
+  if (tauriVersionResult.status !== 0) {
+    process.exit(tauriVersionResult.status ?? 1);
+  }
+
   console.log(`Bumped version to ${nextVersion}`);
   rl.close();
 };
