@@ -31,4 +31,32 @@ version = "2.11.1"
       'tauri (2.11.1) != @tauri-apps/api (2.10.1)',
     ]);
   });
+
+  it('flags Rust Tauri runtime drift that can break tauri internals', () => {
+    const cargoLock = `[[package]]
+name = "tauri"
+version = "2.10.3"
+
+[[package]]
+name = "tauri-runtime"
+version = "2.11.1"
+
+[[package]]
+name = "tauri-runtime-wry"
+version = "2.11.1"
+`;
+    const pnpmLock = `importers:
+
+  .:
+    dependencies:
+      '@tauri-apps/api':
+        specifier: ~2.10.0
+        version: 2.10.1
+`;
+
+    expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([
+      'tauri (2.10.3) != tauri-runtime (2.11.1)',
+      'tauri (2.10.3) != tauri-runtime-wry (2.11.1)',
+    ]);
+  });
 });
