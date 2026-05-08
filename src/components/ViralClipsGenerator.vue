@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { TranscriptSegment, SilenceInterval, ViralClipsWorkspaceState } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
+import { normalizeClips, normalizeClipTimeSegments } from '../utils/clips';
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
@@ -116,18 +117,9 @@ async function generateClips() {
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
-        if (!Array.isArray(parsed)) throw new Error("Response is not an array");
 
-        // Normalize clips to always have 'segments'
         updateState({
-          clips: parsed.map((c: any) => {
-          if (c.segments) return c;
-          // Backward compatibility for AI response without segments
-          return {
-            ...c,
-            segments: [{ start: c.start, end: c.end }]
-          };
-          }),
+          clips: normalizeClips(parsed),
         });
         assertActiveRun(runId);
 
@@ -179,7 +171,7 @@ async function exportClips() {
     // Robust extension replacement
     const outputDir = props.inputPath.replace(/\.[^/\\.]+$/, "") + "_clips";
     let clipSegments = clips.value.map(c => ({
-      segments: c.segments,
+      segments: normalizeClipTimeSegments(c.segments),
       label: c.title,
       reason: c.reason
     }));
