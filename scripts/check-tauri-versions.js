@@ -18,6 +18,8 @@ const packagePairs = [
   ["tauri-plugin-updater", "@tauri-apps/plugin-updater"],
 ];
 
+const rustRuntimePackages = ["tauri-runtime", "tauri-runtime-wry"];
+
 function majorMinor(version) {
   const match = version.match(/^(\d+)\.(\d+)\./);
   if (!match) {
@@ -63,6 +65,7 @@ function readPnpmImporterVersionFromLock(pnpmLock, packageName) {
 
 export function findTauriVersionMismatches(cargoLock, pnpmLock) {
   const mismatches = [];
+  const tauriVersion = readCargoPackageVersionFromLock(cargoLock, "tauri");
 
   for (const [cargoPackage, npmPackage] of packagePairs) {
     const cargoVersion = readCargoPackageVersionFromLock(cargoLock, cargoPackage);
@@ -74,6 +77,15 @@ export function findTauriVersionMismatches(cargoLock, pnpmLock) {
 
     if (majorMinor(cargoVersion) !== majorMinor(npmVersion)) {
       mismatches.push(`${cargoPackage} (${cargoVersion}) != ${npmPackage} (${npmVersion})`);
+    }
+  }
+
+  if (tauriVersion) {
+    for (const runtimePackage of rustRuntimePackages) {
+      const runtimeVersion = readCargoPackageVersionFromLock(cargoLock, runtimePackage);
+      if (runtimeVersion && majorMinor(runtimeVersion) !== majorMinor(tauriVersion)) {
+        mismatches.push(`tauri (${tauriVersion}) != ${runtimePackage} (${runtimeVersion})`);
+      }
     }
   }
 
