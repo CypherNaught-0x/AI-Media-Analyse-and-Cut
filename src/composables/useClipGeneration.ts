@@ -5,6 +5,7 @@ import type { LLMSettings } from './useSettings';
 import { parseTime, formatTime } from './useTimeFormat';
 import { generateSubtitleContent } from '../utils/subtitle';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
+import { normalizeClips } from '../utils/clips';
 import { beginRun, isRunCancelled } from './useRunCancellation';
 
 interface UseClipGenerationOptions {
@@ -74,15 +75,7 @@ export function useClipGeneration(options: UseClipGenerationOptions) {
       if (jsonMatch) {
         try {
           const parsed = JSON.parse(jsonMatch[0]);
-          if (!Array.isArray(parsed)) throw new Error('Response is not an array');
-
-          options.clips.value = parsed.map((c: any) => {
-            if (c.segments) return c;
-            return {
-              ...c,
-              segments: [{ start: c.start, end: c.end }],
-            };
-          });
+          options.clips.value = normalizeClips(parsed);
           options.selectedClipIndices.value = [];
           options.status.value = `Found ${options.clips.value.length} clips.`;
         } catch (error) {
