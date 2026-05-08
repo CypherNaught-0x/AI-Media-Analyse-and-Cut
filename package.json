@@ -5,19 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "node scripts/check-tauri-versions.js && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest",
+    "check:tauri-versions": "node scripts/check-tauri-versions.js",
     "version:bump": "node scripts/bump-version.js",
     "publish:tag": "git tag app-v$npm_package_version && git push --follow-tags"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.10.0",
-    "@tauri-apps/plugin-dialog": "^2.7.0",
-    "@tauri-apps/plugin-fs": "^2.5.0",
-    "@tauri-apps/plugin-opener": "^2",
-    "@tauri-apps/plugin-process": "^2.3.1",
-    "@tauri-apps/plugin-updater": "^2.10.0",
+    "@tauri-apps/api": "~2.10.0",
+    "@tauri-apps/plugin-dialog": "~2.7.0",
+    "@tauri-apps/plugin-fs": "~2.5.0",
+    "@tauri-apps/plugin-opener": "~2.5.0",
+    "@tauri-apps/plugin-process": "~2.3.0",
+    "@tauri-apps/plugin-updater": "~2.10.0",
     "flag-icons": "^7.5.0",
     "vue": "^3.5.13",
     "vue-router": "^4.6.3"
