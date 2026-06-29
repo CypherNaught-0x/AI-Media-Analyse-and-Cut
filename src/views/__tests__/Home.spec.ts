@@ -54,7 +54,7 @@ vi.mock('../../composables/useSettings', () => ({
 vi.mock('../../components/Editor.vue', () => ({
   default: {
     template: '<div class="mock-editor"></div>',
-    props: ['segments'],
+    props: ['segments', 'getPlayhead'],
   },
 }));
 
