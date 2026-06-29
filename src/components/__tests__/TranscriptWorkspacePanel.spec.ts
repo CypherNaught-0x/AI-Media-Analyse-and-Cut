@@ -21,7 +21,7 @@ vi.mock('../Editor.vue', () => ({
         :data-video-available="String(videoAvailable)"
       ></div>
     `,
-    props: ['segments', 'speakerVisibility', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment', 'audioAvailable', 'previewIndex', 'videoAvailable', 'videoPreviewIndex'],
+    props: ['segments', 'speakerVisibility', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment', 'audioAvailable', 'previewIndex', 'videoAvailable', 'videoPreviewIndex', 'getPlayhead'],
   },
 }));
 
