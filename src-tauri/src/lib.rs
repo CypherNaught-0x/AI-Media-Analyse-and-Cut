@@ -672,6 +672,31 @@ fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
 
+/// Grant the webview's asset protocol access to a user-selected media file and
+/// its directory at runtime. The static `assetProtocol.scope` in tauri.conf.json
+/// only covers `$HOME`/`$TEMP`; this extends access to files anywhere the user
+/// picks them (e.g. external volumes) so `convertFileSrc` can load the source
+/// media and the extracted `.ogg` sidecar written alongside it.
+#[tauri::command]
+fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri::Manager;
+
+    let target = PathBuf::from(&path);
+    let scope = app.asset_protocol_scope();
+
+    if let Some(dir) = target.parent() {
+        scope
+            .allow_directory(dir, false)
+            .map_err(|e| format!("Failed to allow asset access for '{}': {}", dir.display(), e))?;
+    } else {
+        scope
+            .allow_file(&target)
+            .map_err(|e| format!("Failed to allow asset access for '{}': {}", target.display(), e))?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), String> {
     use std::io::Write;
@@ -864,6 +889,7 @@ pub fn run() {
             write_text_file,
             read_text_file,
             path_exists,
+            allow_media_access,
             align_transcript,
             detect_silence,
             remove_silence,
