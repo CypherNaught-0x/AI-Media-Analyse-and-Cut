@@ -15,15 +15,25 @@ const props = withDefaults(defineProps<{
   reviewThreshold?: number;
   blacklistMatchesBySegment?: Record<number, TranscriptBlacklistMatch[]>;
   speakerVisibility?: Record<string, boolean>;
+  audioAvailable?: boolean;
+  previewIndex?: number | null;
+  videoAvailable?: boolean;
+  videoPreviewIndex?: number | null;
 }>(), {
   showOnlyReviewSegments: false,
   reviewThreshold: 0.85,
   blacklistMatchesBySegment: () => ({}),
-  speakerVisibility: () => ({})
+  speakerVisibility: () => ({}),
+  audioAvailable: false,
+  previewIndex: null,
+  videoAvailable: false,
+  videoPreviewIndex: null
 });
 
 const emit = defineEmits<{
   (e: 'jump-to', time: number): void;
+  (e: 'preview', payload: { start: string; end: string; index: number }): void;
+  (e: 'preview-video', payload: { start: string; end: string; index: number }): void;
   (e: 'update:segments', segments: TranscriptSegment[]): void;
 }>();
 
@@ -227,16 +237,33 @@ const jumpTo = (timeStr: string) => {
   emit('jump-to', parseTime(timeStr));
 };
 
+const requestPreview = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  emit('preview', { start: segment.start, end: segment.end, index: originalIndex });
+};
+
+const requestVideoPreview = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  emit('preview-video', { start: segment.start, end: segment.end, index: originalIndex });
+};
+
+const requestPlayFrom = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  jumpTo(segment.start);
+};
+
 const handleSegmentClick = (originalIndex: number, event: MouseEvent) => {
-  if (event.shiftKey) {
-    if (selectedIndices.value.has(originalIndex)) {
-      selectedIndices.value.delete(originalIndex);
-    } else {
-      selectedIndices.value.add(originalIndex);
-    }
+  // Plain clicks no longer control playback; use the per-segment buttons.
+  // Shift-click is retained for multi-segment selection.
+  if (!event.shiftKey) return;
+
+  if (selectedIndices.value.has(originalIndex)) {
+    selectedIndices.value.delete(originalIndex);
   } else {
-    // If we are not selecting, just jump
-    jumpTo(props.segments[originalIndex].start);
+    selectedIndices.value.add(originalIndex);
   }
 };
 
@@ -580,9 +607,8 @@ const mergeDown = (originalIndex: number) => {
          ]"
          @click="handleSegmentClick(originalIndex, $event)">
       
-      <!-- Display Mode -->
-      <div v-if="editingIndex !== originalIndex">
-        <div class="flex justify-between text-sm text-gray-400 mb-2 cursor-pointer">
+      <!-- Segment header (always visible, including while editing) -->
+      <div class="flex justify-between text-sm text-gray-400 mb-2">
           <div class="flex items-center gap-2">
             <span class="font-bold text-blue-400">{{ segment.speaker }}</span>
             <span
@@ -605,9 +631,67 @@ const mergeDown = (originalIndex: number) => {
               {{ getBlacklistMatches(originalIndex).length }} blacklist match{{ getBlacklistMatches(originalIndex).length > 1 ? 'es' : '' }}
             </span>
           </div>
-          <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
-        </div>
-        <p class="text-gray-200 cursor-pointer leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
+          <div class="flex items-center gap-2">
+            <button
+              v-if="audioAvailable"
+              type="button"
+              :data-testid="`segment-preview-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
+              :class="previewIndex === originalIndex
+                ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-300'
+                : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:text-white'"
+              :title="previewIndex === originalIndex ? 'Stop audio preview' : 'Play original audio for this segment'"
+              @click.stop="requestPreview(originalIndex)"
+            >
+              <svg v-if="previewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+            <button
+              v-if="videoAvailable"
+              type="button"
+              :data-testid="`segment-play-video-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
+              :class="videoPreviewIndex === originalIndex
+                ? 'border-blue-500/40 bg-blue-500/20 text-blue-300'
+                : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:text-white'"
+              :title="videoPreviewIndex === originalIndex ? 'Stop video preview' : 'Play this video segment'"
+              @click.stop="requestVideoPreview(originalIndex)"
+            >
+              <svg v-if="videoPreviewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="14" rx="2" />
+                <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none" />
+              </svg>
+              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="14" rx="2" />
+                <path d="M10 9.2l5 2.8-5 2.8z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <button
+              v-if="videoAvailable"
+              type="button"
+              :data-testid="`segment-play-from-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+              title="Play video from here"
+              @click.stop="requestPlayFrom(originalIndex)"
+            >
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v9" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8 8l4 4 4-4" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 19h16" />
+              </svg>
+            </button>
+            <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
+          </div>
+      </div>
+
+      <!-- Display Mode body -->
+      <div v-if="editingIndex !== originalIndex">
+        <p class="text-gray-200 leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
 
         <div
           v-if="getBlacklistMatches(originalIndex).length > 0"

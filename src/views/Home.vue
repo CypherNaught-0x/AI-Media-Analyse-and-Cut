@@ -9,6 +9,7 @@ import PodcastGenerator from "../components/PodcastGenerator.vue";
 import ErrorOverlay from "../components/ErrorOverlay.vue";
 import HomeSourcePanel from "../components/HomeSourcePanel.vue";
 import TranscriptWorkspacePanel from "../components/TranscriptWorkspacePanel.vue";
+import WorkspaceTabs from "../components/WorkspaceTabs.vue";
 import type {
     AudioInfo,
     Clip,
@@ -60,6 +61,8 @@ const progressEtaSeconds = ref<number | null>(null);
 const executionHistory = ref<{type: string, inputSize: number, duration: number, timestamp: number}[]>([]);
 const inputPath = ref("");
 const inputPathExists = ref(false);
+const extractedAudioPath = ref("");
+const activeTab = ref("source");
 const segments = ref<TranscriptSegment[]>([]);
 const translations = ref<Record<string, TranscriptSegment[]>>({});
 const currentLanguage = ref("Original");
@@ -123,6 +126,30 @@ const currentEngineLabel = computed(() => {
 });
 const hasTranscript = computed(() => segments.value.length > 0);
 const hasMediaFile = computed(() => inputPath.value.length > 0 && inputPathExists.value);
+
+const workspaceTabs = computed(() => [
+    { id: "source", label: "Source & Analysis", disabled: false },
+    { id: "transcript", label: "Transcript", disabled: !hasTranscript.value },
+    { id: "clips", label: "Viral Clips", disabled: !hasTranscript.value },
+    { id: "podcast", label: "Podcast", disabled: !hasTranscript.value },
+]);
+
+async function refreshExtractedAudioPath() {
+    const input = inputPath.value;
+    if (!input) {
+        extractedAudioPath.value = "";
+        return;
+    }
+    // prepare_audio_for_ai writes the extracted stream next to the source with an .ogg extension.
+    const candidate = input.replace(/\.[^/.]+$/, "") + ".ogg";
+    try {
+        const exists = await invoke<boolean>("path_exists", { path: candidate });
+        extractedAudioPath.value = exists ? candidate : "";
+    } catch (error) {
+        console.error("Failed to check extracted audio path:", error);
+        extractedAudioPath.value = "";
+    }
+}
 const settingsChanged = computed(() => {
     return settings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
            settings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
@@ -223,7 +250,22 @@ async function updateInputPathExists(path: string) {
         inputPathExists.value = false;
     }
 
+    if (inputPathExists.value) {
+        await grantMediaAccess(path);
+    }
+
     return inputPathExists.value;
+}
+
+async function grantMediaAccess(path: string) {
+    if (!path) return;
+    // Allow the webview's asset protocol to load this file (and its sibling
+    // .ogg) via convertFileSrc, even when it lives outside the static scope.
+    try {
+        await invoke('allow_media_access', { path });
+    } catch (error) {
+        console.error('Failed to grant media asset access:', error);
+    }
 }
 
 function resetClipWorkspaceState() {
@@ -373,6 +415,20 @@ watch(inputPath, async (newPath, oldPath) => {
 watch(segments, () => {
     syncSpeakerOrder();
 }, { deep: true });
+
+watch(inputPath, () => {
+    void refreshExtractedAudioPath();
+}, { immediate: true });
+
+watch(hasTranscript, (ready, wasReady) => {
+    // Move into the transcript flow as soon as it becomes available, and fall
+    // back to the source tab when the transcript (and its dependent tabs) clear.
+    if (ready && !wasReady) {
+        activeTab.value = "transcript";
+    } else if (!ready && activeTab.value !== "source") {
+        activeTab.value = "source";
+    }
+});
 
 watch(
     [
@@ -740,6 +796,7 @@ async function processFile() {
     progressEtaSeconds.value = null;
     status.value = "Preparing audio...";
     segments.value = [];
+    await grantMediaAccess(inputPath.value);
 
     try {
         const failStage = (stage: string, error: unknown) => {
@@ -761,6 +818,7 @@ async function processFile() {
             failStage("Audio preparation", error);
             return;
         }
+        extractedAudioPath.value = audioInfo.path;
         status.value = `Audio prepared: ${audioInfo.path} (${(audioInfo.size / 1024 / 1024).toFixed(2)} MB)`;
 
         let processedAudio: ProcessedAudio;
@@ -1061,6 +1119,13 @@ function updateProcessing(processing: boolean) {
 <template>
     <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30">
         <div class="max-w-5xl mx-auto">
+            <WorkspaceTabs
+                :tabs="workspaceTabs"
+                :activeTab="activeTab"
+                @update:activeTab="activeTab = $event"
+            />
+
+            <div v-show="activeTab === 'source'">
             <HomeSourcePanel
                 :currentEngineLabel="currentEngineLabel"
                 :currentModelDisplay="currentModelDisplay"
@@ -1089,13 +1154,16 @@ function updateProcessing(processing: boolean) {
                 @open-settings="goToSettings"
                 @process="processFile"
             />
+            </div>
 
             <!-- Editor Section -->
+            <div v-show="activeTab === 'transcript'">
             <transition name="fade">
                 <TranscriptWorkspacePanel
-                    v-if="segments.length > 0"
+                    v-if="hasTranscript"
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
+                    :extractedAudioPath="extractedAudioPath"
                     :displaySegments="displaySegments"
                     :originalSegments="segments"
                     :translations="translations"
@@ -1115,11 +1183,13 @@ function updateProcessing(processing: boolean) {
                     @update:segments="displaySegments = $event"
                 />
             </transition>
+            </div>
 
             <!-- Viral Clips Generator -->
+            <div v-show="activeTab === 'clips'">
             <transition name="fade">
                 <ViralClipsGenerator
-                    v-if="segments.length > 0"
+                    v-if="hasTranscript"
                     :segments="segments"
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
@@ -1131,11 +1201,13 @@ function updateProcessing(processing: boolean) {
                     @update:state="viralClipsState = $event"
                 />
             </transition>
+            </div>
 
             <!-- Podcast Generator -->
+            <div v-show="activeTab === 'podcast'">
             <transition name="fade">
                 <PodcastGenerator
-                    v-if="segments.length > 0"
+                    v-if="hasTranscript"
                     :segments="segments"
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
@@ -1147,6 +1219,7 @@ function updateProcessing(processing: boolean) {
                     @update:state="podcastWorkspaceState = $event"
                 />
             </transition>
+            </div>
 
         </div>
     </div>
