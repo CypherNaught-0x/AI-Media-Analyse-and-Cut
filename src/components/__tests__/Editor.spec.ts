@@ -432,6 +432,80 @@ describe('Editor.vue', () => {
     expect(wrapper.find('[data-testid="segment-preview-0"]').exists()).toBe(false);
   });
 
+  it('splits a segment at the chosen point, partitioning word-timed text', async () => {
+    const wordSegments: TranscriptSegment[] = [
+      {
+        start: '00:00',
+        end: '00:10',
+        speaker: 'Speaker 1',
+        text: 'hello world',
+        words: [
+          { start: '00:00', end: '00:01', text: 'hello' },
+          { start: '00:05', end: '00:06', text: 'world' },
+        ],
+      },
+    ];
+
+    const wrapper = mount(Editor, { props: { segments: wordSegments } });
+
+    await wrapper.get('[data-testid="segment-split-0"]').trigger('click');
+    await wrapper.get('[data-testid="split-time-input"]').setValue(3);
+    await wrapper.get('[data-testid="confirm-split"]').trigger('click');
+
+    const updated = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    expect(updated).toHaveLength(2);
+
+    expect(updated[0].start).toBe('00:00');
+    expect(updated[0].end).toBe('00:03.000');
+    expect(updated[0].text).toBe('hello');
+    expect(updated[0].words).toEqual([{ start: '00:00', end: '00:01', text: 'hello' }]);
+
+    expect(updated[1].start).toBe('00:03.000');
+    expect(updated[1].end).toBe('00:10');
+    expect(updated[1].text).toBe('world');
+    expect(updated[1].speaker).toBe('Speaker 1');
+  });
+
+  it('assigns a new speaker to the second half when splitting', async () => {
+    const wrapper = mount(Editor, { props: { segments: mockSegments } });
+
+    await wrapper.get('[data-testid="segment-split-0"]').trigger('click');
+    await wrapper.get('[data-testid="split-time-input"]').setValue(5);
+    await wrapper.get('[data-testid="split-second-speaker"]').setValue('Speaker 2');
+    await wrapper.get('[data-testid="confirm-split"]').trigger('click');
+
+    const updated = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    expect(updated).toHaveLength(3);
+    expect(updated[0].speaker).toBe('Speaker 1');
+    expect(updated[1].start).toBe('00:05.000');
+    expect(updated[1].speaker).toBe('Speaker 2');
+    // The untouched segment is preserved after the split pair.
+    expect(updated[2].text).toBe('How are you?');
+  });
+
+  it('disables the split confirmation when the point is at a boundary', async () => {
+    const wrapper = mount(Editor, { props: { segments: mockSegments } });
+
+    await wrapper.get('[data-testid="segment-split-0"]').trigger('click');
+    await wrapper.get('[data-testid="split-time-input"]').setValue(0); // equal to start
+
+    expect(wrapper.get('[data-testid="confirm-split"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('captures the playback position as the split point', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        getPlayhead: () => 4.2,
+      },
+    });
+
+    await wrapper.get('[data-testid="segment-split-0"]').trigger('click');
+    await wrapper.get('[data-testid="split-use-playhead"]').trigger('click');
+
+    expect(wrapper.get('[data-testid="split-time-display"]').text()).toBe('00:04.200');
+  });
+
   it('hides segments for speakers marked invisible', () => {
     const wrapper = mount(Editor, {
       props: {
