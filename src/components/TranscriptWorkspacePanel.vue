@@ -15,6 +15,7 @@ import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
 const props = defineProps<{
   inputPath: string;
   hasMediaFile: boolean;
+  extractedAudioPath?: string;
   displaySegments: TranscriptSegment[];
   originalSegments: TranscriptSegment[];
   translations: Record<string, TranscriptSegment[]>;
@@ -39,6 +40,12 @@ const emit = defineEmits<{
 
 const showLanguageDropdown = ref(false);
 const videoRef = ref<HTMLVideoElement | null>(null);
+const audioRef = ref<HTMLAudioElement | null>(null);
+const previewIndex = ref<number | null>(null);
+let previewEndTime: number | null = null;
+const videoPreviewIndex = ref<number | null>(null);
+let videoPreviewEndTime: number | null = null;
+let lastPlayheadSource: 'audio' | 'video' | null = null;
 const showOnlyReviewSegments = ref(false);
 const reviewThresholdPercent = ref(85);
 const speakerVisibility = ref<Record<string, boolean>>({});
@@ -149,14 +156,123 @@ function selectLanguage(langName: string) {
   }
 }
 
+const hasExtractedAudio = computed(() => !!props.extractedAudioPath);
+
+function markAudioActive() {
+  lastPlayheadSource = 'audio';
+}
+
+function markVideoActive() {
+  lastPlayheadSource = 'video';
+}
+
+// Report the current playback position so a segment split can snap to the
+// exact moment the user is hearing. Prefers the player that is actually
+// playing, then the one most recently used.
+function getPlayhead(): number | null {
+  const audio = audioRef.value;
+  const video = videoRef.value;
+  if (audio && !audio.paused) return audio.currentTime;
+  if (video && !video.paused) return video.currentTime;
+  if (lastPlayheadSource === 'audio' && audio) return audio.currentTime;
+  if (lastPlayheadSource === 'video' && video) return video.currentTime;
+  if (audio) return audio.currentTime;
+  if (video) return video.currentTime;
+  return null;
+}
+
+function clearPreviewState() {
+  previewIndex.value = null;
+  previewEndTime = null;
+}
+
+function previewSegment(payload: { start: string; end: string; index: number }) {
+  const audio = audioRef.value;
+  if (!audio) return;
+
+  // Toggle off when the same segment is already previewing.
+  if (previewIndex.value === payload.index && !audio.paused) {
+    audio.pause();
+    return;
+  }
+
+  // Avoid overlapping audio from the video player.
+  if (videoRef.value && !videoRef.value.paused) {
+    videoRef.value.pause();
+  }
+
+  const start = parseTime(payload.start);
+  const end = parseTime(payload.end);
+  previewEndTime = Number.isFinite(end) && end > start ? end : null;
+  previewIndex.value = payload.index;
+  audio.currentTime = start;
+  void audio.play().catch((error) => {
+    console.error('Failed to preview segment audio:', error);
+    clearPreviewState();
+  });
+}
+
+function onAudioTimeUpdate() {
+  if (previewEndTime === null || !audioRef.value) return;
+  if (audioRef.value.currentTime >= previewEndTime) {
+    audioRef.value.pause();
+  }
+}
+
+function clearVideoPreviewState() {
+  videoPreviewIndex.value = null;
+  videoPreviewEndTime = null;
+}
+
+function previewVideoSegment(payload: { start: string; end: string; index: number }) {
+  const video = videoRef.value;
+  if (!video) return;
+
+  // Toggle off when the same segment is already previewing.
+  if (videoPreviewIndex.value === payload.index && !video.paused) {
+    video.pause();
+    return;
+  }
+
+  // Avoid overlapping audio from the extracted-audio preview.
+  if (audioRef.value && !audioRef.value.paused) {
+    audioRef.value.pause();
+  }
+
+  const start = parseTime(payload.start);
+  const end = parseTime(payload.end);
+  videoPreviewEndTime = Number.isFinite(end) && end > start ? end : null;
+  videoPreviewIndex.value = payload.index;
+  video.currentTime = start;
+  void video.play().catch((error) => {
+    console.error('Failed to preview segment video:', error);
+    clearVideoPreviewState();
+  });
+}
+
+// "Start from here": seek and play onward, leaving the silence-skip logic active.
 function jumpTo(time: number) {
   if (!videoRef.value) return;
+  clearVideoPreviewState();
+  if (audioRef.value && !audioRef.value.paused) {
+    audioRef.value.pause();
+  }
   videoRef.value.currentTime = time;
   void videoRef.value.play();
 }
 
 function onTimeUpdate() {
-  if (!videoRef.value || props.originalSegments.length === 0) return;
+  if (!videoRef.value) return;
+
+  // Bounded segment preview: stop once the segment end is reached.
+  if (videoPreviewEndTime !== null) {
+    if (videoRef.value.currentTime >= videoPreviewEndTime) {
+      videoRef.value.pause();
+    }
+    return;
+  }
+
+  if (props.originalSegments.length === 0) return;
 
   const currentTime = videoRef.value.currentTime;
   let inside = false;
@@ -196,10 +312,37 @@ function onTimeUpdate() {
         class="w-full max-h-[500px] mx-auto"
         controls
         @timeupdate="onTimeUpdate"
+        @play="markVideoActive"
+        @pause="clearVideoPreviewState"
+        @ended="clearVideoPreviewState"
       ></video>
     </div>
     <div v-else class="mb-8 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200">
       Media preview unavailable because the saved file path no longer exists. Select the source file again to re-enable playback and export actions.
+    </div>
+
+    <div v-if="hasExtractedAudio" class="mb-8 rounded-xl border border-white/10 bg-black/20 p-4">
+      <div class="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+        <svg class="h-4 w-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 12h2l2-6 4 16 3-10 2 4h3" />
+        </svg>
+        <span>Extracted Audio</span>
+      </div>
+      <audio
+        ref="audioRef"
+        :src="convertFileSrc(extractedAudioPath!)"
+        data-testid="extracted-audio"
+        class="w-full"
+        controls
+        preload="metadata"
+        @timeupdate="onAudioTimeUpdate"
+        @play="markAudioActive"
+        @pause="clearPreviewState"
+        @ended="clearPreviewState"
+      ></audio>
+      <p class="mt-2 text-xs text-gray-500">
+        Use the play buttons next to each segment to preview the original audio at that timestamp.
+      </p>
     </div>
 
     <div class="flex justify-between items-center mb-6">
@@ -408,7 +551,14 @@ function onTimeUpdate() {
       :showOnlyReviewSegments="showOnlyReviewSegments"
       :reviewThreshold="reviewThresholdPercent / 100"
       :blacklistMatchesBySegment="blacklistWarnings.matchesBySegment"
+      :audioAvailable="hasExtractedAudio"
+      :previewIndex="previewIndex"
+      :videoAvailable="hasMediaFile"
+      :videoPreviewIndex="videoPreviewIndex"
+      :getPlayhead="getPlayhead"
       @jump-to="jumpTo"
+      @preview="previewSegment"
+      @preview-video="previewVideoSegment"
       @update:segments="$emit('update:segments', $event)"
     />
   </div>

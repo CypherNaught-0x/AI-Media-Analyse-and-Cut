@@ -54,7 +54,7 @@ vi.mock('../../composables/useSettings', () => ({
 vi.mock('../../components/Editor.vue', () => ({
   default: {
     template: '<div class="mock-editor"></div>',
-    props: ['segments'],
+    props: ['segments', 'getPlayhead'],
   },
 }));
 
@@ -193,6 +193,36 @@ describe('Home.vue', () => {
     await flushPromises();
     
     expect(invoke).toHaveBeenCalledWith('init_ffmpeg');
+  });
+
+  it('disables transcript-dependent tabs until a transcript exists', async () => {
+    const wrapper = mount(Home, {
+      global: {
+        plugins: [router],
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="workspace-tab-source"]').attributes('aria-selected')).toBe('true');
+    expect(wrapper.get('[data-testid="workspace-tab-transcript"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-testid="workspace-tab-clips"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-testid="workspace-tab-podcast"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('activates the transcript tab once a transcript becomes available', async () => {
+    localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession()));
+
+    const wrapper = mount(Home, {
+      global: {
+        plugins: [router],
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="workspace-tab-transcript"]').attributes('disabled')).toBeUndefined();
+    expect(wrapper.get('[data-testid="workspace-tab-transcript"]').attributes('aria-selected')).toBe('true');
   });
 
   it('restores an autosaved session on mount', async () => {

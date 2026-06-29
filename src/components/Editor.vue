@@ -8,6 +8,14 @@ import type {
   TranscriptWord
 } from '../types';
 import type { TranscriptBlacklistMatch } from '../utils/transcriptBlacklist';
+import { parseTime, formatTime } from '../composables/useTimeFormat';
+
+interface SplitDraft {
+  time: number;
+  firstText: string;
+  secondText: string;
+  secondSpeaker: string;
+}
 
 const props = withDefaults(defineProps<{
   segments: TranscriptSegment[];
@@ -15,20 +23,33 @@ const props = withDefaults(defineProps<{
   reviewThreshold?: number;
   blacklistMatchesBySegment?: Record<number, TranscriptBlacklistMatch[]>;
   speakerVisibility?: Record<string, boolean>;
+  audioAvailable?: boolean;
+  previewIndex?: number | null;
+  videoAvailable?: boolean;
+  videoPreviewIndex?: number | null;
+  getPlayhead?: () => number | null;
 }>(), {
   showOnlyReviewSegments: false,
   reviewThreshold: 0.85,
   blacklistMatchesBySegment: () => ({}),
-  speakerVisibility: () => ({})
+  speakerVisibility: () => ({}),
+  audioAvailable: false,
+  previewIndex: null,
+  videoAvailable: false,
+  videoPreviewIndex: null
 });
 
 const emit = defineEmits<{
   (e: 'jump-to', time: number): void;
+  (e: 'preview', payload: { start: string; end: string; index: number }): void;
+  (e: 'preview-video', payload: { start: string; end: string; index: number }): void;
   (e: 'update:segments', segments: TranscriptSegment[]): void;
 }>();
 
 const editingIndex = ref<number | null>(null);
 const tempSegment = ref<TranscriptSegment | null>(null);
+const splittingIndex = ref<number | null>(null);
+const splitDraft = ref<SplitDraft | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
 const alternativeSources: TranscriptAlternativeSource[] = ['google', 'parakeet'];
 const searchQuery = ref('');
@@ -84,6 +105,10 @@ watch(visibleSegments, (segments) => {
 
   if (editingIndex.value !== null && !visibleIndices.has(editingIndex.value)) {
     cancelEdit();
+  }
+
+  if (splittingIndex.value !== null && !visibleIndices.has(splittingIndex.value)) {
+    cancelSplit();
   }
 });
 
@@ -218,31 +243,151 @@ watch(searchMatches, (matches) => {
   }
 });
 
-const parseTime = (timeStr: string): number => {
-  const [mm, ss] = timeStr.split(':').map(Number);
-  return mm * 60 + ss;
-};
-
 const jumpTo = (timeStr: string) => {
   emit('jump-to', parseTime(timeStr));
 };
 
+const requestPreview = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  emit('preview', { start: segment.start, end: segment.end, index: originalIndex });
+};
+
+const requestVideoPreview = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  emit('preview-video', { start: segment.start, end: segment.end, index: originalIndex });
+};
+
+const requestPlayFrom = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  jumpTo(segment.start);
+};
+
 const handleSegmentClick = (originalIndex: number, event: MouseEvent) => {
-  if (event.shiftKey) {
-    if (selectedIndices.value.has(originalIndex)) {
-      selectedIndices.value.delete(originalIndex);
-    } else {
-      selectedIndices.value.add(originalIndex);
-    }
+  // Plain clicks no longer control playback; use the per-segment buttons.
+  // Shift-click is retained for multi-segment selection.
+  if (!event.shiftKey) return;
+
+  if (selectedIndices.value.has(originalIndex)) {
+    selectedIndices.value.delete(originalIndex);
   } else {
-    // If we are not selecting, just jump
-    jumpTo(props.segments[originalIndex].start);
+    selectedIndices.value.add(originalIndex);
   }
 };
 
 const startEditing = (originalIndex: number) => {
+  cancelSplit();
   editingIndex.value = originalIndex;
   tempSegment.value = { ...props.segments[originalIndex] };
+};
+
+// Partition a segment's word-level timing at a split point so the text follows
+// the exact audio switch. Returns null when the segment has no word timing.
+const deriveSplitText = (segment: TranscriptSegment, splitSec: number): { first: string; second: string } | null => {
+  if (!segment.words?.length) return null;
+  const join = (words: TranscriptWord[]) => words.map((word) => word.text).join(' ').replace(/\s+/g, ' ').trim();
+  return {
+    first: join(segment.words.filter((word) => parseTime(word.start) < splitSec)),
+    second: join(segment.words.filter((word) => parseTime(word.start) >= splitSec))
+  };
+};
+
+const splitBounds = computed(() => {
+  if (splittingIndex.value === null) return { start: 0, end: 0 };
+  const segment = props.segments[splittingIndex.value];
+  if (!segment) return { start: 0, end: 0 };
+  return { start: parseTime(segment.start), end: parseTime(segment.end) };
+});
+
+const canConfirmSplit = computed(() => {
+  if (!splitDraft.value) return false;
+  const { start, end } = splitBounds.value;
+  return splitDraft.value.time > start && splitDraft.value.time < end;
+});
+
+const startSplitting = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+  cancelEdit();
+  const start = parseTime(segment.start);
+  const end = parseTime(segment.end);
+  const midpoint = (start + end) / 2;
+  const derived = deriveSplitText(segment, midpoint);
+  splittingIndex.value = originalIndex;
+  splitDraft.value = {
+    time: midpoint,
+    firstText: derived ? derived.first : segment.text,
+    secondText: derived ? derived.second : '',
+    secondSpeaker: segment.speaker
+  };
+};
+
+const cancelSplit = () => {
+  splittingIndex.value = null;
+  splitDraft.value = null;
+};
+
+// Re-derive the text boundary as the split point moves (only when word timing exists).
+const onSplitTimeChange = () => {
+  if (splittingIndex.value === null || !splitDraft.value) return;
+  const { start, end } = splitBounds.value;
+  splitDraft.value.time = Math.min(Math.max(splitDraft.value.time, start), end);
+  const derived = deriveSplitText(props.segments[splittingIndex.value], splitDraft.value.time);
+  if (derived) {
+    splitDraft.value.firstText = derived.first;
+    splitDraft.value.secondText = derived.second;
+  }
+};
+
+const useCurrentPlayhead = () => {
+  if (!props.getPlayhead || !splitDraft.value) return;
+  const playhead = props.getPlayhead();
+  if (playhead === null || !Number.isFinite(playhead)) return;
+  const { start, end } = splitBounds.value;
+  splitDraft.value.time = Math.min(Math.max(playhead, start), end);
+  onSplitTimeChange();
+};
+
+const confirmSplit = () => {
+  if (splittingIndex.value === null || !splitDraft.value || !canConfirmSplit.value) return;
+
+  const originalIndex = splittingIndex.value;
+  const segment = props.segments[originalIndex];
+  const splitSec = splitDraft.value.time;
+  const splitStamp = formatTime(splitSec);
+  const secondSpeaker = splitDraft.value.secondSpeaker.trim() || segment.speaker;
+
+  let firstWords: TranscriptWord[] | undefined;
+  let secondWords: TranscriptWord[] | undefined;
+  if (segment.words?.length) {
+    const first = segment.words.filter((word) => parseTime(word.start) < splitSec);
+    const second = segment.words.filter((word) => parseTime(word.start) >= splitSec);
+    firstWords = first.length ? first : undefined;
+    secondWords = second.length
+      ? (secondSpeaker !== segment.speaker ? second.map((word) => ({ ...word, speaker: secondSpeaker })) : second)
+      : undefined;
+  }
+
+  const firstSegment = stripMergeMetadata({
+    ...segment,
+    end: splitStamp,
+    text: splitDraft.value.firstText.trim(),
+    words: firstWords
+  });
+  const secondSegment = stripMergeMetadata({
+    ...segment,
+    start: splitStamp,
+    speaker: secondSpeaker,
+    text: splitDraft.value.secondText.trim(),
+    words: secondWords
+  });
+
+  const newSegments = [...props.segments];
+  newSegments.splice(originalIndex, 1, firstSegment, secondSegment);
+  emit('update:segments', newSegments);
+  cancelSplit();
 };
 
 const stripMergeMetadata = (segment: TranscriptSegment): TranscriptSegment => ({
@@ -580,9 +725,8 @@ const mergeDown = (originalIndex: number) => {
          ]"
          @click="handleSegmentClick(originalIndex, $event)">
       
-      <!-- Display Mode -->
-      <div v-if="editingIndex !== originalIndex">
-        <div class="flex justify-between text-sm text-gray-400 mb-2 cursor-pointer">
+      <!-- Segment header (always visible, including while editing) -->
+      <div class="flex justify-between text-sm text-gray-400 mb-2">
           <div class="flex items-center gap-2">
             <span class="font-bold text-blue-400">{{ segment.speaker }}</span>
             <span
@@ -605,9 +749,67 @@ const mergeDown = (originalIndex: number) => {
               {{ getBlacklistMatches(originalIndex).length }} blacklist match{{ getBlacklistMatches(originalIndex).length > 1 ? 'es' : '' }}
             </span>
           </div>
-          <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
-        </div>
-        <p class="text-gray-200 cursor-pointer leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
+          <div class="flex items-center gap-2">
+            <button
+              v-if="audioAvailable"
+              type="button"
+              :data-testid="`segment-preview-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
+              :class="previewIndex === originalIndex
+                ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-300'
+                : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:text-white'"
+              :title="previewIndex === originalIndex ? 'Stop audio preview' : 'Play original audio for this segment'"
+              @click.stop="requestPreview(originalIndex)"
+            >
+              <svg v-if="previewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+            <button
+              v-if="videoAvailable"
+              type="button"
+              :data-testid="`segment-play-video-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
+              :class="videoPreviewIndex === originalIndex
+                ? 'border-blue-500/40 bg-blue-500/20 text-blue-300'
+                : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:text-white'"
+              :title="videoPreviewIndex === originalIndex ? 'Stop video preview' : 'Play this video segment'"
+              @click.stop="requestVideoPreview(originalIndex)"
+            >
+              <svg v-if="videoPreviewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="14" rx="2" />
+                <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none" />
+              </svg>
+              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="14" rx="2" />
+                <path d="M10 9.2l5 2.8-5 2.8z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <button
+              v-if="videoAvailable"
+              type="button"
+              :data-testid="`segment-play-from-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+              title="Play video from here"
+              @click.stop="requestPlayFrom(originalIndex)"
+            >
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v9" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8 8l4 4 4-4" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 19h16" />
+              </svg>
+            </button>
+            <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
+          </div>
+      </div>
+
+      <!-- Display Mode body -->
+      <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
+        <p class="text-gray-200 leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
 
         <div
           v-if="getBlacklistMatches(originalIndex).length > 0"
@@ -653,13 +855,14 @@ const mergeDown = (originalIndex: number) => {
         <!-- Action Toolbar -->
         <div class="absolute top-2 right-2 hidden group-hover:flex gap-2 bg-black/60 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl">
           <button @click.stop="startEditing(originalIndex)" class="px-2 py-1 bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 transition-colors">Edit</button>
+          <button :data-testid="`segment-split-${originalIndex}`" @click.stop="startSplitting(originalIndex)" class="px-2 py-1 bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded text-xs hover:bg-teal-500/30 transition-colors" title="Split this segment at a chosen point">Split</button>
           <button v-if="originalIndex < segments.length - 1" @click.stop="mergeDown(originalIndex)" class="px-2 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors" title="Merge with next">Merge ↓</button>
           <button @click.stop="deleteSegment(originalIndex)" class="px-2 py-1 bg-red-500/20 text-red-300 border border-red-500/30 rounded text-xs hover:bg-red-500/30 transition-colors">Del</button>
         </div>
       </div>
 
       <!-- Edit Mode -->
-      <div v-else-if="tempSegment" class="space-y-4 bg-black/40 p-4 rounded-lg border border-white/10">
+      <div v-else-if="editingIndex === originalIndex && tempSegment" class="space-y-4 bg-black/40 p-4 rounded-lg border border-white/10">
         <div class="flex gap-4">
             <div class="flex flex-col gap-1.5">
                 <label class="text-xs font-medium text-gray-400">Start</label>
@@ -681,6 +884,90 @@ const mergeDown = (originalIndex: number) => {
         <div class="flex justify-end gap-3 pt-2">
             <button @click="cancelEdit" class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-300 hover:bg-white/10 transition-colors">Cancel</button>
             <button @click="saveEdit" class="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/30 rounded-lg text-sm text-emerald-300 hover:bg-emerald-500/30 transition-colors font-medium">Save Changes</button>
+        </div>
+      </div>
+
+      <!-- Split Mode -->
+      <div v-else-if="splittingIndex === originalIndex && splitDraft" class="space-y-4 bg-black/40 p-4 rounded-lg border border-teal-500/20">
+        <div class="flex items-center justify-between gap-3">
+          <h4 class="text-xs font-semibold uppercase tracking-wide text-teal-200">Split segment</h4>
+          <span class="font-mono text-xs text-teal-300" data-testid="split-time-display">{{ formatTime(splitDraft.time) }}</span>
+        </div>
+        <p class="text-xs text-gray-500">
+          Choose the exact switch point. Preview the segment with the play buttons above, then capture the playhead or drag the slider.
+        </p>
+
+        <div class="flex items-center gap-3">
+          <span class="font-mono text-[11px] text-gray-500">{{ segment.start }}</span>
+          <input
+            v-model.number="splitDraft.time"
+            type="range"
+            :min="splitBounds.start"
+            :max="splitBounds.end"
+            step="0.05"
+            class="flex-1 accent-teal-400"
+            data-testid="split-time-slider"
+            @input="onSplitTimeChange"
+          >
+          <span class="font-mono text-[11px] text-gray-500">{{ segment.end }}</span>
+        </div>
+
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-medium text-gray-400">Switch point (seconds)</label>
+            <input
+              v-model.number="splitDraft.time"
+              type="number"
+              :min="splitBounds.start"
+              :max="splitBounds.end"
+              step="0.05"
+              class="w-32 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
+              data-testid="split-time-input"
+              @input="onSplitTimeChange"
+            >
+          </div>
+          <button
+            v-if="getPlayhead"
+            type="button"
+            class="px-3 py-1.5 bg-teal-500/15 border border-teal-500/30 rounded-lg text-xs text-teal-200 hover:bg-teal-500/25 transition-colors"
+            data-testid="split-use-playhead"
+            @click.stop="useCurrentPlayhead"
+          >
+            Use current playback position
+          </button>
+        </div>
+
+        <div class="grid gap-3 md:grid-cols-2">
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-medium text-gray-400">First part</label>
+            <textarea v-model="splitDraft.firstText" rows="3" class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white resize-none focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"></textarea>
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-medium text-gray-400">Second part</label>
+            <textarea v-model="splitDraft.secondText" rows="3" class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white resize-none focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"></textarea>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-medium text-gray-400">Speaker for second part</label>
+          <input
+            v-model="splitDraft.secondSpeaker"
+            placeholder="Speaker name"
+            class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
+            data-testid="split-second-speaker"
+          >
+        </div>
+
+        <div class="flex justify-end gap-3 pt-2">
+          <button @click="cancelSplit" class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-300 hover:bg-white/10 transition-colors">Cancel</button>
+          <button
+            :disabled="!canConfirmSplit"
+            data-testid="confirm-split"
+            class="px-4 py-1.5 bg-teal-500/20 border border-teal-500/30 rounded-lg text-sm text-teal-300 hover:bg-teal-500/30 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            @click="confirmSplit"
+          >
+            Add Split
+          </button>
         </div>
       </div>
 

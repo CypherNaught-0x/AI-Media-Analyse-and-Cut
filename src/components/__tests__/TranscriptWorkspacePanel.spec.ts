@@ -17,9 +17,11 @@ vi.mock('../Editor.vue', () => ({
         :data-review-threshold="String(reviewThreshold)"
         :data-blacklist-match-count="String(Object.keys(blacklistMatchesBySegment ?? {}).length)"
         :data-speaker-visibility="JSON.stringify(speakerVisibility ?? {})"
+        :data-audio-available="String(audioAvailable)"
+        :data-video-available="String(videoAvailable)"
       ></div>
     `,
-    props: ['segments', 'speakerVisibility', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment'],
+    props: ['segments', 'speakerVisibility', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment', 'audioAvailable', 'previewIndex', 'videoAvailable', 'videoPreviewIndex', 'getPlayhead'],
   },
 }));
 
@@ -172,6 +174,75 @@ describe('TranscriptWorkspacePanel', () => {
 
     expect(editor.attributes('data-speaker-visibility')).toBe(JSON.stringify({ Host: true, Guest: true }));
     expect(wrapper.text()).toContain('2 Segments');
+  });
+
+  it('loads the extracted audio stream and enables segment previews when available', () => {
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        extractedAudioPath: '/tmp/audio.ogg',
+        displaySegments: segments,
+        originalSegments: segments,
+        translations: {},
+        currentLanguage: 'Original',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: true,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host'],
+        isProcessing: false,
+      },
+    });
+
+    const audio = wrapper.get('[data-testid="extracted-audio"]');
+    expect(audio.attributes('src')).toBe('/tmp/audio.ogg');
+    expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('true');
+    // Video playback buttons are gated on the source media being present.
+    expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('true');
+  });
+
+  it('disables segment video playback when the source media file is missing', () => {
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: false,
+        displaySegments: segments,
+        originalSegments: segments,
+        translations: {},
+        currentLanguage: 'Original',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: true,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host'],
+        isProcessing: false,
+      },
+    });
+
+    expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('false');
+  });
+
+  it('hides the extracted audio player and disables previews without an extracted stream', () => {
+    const wrapper = mount(TranscriptWorkspacePanel, {
+      props: {
+        inputPath: '/tmp/audio.mp3',
+        hasMediaFile: true,
+        displaySegments: segments,
+        originalSegments: segments,
+        translations: {},
+        currentLanguage: 'Original',
+        targetLanguage: '',
+        isTranslating: false,
+        isLlmOnlyBackend: true,
+        useAdvancedAlignment: false,
+        uniqueSpeakers: ['Host'],
+        isProcessing: false,
+      },
+    });
+
+    expect(wrapper.find('[data-testid="extracted-audio"]').exists()).toBe(false);
+    expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('false');
   });
 
   it('shift-click solos a speaker in the transcript', async () => {
