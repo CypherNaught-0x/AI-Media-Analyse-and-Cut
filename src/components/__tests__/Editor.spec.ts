@@ -28,16 +28,61 @@ describe('Editor.vue', () => {
     expect(wrapper.text()).toContain('How are you?');
   });
 
-  it('emits jump-to event when clicking on timestamp', async () => {
+  it('does not control playback when a segment body is clicked', async () => {
     const wrapper = mount(Editor, {
       props: {
         segments: mockSegments,
+        videoAvailable: true,
+        audioAvailable: true,
       },
     });
 
-    await wrapper.find('.segment .cursor-pointer').trigger('click');
+    await wrapper.find('.segment').trigger('click');
+
+    expect(wrapper.emitted('jump-to')).toBeFalsy();
+    expect(wrapper.emitted('preview')).toBeFalsy();
+    expect(wrapper.emitted('preview-video')).toBeFalsy();
+  });
+
+  it('emits jump-to from the "start from here" button using the segment start', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        videoAvailable: true,
+      },
+    });
+
+    await wrapper.get('[data-testid="segment-play-from-1"]').trigger('click');
+
     expect(wrapper.emitted('jump-to')).toBeTruthy();
-    expect(wrapper.emitted('jump-to')![0]).toEqual([0]); // 00:00 is 0 seconds
+    expect(wrapper.emitted('jump-to')![0]).toEqual([10]); // 00:10 is 10 seconds
+  });
+
+  it('emits a video preview request with the segment bounds', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        videoAvailable: true,
+      },
+    });
+
+    await wrapper.get('[data-testid="segment-play-video-0"]').trigger('click');
+
+    expect(wrapper.emitted('preview-video')).toBeTruthy();
+    expect(wrapper.emitted('preview-video')![0]).toEqual([{ start: '00:00', end: '00:10', index: 0 }]);
+    expect(wrapper.emitted('jump-to')).toBeFalsy();
+  });
+
+  it('hides the video playback buttons when no media file is available', () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        videoAvailable: false,
+      },
+    });
+
+    expect(wrapper.find('[data-testid="segment-play-video-0"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="segment-play-from-0"]').exists()).toBe(false);
   });
 
   it('enters edit mode when edit button is clicked', async () => {
@@ -57,6 +102,27 @@ describe('Editor.vue', () => {
     // Check if inputs appear
     expect(wrapper.find('input[placeholder="MM:SS"]').exists()).toBe(true);
     expect(wrapper.find('textarea').exists()).toBe(true);
+  });
+
+  it('keeps the segment header and playback buttons visible while editing', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        audioAvailable: true,
+        videoAvailable: true,
+      },
+    });
+
+    const editButton = wrapper.findAll('button').find(b => b.text() === 'Edit');
+    await editButton!.trigger('click');
+
+    // The edit form is shown...
+    expect(wrapper.find('textarea').exists()).toBe(true);
+    // ...but the header info and per-segment playback buttons remain.
+    expect(wrapper.text()).toContain('Speaker 1');
+    expect(wrapper.find('[data-testid="segment-preview-0"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="segment-play-video-0"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="segment-play-from-0"]').exists()).toBe(true);
   });
 
   it('saves edits correctly', async () => {
@@ -336,6 +402,34 @@ describe('Editor.vue', () => {
     expect(updatedSegments[0].text).toBe('Aligned');
     expect(updatedSegments[1].text).toBe('Needs checked checked');
     expect(updatedSegments[2].text).toBe('Also aligned');
+  });
+
+  it('emits a preview request with the segment timestamps when audio is available', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        audioAvailable: true,
+      },
+    });
+
+    const previewButton = wrapper.get('[data-testid="segment-preview-1"]');
+    await previewButton.trigger('click');
+
+    expect(wrapper.emitted('preview')).toBeTruthy();
+    expect(wrapper.emitted('preview')![0]).toEqual([{ start: '00:10', end: '00:20', index: 1 }]);
+    // Previewing must not double as a jump-to seek on the segment body.
+    expect(wrapper.emitted('jump-to')).toBeFalsy();
+  });
+
+  it('hides the preview button when no extracted audio is available', () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        audioAvailable: false,
+      },
+    });
+
+    expect(wrapper.find('[data-testid="segment-preview-0"]').exists()).toBe(false);
   });
 
   it('hides segments for speakers marked invisible', () => {
