@@ -93,14 +93,51 @@ fn append_token_text(buffer: &mut String, token: &str) {
     buffer.push_str(token);
 }
 
-fn transcript_text_from_words(words: &[TranscriptWord]) -> String {
-    let mut text = String::new();
+/// Attach punctuation to the word it belongs to *before* segmentation, so a
+/// trailing mark can never be stranded at the start of the next segment.
+///
+/// Parakeet emits punctuation either as a standalone token (e.g. `"."`) or as a
+/// prefix on the following word (e.g. `". Kümmern"`). Because diarization can
+/// misattribute that lone mark to the next speaker — and pause/length breaks are
+/// evaluated per word — the mark would otherwise open a new segment as `". ..."`.
+/// Normalising at the word level removes the problem at its source instead of
+/// trying to repair already-built segments afterwards.
+fn glue_punctuation_to_previous(words: &[WordWithSpeaker]) -> Vec<WordWithSpeaker> {
+    let mut result: Vec<WordWithSpeaker> = Vec::with_capacity(words.len());
 
     for word in words {
-        append_token_text(&mut text, &word.text);
+        let trimmed = word.text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // A pure-punctuation token belongs to the preceding word; if there is no
+        // preceding word (start of transcript) it is dropped.
+        if is_punctuation_only(trimmed) {
+            if let Some(previous) = result.last_mut() {
+                previous.text.push_str(trimmed);
+                previous.end = previous.end.max(word.end);
+            }
+            continue;
+        }
+
+        // A leading punctuation prefix is peeled onto the preceding word so the
+        // current word starts clean.
+        if let Some((prefix, remainder)) = split_leading_punctuation(trimmed) {
+            if let Some(previous) = result.last_mut() {
+                previous.text.push_str(&prefix);
+            }
+            result.push(WordWithSpeaker {
+                text: remainder,
+                ..word.clone()
+            });
+            continue;
+        }
+
+        result.push(word.clone());
     }
 
-    text.trim().to_string()
+    result
 }
 
 fn finalize_segment(words: &[WordWithSpeaker]) -> Option<TranscriptSegment> {
@@ -177,11 +214,12 @@ fn speaker_label_for_word(token: &TimedToken, diarization: &[SpeakerSegment]) ->
 }
 
 fn build_transcript_segments(words: &[WordWithSpeaker]) -> Vec<TranscriptSegment> {
+    let words = glue_punctuation_to_previous(words);
     let mut segments = Vec::new();
     let mut current_words: Vec<WordWithSpeaker> = Vec::new();
     let mut current_text = String::new();
 
-    for word in words {
+    for word in &words {
         let long_pause_before_word = current_words
             .last()
             .map(|previous_word| (word.start - previous_word.end) >= PAUSE_BREAK_SECONDS)
@@ -228,91 +266,7 @@ fn build_transcript_segments(words: &[WordWithSpeaker]) -> Vec<TranscriptSegment
         segments.push(segment);
     }
 
-    normalize_transcript_segments(segments)
-}
-
-fn normalize_transcript_segments(segments: Vec<TranscriptSegment>) -> Vec<TranscriptSegment> {
-    let mut normalized: Vec<TranscriptSegment> = Vec::new();
-
-    for mut segment in segments {
-        let mut words = segment.words.take().unwrap_or_default();
-        let mut leading_punctuation = Vec::new();
-
-        while let Some(word) = words.first() {
-            if !is_punctuation_only(word.text.trim()) {
-                break;
-            }
-
-            leading_punctuation.push(words.remove(0));
-        }
-
-        if let Some(previous_segment) = normalized.last_mut() {
-            if let Some(previous_words) = previous_segment.words.as_mut() {
-                for punctuation in &leading_punctuation {
-                    previous_words.push(punctuation.clone());
-                    previous_segment.end = punctuation.end.clone();
-                }
-                previous_segment.text = transcript_text_from_words(previous_words);
-            }
-        }
-
-        if words.is_empty() {
-            continue;
-        }
-
-        if transcript_text_from_words(&words) == "." {
-            if let Some(previous_segment) = normalized.last_mut() {
-                if let Some(previous_words) = previous_segment.words.as_mut() {
-                    previous_words.extend(words);
-                    if let Some(last_word) = previous_words.last() {
-                        previous_segment.end = last_word.end.clone();
-                    }
-                    previous_segment.text = transcript_text_from_words(previous_words);
-                }
-            }
-            continue;
-        }
-
-        if let Some(first_word) = words.first_mut() {
-            if let Some((leading_punctuation, remainder)) =
-                split_leading_punctuation(first_word.text.as_str())
-            {
-                if let Some(previous_segment) = normalized.last_mut() {
-                    if let Some(previous_words) = previous_segment.words.as_mut() {
-                        if let Some(last_word) = previous_words.last_mut() {
-                            last_word.text.push_str(&leading_punctuation);
-                        } else {
-                            previous_words.push(TranscriptWord {
-                                start: first_word.start.clone(),
-                                end: first_word.start.clone(),
-                                text: leading_punctuation.clone(),
-                                speaker: Some(previous_segment.speaker.clone()),
-                            });
-                        }
-                        previous_segment.end = first_word.start.clone();
-                        previous_segment.text = transcript_text_from_words(previous_words);
-                    }
-                }
-
-                first_word.text = remainder;
-            }
-        }
-
-        segment.start = words
-            .first()
-            .map(|word| word.start.clone())
-            .unwrap_or(segment.start);
-        segment.end = words
-            .last()
-            .map(|word| word.end.clone())
-            .unwrap_or(segment.end);
-        segment.text = transcript_text_from_words(&words);
-        segment.words = Some(words);
-
-        normalized.push(segment);
-    }
-
-    normalized
+    segments
 }
 
 fn transcribe_words(
@@ -758,129 +712,86 @@ mod tests {
     }
 
     #[test]
-    fn normalize_transcript_segments_moves_leading_punctuation_to_previous_segment() {
-        let segments = normalize_transcript_segments(vec![
-            TranscriptSegment {
-                start: "00:00.000".into(),
-                end: "00:01.000".into(),
-                speaker: "Speaker 1".into(),
+    fn standalone_punctuation_stays_with_previous_segment_across_speaker_change() {
+        // Diarization misattributes the sentence-final period to the next
+        // speaker; it must not open the following segment.
+        let words = vec![
+            WordWithSpeaker {
+                start: 0.0,
+                end: 0.3,
                 text: "Hello".into(),
-                words: Some(vec![TranscriptWord {
-                    start: "00:00.000".into(),
-                    end: "00:01.000".into(),
-                    text: "Hello".into(),
-                    speaker: Some("Speaker 1".into()),
-                }]),
-                alternatives: None,
-                merge_status: None,
-                active_source: None,
-                similarity_score: None,
-            },
-            TranscriptSegment {
-                start: "00:01.000".into(),
-                end: "00:01.200".into(),
                 speaker: "Speaker 1".into(),
-                text: ". world".into(),
-                words: Some(vec![
-                    TranscriptWord {
-                        start: "00:01.000".into(),
-                        end: "00:01.050".into(),
-                        text: ".".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                    TranscriptWord {
-                        start: "00:01.050".into(),
-                        end: "00:01.200".into(),
-                        text: "world".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                ]),
-                alternatives: None,
-                merge_status: None,
-                active_source: None,
-                similarity_score: None,
             },
-            TranscriptSegment {
-                start: "00:01.200".into(),
-                end: "00:01.250".into(),
+            WordWithSpeaker {
+                start: 0.3,
+                end: 0.5,
+                text: "world".into(),
                 speaker: "Speaker 1".into(),
+            },
+            WordWithSpeaker {
+                start: 0.5,
+                end: 0.55,
                 text: ".".into(),
-                words: Some(vec![TranscriptWord {
-                    start: "00:01.200".into(),
-                    end: "00:01.250".into(),
-                    text: ".".into(),
-                    speaker: Some("Speaker 1".into()),
-                }]),
-                alternatives: None,
-                merge_status: None,
-                active_source: None,
-                similarity_score: None,
+                speaker: "Speaker 2".into(),
             },
-        ]);
+            WordWithSpeaker {
+                start: 0.6,
+                end: 0.9,
+                text: "General".into(),
+                speaker: "Speaker 2".into(),
+            },
+            WordWithSpeaker {
+                start: 0.9,
+                end: 1.2,
+                text: "Kenobi.".into(),
+                speaker: "Speaker 2".into(),
+            },
+        ];
+
+        let segments = build_transcript_segments(&words);
 
         assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].text, "Hello.");
-        assert_eq!(segments[1].text, "world.");
+        assert_eq!(segments[0].text, "Hello world.");
+        assert_eq!(segments[1].text, "General Kenobi.");
+        assert!(!segments[1].text.starts_with('.'));
     }
 
     #[test]
-    fn normalize_transcript_segments_moves_punctuation_prefix_from_first_word() {
-        let segments = normalize_transcript_segments(vec![
-            TranscriptSegment {
-                start: "00:00.000".into(),
-                end: "00:01.000".into(),
+    fn leading_punctuation_prefix_is_peeled_onto_previous_segment() {
+        let words = vec![
+            WordWithSpeaker {
+                start: 0.0,
+                end: 0.35,
+                text: "unterwegs".into(),
                 speaker: "Speaker 1".into(),
-                text: "unterwegs für IAV".into(),
-                words: Some(vec![
-                    TranscriptWord {
-                        start: "00:00.000".into(),
-                        end: "00:00.350".into(),
-                        text: "unterwegs".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                    TranscriptWord {
-                        start: "00:00.350".into(),
-                        end: "00:00.700".into(),
-                        text: "für".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                    TranscriptWord {
-                        start: "00:00.700".into(),
-                        end: "00:01.000".into(),
-                        text: "IAV".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                ]),
-                alternatives: None,
-                merge_status: None,
-                active_source: None,
-                similarity_score: None,
             },
-            TranscriptSegment {
-                start: "00:01.000".into(),
-                end: "00:02.000".into(),
+            WordWithSpeaker {
+                start: 0.35,
+                end: 0.7,
+                text: "für".into(),
                 speaker: "Speaker 1".into(),
-                text: ". Kümmern wir uns".into(),
-                words: Some(vec![
-                    TranscriptWord {
-                        start: "00:01.000".into(),
-                        end: "00:01.400".into(),
-                        text: ". Kümmern".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                    TranscriptWord {
-                        start: "00:01.400".into(),
-                        end: "00:02.000".into(),
-                        text: "wir".into(),
-                        speaker: Some("Speaker 1".into()),
-                    },
-                ]),
-                alternatives: None,
-                merge_status: None,
-                active_source: None,
-                similarity_score: None,
             },
-        ]);
+            WordWithSpeaker {
+                start: 0.7,
+                end: 1.0,
+                text: "IAV".into(),
+                speaker: "Speaker 1".into(),
+            },
+            WordWithSpeaker {
+                start: 1.0,
+                end: 1.4,
+                text: ". Kümmern".into(),
+                speaker: "Speaker 2".into(),
+            },
+            WordWithSpeaker {
+                start: 1.4,
+                end: 1.7,
+                text: "wir".into(),
+                speaker: "Speaker 2".into(),
+            },
+        ];
+
+        let segments = build_transcript_segments(&words);
 
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].text, "unterwegs für IAV.");
@@ -893,6 +804,30 @@ mod tests {
                 .map(|word| word.text.as_str()),
             Some("Kümmern")
         );
+        assert!(!segments[1].text.starts_with('.'));
+    }
+
+    #[test]
+    fn leading_standalone_punctuation_with_no_predecessor_is_dropped() {
+        let words = vec![
+            WordWithSpeaker {
+                start: 0.0,
+                end: 0.05,
+                text: ".".into(),
+                speaker: "Speaker 1".into(),
+            },
+            WordWithSpeaker {
+                start: 0.1,
+                end: 0.4,
+                text: "Hello".into(),
+                speaker: "Speaker 1".into(),
+            },
+        ];
+
+        let segments = build_transcript_segments(&words);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "Hello");
     }
 
     #[test]
