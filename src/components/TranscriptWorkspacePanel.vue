@@ -45,6 +45,7 @@ const previewIndex = ref<number | null>(null);
 let previewEndTime: number | null = null;
 const videoPreviewIndex = ref<number | null>(null);
 let videoPreviewEndTime: number | null = null;
+let lastPlayheadSource: 'audio' | 'video' | null = null;
 const showOnlyReviewSegments = ref(false);
 const reviewThresholdPercent = ref(85);
 const speakerVisibility = ref<Record<string, boolean>>({});
@@ -156,6 +157,29 @@ function selectLanguage(langName: string) {
 }
 
 const hasExtractedAudio = computed(() => !!props.extractedAudioPath);
+
+function markAudioActive() {
+  lastPlayheadSource = 'audio';
+}
+
+function markVideoActive() {
+  lastPlayheadSource = 'video';
+}
+
+// Report the current playback position so a segment split can snap to the
+// exact moment the user is hearing. Prefers the player that is actually
+// playing, then the one most recently used.
+function getPlayhead(): number | null {
+  const audio = audioRef.value;
+  const video = videoRef.value;
+  if (audio && !audio.paused) return audio.currentTime;
+  if (video && !video.paused) return video.currentTime;
+  if (lastPlayheadSource === 'audio' && audio) return audio.currentTime;
+  if (lastPlayheadSource === 'video' && video) return video.currentTime;
+  if (audio) return audio.currentTime;
+  if (video) return video.currentTime;
+  return null;
+}
 
 function clearPreviewState() {
   previewIndex.value = null;
@@ -288,6 +312,7 @@ function onTimeUpdate() {
         class="w-full max-h-[500px] mx-auto"
         controls
         @timeupdate="onTimeUpdate"
+        @play="markVideoActive"
         @pause="clearVideoPreviewState"
         @ended="clearVideoPreviewState"
       ></video>
@@ -311,6 +336,7 @@ function onTimeUpdate() {
         controls
         preload="metadata"
         @timeupdate="onAudioTimeUpdate"
+        @play="markAudioActive"
         @pause="clearPreviewState"
         @ended="clearPreviewState"
       ></audio>
@@ -529,6 +555,7 @@ function onTimeUpdate() {
       :previewIndex="previewIndex"
       :videoAvailable="hasMediaFile"
       :videoPreviewIndex="videoPreviewIndex"
+      :getPlayhead="getPlayhead"
       @jump-to="jumpTo"
       @preview="previewSegment"
       @preview-video="previewVideoSegment"
