@@ -302,6 +302,7 @@ async fn prepare_audio_for_ai(
 }
 
 mod alignment;
+pub mod chunking;
 pub mod gemini;
 mod parakeet;
 pub mod podcast;
@@ -314,6 +315,7 @@ mod upload;
 pub mod video;
 
 use crate::alignment::align_transcript;
+use crate::chunking::split_audio_for_analysis;
 use crate::gemini::GeminiClient;
 use crate::parakeet::transcribe_with_parakeet;
 use crate::podcast::{
@@ -877,6 +879,7 @@ pub fn run() {
             init_ffmpeg,
             prepare_audio_for_ai,
             upload_file,
+            split_audio_for_analysis,
             analyze_audio,
             cleanup_parakeet_transcript,
             merge_transcript_hypotheses,
