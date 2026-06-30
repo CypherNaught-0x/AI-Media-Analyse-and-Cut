@@ -79,6 +79,8 @@ export function createDefaultTranscriptWorkspaceState(): TranscriptWorkspaceStat
     useAdvancedAlignment: false,
     speakerOrder: [],
     lastAnalyzedSettings: createDefaultLastAnalyzedSettings(),
+    rawParakeetSegments: [],
+    parakeetCacheKey: '',
     settingsSnapshot: {
       glossary: '',
       transcriptionBackend: 'llm',
@@ -112,6 +114,8 @@ const TRANSCRIPT_WORKSPACE_KEYS = [
   'useAdvancedAlignment',
   'speakerOrder',
   'lastAnalyzedSettings',
+  'rawParakeetSegments',
+  'parakeetCacheKey',
   'settingsSnapshot',
   'transcriptionBackend',
   'parakeetModelPath',
