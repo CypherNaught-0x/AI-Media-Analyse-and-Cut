@@ -6,6 +6,7 @@ export interface LLMSettings {
   apiKey: string;
   model: string;
   enforceJsonSchema: boolean;
+  maxAnalysisChunkMinutes: number;
   glossary: string;
   preClipPadding: number;
   postClipPadding: number;
@@ -27,6 +28,7 @@ const defaultSettings: LLMSettings = {
   apiKey: '',
   model: 'gemini-2.5-flash',
   enforceJsonSchema: true,
+  maxAnalysisChunkMinutes: 30,
   glossary: '',
   preClipPadding: 0.0,
   postClipPadding: 0.0,

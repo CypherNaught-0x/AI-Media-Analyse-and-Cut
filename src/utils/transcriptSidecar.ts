@@ -18,6 +18,8 @@ export interface ParsedTranscriptSidecar {
   useAdvancedAlignment?: boolean;
   speakerOrder?: string[];
   lastAnalyzedSettings?: LastAnalyzedSettings;
+  rawParakeetSegments?: TranscriptSegment[];
+  parakeetCacheKey?: string;
   transcriptionBackend?: TranscriptionBackend;
   parakeetModelPath?: string;
   sortformerModelPath?: string;
@@ -68,6 +70,11 @@ export function parseTranscriptSidecar(
       sidecar.lastAnalyzedSettings && typeof sidecar.lastAnalyzedSettings === 'object'
         ? { ...defaultLastAnalyzedSettings, ...(sidecar.lastAnalyzedSettings as Partial<LastAnalyzedSettings>) }
         : undefined,
+    rawParakeetSegments: Array.isArray(sidecar.rawParakeetSegments)
+      ? (sidecar.rawParakeetSegments as TranscriptSegment[])
+      : undefined,
+    parakeetCacheKey:
+      typeof sidecar.parakeetCacheKey === 'string' ? sidecar.parakeetCacheKey : undefined,
     transcriptionBackend: isTranscriptionBackend(sidecar.transcriptionBackend)
       ? sidecar.transcriptionBackend
       : undefined,
@@ -92,6 +99,8 @@ export function buildTranscriptSidecar(transcriptWorkspace: TranscriptWorkspaceS
     useAdvancedAlignment: transcriptWorkspace.useAdvancedAlignment,
     speakerOrder: transcriptWorkspace.speakerOrder,
     lastAnalyzedSettings: transcriptWorkspace.lastAnalyzedSettings,
+    rawParakeetSegments: transcriptWorkspace.rawParakeetSegments,
+    parakeetCacheKey: transcriptWorkspace.parakeetCacheKey,
     transcriptionBackend: transcriptWorkspace.settingsSnapshot.transcriptionBackend,
     parakeetModelPath: transcriptWorkspace.settingsSnapshot.parakeetModelPath,
     sortformerModelPath: transcriptWorkspace.settingsSnapshot.sortformerModelPath,

@@ -473,56 +473,48 @@ fn default_model_root(window: &tauri::Window) -> Result<PathBuf> {
         .map(|path| path.join("models").join("parakeet-rs"))
 }
 
+/// Resolve (and download on first use) the Parakeet TDT model directory only.
+/// Used both by full transcription and by the lightweight split-point detection
+/// path, which deliberately skips the Sortformer diarization model.
+async fn resolve_parakeet_dir(
+    window: &tauri::Window,
+    parakeet_model_path: &str,
+) -> Result<PathBuf> {
+    let trimmed = parakeet_model_path.trim();
+    if !trimmed.is_empty() {
+        return Ok(PathBuf::from(trimmed));
+    }
+
+    let parakeet_dir = default_model_root(window)?.join(DEFAULT_TDT_DIR_NAME);
+    tokio::fs::create_dir_all(&parakeet_dir).await?;
+    let client = reqwest::Client::new();
+    for (file_name, relative_url) in DEFAULT_TDT_FILES {
+        download_file_if_missing(
+            window,
+            &client,
+            &parakeet_dir.join(file_name),
+            &format!("{HF_RESOLVE_BASE}/{relative_url}"),
+            file_name,
+        )
+        .await?;
+    }
+
+    Ok(parakeet_dir)
+}
+
 async fn resolve_model_paths(
     window: &tauri::Window,
     parakeet_model_path: &str,
     sortformer_model_path: &str,
 ) -> Result<(PathBuf, PathBuf)> {
-    let mut parakeet_dir = parakeet_model_path
-        .trim()
-        .is_empty()
-        .then(|| default_model_root(window).map(|root| root.join(DEFAULT_TDT_DIR_NAME)))
-        .transpose()?;
-    let mut sortformer_file = sortformer_model_path
-        .trim()
-        .is_empty()
-        .then(|| default_model_root(window).map(|root| root.join(DEFAULT_SORTFORMER_FILE_NAME)))
-        .transpose()?;
+    let parakeet_dir = resolve_parakeet_dir(window, parakeet_model_path).await?;
 
-    if parakeet_dir.is_none() {
-        parakeet_dir = Some(PathBuf::from(parakeet_model_path.trim()));
-    }
-
-    if sortformer_file.is_none() {
-        sortformer_file = Some(default_model_root(window)?.join(DEFAULT_SORTFORMER_FILE_NAME));
-    } else if !sortformer_model_path.trim().is_empty() {
-        sortformer_file = Some(PathBuf::from(sortformer_model_path.trim()));
-    }
-
-    let parakeet_dir = parakeet_dir.expect("parakeet path must be resolved");
-    let sortformer_file = sortformer_file.expect("sortformer path must be resolved");
-
-    if parakeet_model_path.trim().is_empty() || sortformer_model_path.trim().is_empty() {
-        let root = default_model_root(window)?;
-        tokio::fs::create_dir_all(&root).await?;
-    }
-
-    if parakeet_model_path.trim().is_empty() {
-        let client = reqwest::Client::new();
-        tokio::fs::create_dir_all(&parakeet_dir).await?;
-        for (file_name, relative_url) in DEFAULT_TDT_FILES {
-            download_file_if_missing(
-                window,
-                &client,
-                &parakeet_dir.join(file_name),
-                &format!("{HF_RESOLVE_BASE}/{relative_url}"),
-                file_name,
-            )
-            .await?;
+    let sortformer_trimmed = sortformer_model_path.trim();
+    let sortformer_file = if sortformer_trimmed.is_empty() {
+        let sortformer_file = default_model_root(window)?.join(DEFAULT_SORTFORMER_FILE_NAME);
+        if let Some(parent) = sortformer_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
         }
-    }
-
-    if sortformer_model_path.trim().is_empty() {
         let client = reqwest::Client::new();
         let url = format!("{HF_RESOLVE_BASE}/{DEFAULT_SORTFORMER_FILE_NAME}?download=1");
         download_file_if_missing(
@@ -533,9 +525,53 @@ async fn resolve_model_paths(
             DEFAULT_SORTFORMER_FILE_NAME,
         )
         .await?;
-    }
+        sortformer_file
+    } else {
+        PathBuf::from(sortformer_trimmed)
+    };
 
     Ok((parakeet_dir, sortformer_file))
+}
+
+/// Transcribe with Parakeet TDT only (no diarization) and return the sorted
+/// word *end* times in seconds. Used as a fallback to pick chunk split points
+/// that land cleanly between words when no suitable silence gap exists.
+pub(crate) async fn parakeet_word_boundaries(
+    window: &tauri::Window,
+    audio_path: &str,
+    parakeet_model_path: &str,
+) -> Result<Vec<f64>> {
+    let parakeet_dir = resolve_parakeet_dir(window, parakeet_model_path).await?;
+
+    let audio_file = Path::new(audio_path);
+    if !audio_file.exists() {
+        return Err(anyhow!("Audio file not found: {}", audio_file.display()));
+    }
+    if !parakeet_dir.is_dir() {
+        return Err(anyhow!(
+            "Parakeet model path must be a directory: {}",
+            parakeet_dir.display()
+        ));
+    }
+
+    emit_progress(window, "Loading audio for split-point detection...")?;
+    let audio = load_audio_16k_mono(audio_file)
+        .with_context(|| format!("Failed to load audio '{}'", audio_file.display()))?;
+
+    emit_progress(window, "Loading Parakeet TDT for split-point detection...")?;
+    let mut parakeet = ParakeetTDT::from_pretrained(&parakeet_dir, None).with_context(|| {
+        format!(
+            "Failed to load Parakeet TDT model directory '{}'",
+            parakeet_dir.display()
+        )
+    })?;
+
+    let words =
+        transcribe_words(window, &mut parakeet, &audio).context("Parakeet transcription failed")?;
+
+    let mut boundaries: Vec<f64> = words.iter().map(|word| word.end as f64).collect();
+    boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(boundaries)
 }
 
 #[tauri::command]
