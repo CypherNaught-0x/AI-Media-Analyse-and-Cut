@@ -310,7 +310,7 @@ pub mod retry;
 mod run_control;
 pub mod silence;
 pub mod time_utils;
-mod transcript_merge;
+pub mod transcript_merge;
 mod upload;
 pub mod video;
 
