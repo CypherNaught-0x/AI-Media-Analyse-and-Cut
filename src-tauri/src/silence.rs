@@ -48,7 +48,7 @@ pub async fn detect_silence(
     .await
 }
 
-async fn detect_silence_internal(
+pub(crate) async fn detect_silence_internal(
     path: &str,
     min_duration: f64,
     run_control: Option<(u64, &RunControl)>,
@@ -338,7 +338,7 @@ async fn remove_silence_internal(
     })
 }
 
-async fn probe_duration(path: &str) -> Result<f64, String> {
+pub(crate) async fn probe_duration(path: &str) -> Result<f64, String> {
     use std::process::Command;
 
     // Try using ffmpeg -i path

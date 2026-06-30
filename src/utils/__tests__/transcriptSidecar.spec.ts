@@ -45,6 +45,8 @@ describe('transcriptSidecar', () => {
       useAdvancedAlignment: false,
       speakerOrder: ['Host'],
       lastAnalyzedSettings: createDefaultLastAnalyzedSettings(),
+      rawParakeetSegments: [],
+      parakeetCacheKey: '',
       settingsSnapshot: {
         glossary: 'AI',
         transcriptionBackend: 'llm',
@@ -58,5 +60,45 @@ describe('transcriptSidecar', () => {
     expect(sidecar.glossary).toBe('AI');
     expect(sidecar.speakerOrder).toEqual(['Host']);
     expect(sidecar.segments).toHaveLength(1);
+  });
+
+  it('round-trips the cached raw Parakeet transcript and its cache key', () => {
+    const rawParakeetSegments = [
+      { start: '00:00', end: '00:02', speaker: 'Speaker 1', text: 'raw parakeet' },
+    ];
+    const parakeetCacheKey = JSON.stringify({
+      inputPath: '/tmp/audio.mp3',
+      trimSilence: true,
+      parakeetModelPath: '',
+      sortformerModelPath: '',
+    });
+    const workspace: TranscriptWorkspaceState = {
+      inputPath: '/tmp/audio.mp3',
+      segments: [{ start: '00:00', end: '00:02', speaker: 'Speaker 1', text: 'cleaned' }],
+      translations: {},
+      currentLanguage: 'Original',
+      targetLanguage: '',
+      context: '',
+      speakerCount: null,
+      removeFillerWords: false,
+      trimSilence: true,
+      useAdvancedAlignment: false,
+      speakerOrder: [],
+      lastAnalyzedSettings: createDefaultLastAnalyzedSettings(),
+      rawParakeetSegments,
+      parakeetCacheKey,
+      settingsSnapshot: {
+        glossary: '',
+        transcriptionBackend: 'hybrid',
+        parakeetModelPath: '',
+        sortformerModelPath: '',
+      },
+    };
+
+    const serialized = JSON.stringify(buildTranscriptSidecar(workspace));
+    const parsed = parseTranscriptSidecar(serialized, createDefaultLastAnalyzedSettings());
+
+    expect(parsed?.rawParakeetSegments).toEqual(rawParakeetSegments);
+    expect(parsed?.parakeetCacheKey).toBe(parakeetCacheKey);
   });
 });
