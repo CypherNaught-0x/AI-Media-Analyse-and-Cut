@@ -68,6 +68,11 @@ export interface ProcessedAudio {
   offsets: SegmentOffset[];
 }
 
+export interface AudioChunk {
+  path: string;
+  start_offset: number;
+}
+
 // Podcast Generator Types
 export type PodcastSegmentType = 'content' | 'voiceover';
 
@@ -121,6 +126,8 @@ export interface TranscriptWorkspaceState {
   useAdvancedAlignment: boolean;
   speakerOrder: string[];
   lastAnalyzedSettings: LastAnalyzedSettings;
+  rawParakeetSegments: TranscriptSegment[];
+  parakeetCacheKey: string;
   settingsSnapshot: {
     glossary: string;
     transcriptionBackend: TranscriptionBackend;

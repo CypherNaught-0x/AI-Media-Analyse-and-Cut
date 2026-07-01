@@ -1,4 +1,5 @@
 use log::info;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::thread;
 use std::time::Instant;
@@ -202,6 +203,15 @@ where
     let mut previous = vec![vec![None; reference_len + 1]; primary_len + 1];
     let dynamic_band = ALIGNMENT_BAND.max(primary_len.abs_diff(reference_len) + 6);
 
+    // Normalize the text of every primary/reference group exactly once up front.
+    // The inner DP loop below probes up to MAX_PRIMARY_GROUP * MAX_REFERENCE_GROUP
+    // candidates per band cell; recomputing normalization, char vectors and token
+    // sets on every probe (the previous behaviour) dominated the runtime. With the
+    // groups precomputed, each comparison is a pure, allocation-free similarity.
+    let primary_groups = build_group_table(primary, MAX_PRIMARY_GROUP);
+    let reference_groups = build_group_table(reference, MAX_REFERENCE_GROUP);
+    let mut scratch = LevenshteinScratch::default();
+
     costs[0][0] = 0.0;
 
     for primary_index in 0..=primary_len {
@@ -255,17 +265,27 @@ where
                     continue;
                 }
 
+                let prepared_primary = &primary_groups[primary_index][primary_group_len - 1];
+
                 for reference_group_len in 1..=MAX_REFERENCE_GROUP {
                     if reference_index + reference_group_len > reference_len {
                         break;
                     }
 
-                    let reference_group =
-                        &reference[reference_index..reference_index + reference_group_len];
-                    let similarity = combined_similarity(primary_group, reference_group);
+                    let prepared_reference =
+                        &reference_groups[reference_index][reference_group_len - 1];
+                    let similarity = combined_similarity_prepared(
+                        prepared_primary,
+                        prepared_reference,
+                        MIN_MATCH_SIMILARITY,
+                        &mut scratch,
+                    );
                     if similarity < MIN_MATCH_SIMILARITY {
                         continue;
                     }
+
+                    let reference_group =
+                        &reference[reference_index..reference_index + reference_group_len];
 
                     let grouping_penalty = ((primary_group_len - 1) + (reference_group_len - 1))
                         as f32
@@ -336,9 +356,14 @@ fn detect_alignment_anchors(
     let mut reference_candidates = vec![None::<(usize, f32, f32)>; reference.len()];
     let band = ALIGNMENT_BAND.max(primary.len().abs_diff(reference.len()) + ANCHOR_SEARCH_PADDING);
 
-    for (primary_index, primary_segment) in primary.iter().enumerate() {
-        let normalized_primary = normalize_text(primary_segment.text.trim());
-        if normalized_primary.len() < MIN_ANCHOR_TEXT_CHARS {
+    // Normalize each segment once instead of O(segments * band) times inside the
+    // search loops below.
+    let primary_prepared = prepare_segments(primary);
+    let reference_prepared = prepare_segments(reference);
+    let mut scratch = LevenshteinScratch::default();
+
+    for (primary_index, prepared_primary) in primary_prepared.iter().enumerate() {
+        if prepared_primary.byte_len < MIN_ANCHOR_TEXT_CHARS {
             continue;
         }
 
@@ -349,18 +374,22 @@ fn detect_alignment_anchors(
         let mut best_match = None::<(usize, f32)>;
         let mut second_best = 0.0f32;
 
-        for (reference_index, reference_segment) in reference
+        for (reference_index, prepared_reference) in reference_prepared
             .iter()
             .enumerate()
             .take(reference_end + 1)
             .skip(reference_start)
         {
-            let normalized_reference = normalize_text(reference_segment.text.trim());
-            if normalized_reference.len() < MIN_ANCHOR_TEXT_CHARS {
+            if prepared_reference.byte_len < MIN_ANCHOR_TEXT_CHARS {
                 continue;
             }
 
-            let similarity = combined_similarity_text(&normalized_primary, &normalized_reference);
+            let similarity = combined_similarity_prepared(
+                &prepared_primary.group,
+                &prepared_reference.group,
+                ANCHOR_MATCH_SIMILARITY,
+                &mut scratch,
+            );
             if similarity >= ANCHOR_MATCH_SIMILARITY {
                 if let Some((_, best_similarity)) = best_match {
                     if similarity > best_similarity {
@@ -383,9 +412,8 @@ fn detect_alignment_anchors(
         }
     }
 
-    for (reference_index, reference_segment) in reference.iter().enumerate() {
-        let normalized_reference = normalize_text(reference_segment.text.trim());
-        if normalized_reference.len() < MIN_ANCHOR_TEXT_CHARS {
+    for (reference_index, prepared_reference) in reference_prepared.iter().enumerate() {
+        if prepared_reference.byte_len < MIN_ANCHOR_TEXT_CHARS {
             continue;
         }
 
@@ -396,18 +424,22 @@ fn detect_alignment_anchors(
         let mut best_match = None::<(usize, f32)>;
         let mut second_best = 0.0f32;
 
-        for (primary_index, primary_segment) in primary
+        for (primary_index, prepared_primary) in primary_prepared
             .iter()
             .enumerate()
             .take(primary_end + 1)
             .skip(primary_start)
         {
-            let normalized_primary = normalize_text(primary_segment.text.trim());
-            if normalized_primary.len() < MIN_ANCHOR_TEXT_CHARS {
+            if prepared_primary.byte_len < MIN_ANCHOR_TEXT_CHARS {
                 continue;
             }
 
-            let similarity = combined_similarity_text(&normalized_primary, &normalized_reference);
+            let similarity = combined_similarity_prepared(
+                &prepared_primary.group,
+                &prepared_reference.group,
+                ANCHOR_MATCH_SIMILARITY,
+                &mut scratch,
+            );
             if similarity >= ANCHOR_MATCH_SIMILARITY {
                 if let Some((_, best_similarity)) = best_match {
                     if similarity > best_similarity {
@@ -600,14 +632,15 @@ fn materialize_alignment(
 fn rebalance_adjacent_boundaries(segments: Vec<TranscriptSegment>) -> Vec<TranscriptSegment> {
     let mut rebalanced = segments;
     let mut index = 0usize;
+    let mut scratch = LevenshteinScratch::default();
 
     while index + 1 < rebalanced.len() {
-        let left = rebalanced[index].clone();
-        let right = rebalanced[index + 1].clone();
-
-        if let Some((updated_left, updated_right)) =
-            optimize_boundary_between_segments(&left, &right)
-        {
+        // Borrow the pair directly; only the (rare) accepted reshuffle allocates.
+        if let Some((updated_left, updated_right)) = optimize_boundary_between_segments(
+            &rebalanced[index],
+            &rebalanced[index + 1],
+            &mut scratch,
+        ) {
             rebalanced[index] = updated_left;
             rebalanced[index + 1] = updated_right;
         }
@@ -621,6 +654,7 @@ fn rebalance_adjacent_boundaries(segments: Vec<TranscriptSegment>) -> Vec<Transc
 fn optimize_boundary_between_segments(
     left: &TranscriptSegment,
     right: &TranscriptSegment,
+    scratch: &mut LevenshteinScratch,
 ) -> Option<(TranscriptSegment, TranscriptSegment)> {
     let left_google_text = google_text(left)?;
     let right_google_text = google_text(right)?;
@@ -645,40 +679,100 @@ fn optimize_boundary_between_segments(
         return None;
     }
 
+    // The Google reference text on each side is constant across every candidate
+    // split, so normalize it once instead of inside the scoring loop.
+    let left_google = NormalizedText::from_text(left_google_text);
+    let right_google = NormalizedText::from_text(right_google_text);
+
+    // Reference the words rather than cloning them; only the chosen split is
+    // materialized into owned word vectors at the end.
     let combined_words = left_words
         .iter()
         .chain(right_words.iter())
-        .cloned()
-        .collect::<Vec<_>>();
+        .collect::<Vec<&TranscriptWord>>();
+    let total = combined_words.len();
     let original_split = left_words.len();
     let search_radius = 8usize
         .min(original_split.saturating_sub(1).max(1))
         .min(right_words.len());
     let split_start = original_split.saturating_sub(search_radius).max(1);
-    let split_end = (original_split + search_radius).min(combined_words.len() - 1);
+    let split_end = (original_split + search_radius).min(total - 1);
+
+    // Every candidate split's left side is a prefix of the combined word list and
+    // its right side is a suffix. Normalize each word once and accumulate the
+    // prefix/suffix normalized forms, so scoring a split is just two similarity
+    // computations with no re-normalization or allocation.
+    let word_norms: Vec<NormalizedText> = combined_words
+        .iter()
+        .map(|word| NormalizedText::from_text(word.text.trim()))
+        .collect();
+
+    let mut prefix_norms: Vec<NormalizedText> = Vec::with_capacity(total + 1);
+    prefix_norms.push(NormalizedText::default());
+    for word_norm in &word_norms {
+        let mut next = prefix_norms.last().unwrap().clone();
+        append_normalized(&mut next, word_norm);
+        prefix_norms.push(next);
+    }
+
+    let mut suffix_norms: Vec<NormalizedText> = vec![NormalizedText::default(); total + 1];
+    for index in (0..total).rev() {
+        let mut node = word_norms[index].clone();
+        append_normalized(&mut node, &suffix_norms[index + 1]);
+        suffix_norms[index] = node;
+    }
+
+    let distance_penalty = |split: usize| split.abs_diff(original_split) as f32 * 0.01;
+
+    // Exact score of a split: similarity of its left prefix to the left Google text
+    // plus the same on the right, minus the distance penalty.
+    let exact_score = |split: usize, scratch: &mut LevenshteinScratch| -> f32 {
+        let left = combined_similarity_prepared(&prefix_norms[split], &left_google, 0.0, scratch);
+        let right = combined_similarity_prepared(&suffix_norms[split], &right_google, 0.0, scratch);
+        left + right - distance_penalty(split)
+    };
 
     let mut best_split = original_split;
-    let mut best_score = boundary_score(
-        &combined_words[..original_split],
-        left_google_text,
-        &combined_words[original_split..],
-        right_google_text,
-        original_split,
-        original_split,
-    );
+    let mut best_score = exact_score(original_split, scratch);
 
-    for split_index in split_start..=split_end {
-        let score = boundary_score(
-            &combined_words[..split_index],
-            left_google_text,
-            &combined_words[split_index..],
-            right_google_text,
-            split_index,
-            original_split,
-        );
-        if score > best_score + 0.02 {
-            best_score = score;
-            best_split = split_index;
+    // Each side similarity is in [0, 1], so any candidate scores at most 2.0, and
+    // every non-original split carries a distance penalty of at least 0.01. A split
+    // is only adopted when it beats the running best by more than 0.02. Hence if the
+    // original boundary already scores >= 1.97 (= 2.0 - 0.01 - 0.02), no shift can
+    // ever win, and the whole search can be skipped. Equivalent to running the loop.
+    const SKIP_SEARCH_SCORE: f32 = 1.97;
+    if best_score < SKIP_SEARCH_SCORE {
+        for split_index in split_start..=split_end {
+            let penalty = distance_penalty(split_index);
+            // To beat the running best by 0.02, with each side at most 1.0, both
+            // sides must exceed this floor. Pass it as the similarity threshold so
+            // the cheap token/length prunes skip the edit-distance work for
+            // candidates that cannot win; competitive candidates are still scored
+            // exactly, so the selection is identical to the unpruned loop.
+            let side_floor = (best_score + 0.02 + penalty - 1.0).max(0.0);
+            let left = combined_similarity_prepared(
+                &prefix_norms[split_index],
+                &left_google,
+                side_floor,
+                scratch,
+            );
+            if side_floor > 0.0 && left <= 0.0 {
+                continue;
+            }
+            let right = combined_similarity_prepared(
+                &suffix_norms[split_index],
+                &right_google,
+                side_floor,
+                scratch,
+            );
+            if side_floor > 0.0 && right <= 0.0 {
+                continue;
+            }
+            let score = left + right - penalty;
+            if score > best_score + 0.02 {
+                best_score = score;
+                best_split = split_index;
+            }
         }
     }
 
@@ -688,37 +782,20 @@ fn optimize_boundary_between_segments(
 
     let updated_left = rebuild_segment_with_words(
         left,
-        combined_words[..best_split].to_vec(),
+        clone_word_refs(&combined_words[..best_split]),
         left_google_text,
     );
     let updated_right = rebuild_segment_with_words(
         right,
-        combined_words[best_split..].to_vec(),
+        clone_word_refs(&combined_words[best_split..]),
         right_google_text,
     );
 
     Some((updated_left, updated_right))
 }
 
-fn boundary_score(
-    left_words: &[TranscriptWord],
-    left_google_text: &str,
-    right_words: &[TranscriptWord],
-    right_google_text: &str,
-    split_index: usize,
-    original_split: usize,
-) -> f32 {
-    if left_words.is_empty() || right_words.is_empty() {
-        return f32::NEG_INFINITY;
-    }
-
-    let left_text = join_word_text(left_words);
-    let right_text = join_word_text(right_words);
-    let left_similarity = combined_similarity_text(&left_text, left_google_text);
-    let right_similarity = combined_similarity_text(&right_text, right_google_text);
-    let distance_penalty = split_index.abs_diff(original_split) as f32 * 0.01;
-
-    left_similarity + right_similarity - distance_penalty
+fn clone_word_refs(words: &[&TranscriptWord]) -> Vec<TranscriptWord> {
+    words.iter().map(|word| (*word).clone()).collect()
 }
 
 fn rebuild_segment_with_words(
@@ -1105,33 +1182,209 @@ fn append_token_like(buffer: &mut String, token: &str) {
     buffer.push_str(token);
 }
 
-fn combined_similarity(
-    primary_group: &[TranscriptSegment],
-    reference_group: &[TranscriptSegment],
-) -> f32 {
-    let primary = normalize_text(&join_segment_text(primary_group));
-    let reference = normalize_text(&join_segment_text(reference_group));
+/// Levenshtein contribution weight in the combined similarity metric.
+const LEVENSHTEIN_WEIGHT: f32 = 0.75;
+/// Token-overlap contribution weight in the combined similarity metric.
+const TOKEN_WEIGHT: f32 = 0.25;
 
-    if primary.is_empty() || reference.is_empty() {
-        return 0.0;
+/// Pre-normalized text of a segment (or a group of segments): the lowercased,
+/// whitespace-collapsed character vector used for Levenshtein distance, plus the
+/// sorted, de-duplicated token list used for the Jaccard overlap. Computing this
+/// once and reusing it removes the per-comparison allocation and normalization
+/// that previously dominated alignment time.
+#[derive(Default, Clone)]
+struct NormalizedText {
+    chars: Vec<char>,
+    tokens: Vec<Box<str>>,
+}
+
+impl NormalizedText {
+    fn from_text(text: &str) -> Self {
+        let normalized = normalize_text(text);
+        Self::from_normalized(&normalized)
     }
 
-    let levenshtein_similarity = normalized_levenshtein(&primary, &reference);
-    let token_similarity = token_overlap_similarity(&primary, &reference);
-    (levenshtein_similarity * 0.75) + (token_similarity * 0.25)
+    fn from_normalized(normalized: &str) -> Self {
+        let chars = normalized.chars().collect();
+        let mut tokens: Vec<Box<str>> = normalized.split_whitespace().map(Box::from).collect();
+        tokens.sort_unstable();
+        tokens.dedup();
+        NormalizedText { chars, tokens }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chars.is_empty()
+    }
+}
+
+/// A segment prepared for anchor detection: its normalized form plus the byte
+/// length of the normalized text (used to gate short, unreliable anchors exactly
+/// as the original `normalize_text(..).len()` check did).
+struct PreparedSegment {
+    byte_len: usize,
+    group: NormalizedText,
+}
+
+fn prepare_segments(segments: &[TranscriptSegment]) -> Vec<PreparedSegment> {
+    segments
+        .iter()
+        .map(|segment| {
+            let normalized = normalize_text(segment.text.trim());
+            PreparedSegment {
+                byte_len: normalized.len(),
+                group: NormalizedText::from_normalized(&normalized),
+            }
+        })
+        .collect()
+}
+
+/// Builds, for every start index `i`, the normalized text of each grouping
+/// `segments[i..i + len]` for `len` in `1..=max_group`. `table[i][len - 1]` is the
+/// group starting at `i` spanning `len` segments. Groups are accumulated
+/// incrementally so the total work is `O(max_group * total_chars)`.
+fn build_group_table(segments: &[TranscriptSegment], max_group: usize) -> Vec<Vec<NormalizedText>> {
+    let base: Vec<NormalizedText> = segments
+        .iter()
+        .map(|segment| NormalizedText::from_text(segment.text.trim()))
+        .collect();
+
+    (0..segments.len())
+        .map(|start| {
+            let mut groups = Vec::with_capacity(max_group.min(segments.len() - start));
+            let mut chars: Vec<char> = Vec::new();
+            let mut tokens: Vec<Box<str>> = Vec::new();
+
+            for offset in 0..max_group {
+                let Some(member) = base.get(start + offset) else {
+                    break;
+                };
+
+                // Empty members contribute no separator, matching the behaviour of
+                // `normalize_text(join_segment_text(group))` which collapses the
+                // whitespace around dropped (empty) segments.
+                if !member.chars.is_empty() {
+                    if !chars.is_empty() {
+                        chars.push(' ');
+                    }
+                    chars.extend_from_slice(&member.chars);
+                    tokens = merge_sorted_unique(&tokens, &member.tokens);
+                }
+
+                groups.push(NormalizedText {
+                    chars: chars.clone(),
+                    tokens: tokens.clone(),
+                });
+            }
+
+            groups
+        })
+        .collect()
+}
+
+/// Appends `addition` onto `target` as if their source texts were joined by a
+/// space, mirroring `normalize_text(join_*)`: an empty addition contributes
+/// nothing (no separator), matching whitespace collapse around empty fragments.
+fn append_normalized(target: &mut NormalizedText, addition: &NormalizedText) {
+    if addition.chars.is_empty() {
+        return;
+    }
+    if !target.chars.is_empty() {
+        target.chars.push(' ');
+    }
+    target.chars.extend_from_slice(&addition.chars);
+    target.tokens = merge_sorted_unique(&target.tokens, &addition.tokens);
+}
+
+fn merge_sorted_unique(left: &[Box<str>], right: &[Box<str>]) -> Vec<Box<str>> {
+    let mut merged = Vec::with_capacity(left.len() + right.len());
+    let (mut i, mut j) = (0, 0);
+
+    while i < left.len() && j < right.len() {
+        match left[i].as_ref().cmp(right[j].as_ref()) {
+            Ordering::Less => {
+                merged.push(left[i].clone());
+                i += 1;
+            }
+            Ordering::Greater => {
+                merged.push(right[j].clone());
+                j += 1;
+            }
+            Ordering::Equal => {
+                merged.push(left[i].clone());
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+
+    merged.extend_from_slice(&left[i..]);
+    merged.extend_from_slice(&right[j..]);
+    merged
+}
+
+/// Reusable scratch buffers for the banded Levenshtein computation so the inner
+/// alignment loop performs no per-comparison allocation.
+#[derive(Default)]
+struct LevenshteinScratch {
+    previous: Vec<usize>,
+    current: Vec<usize>,
 }
 
 fn combined_similarity_text(left: &str, right: &str) -> f32 {
-    let normalized_left = normalize_text(left);
-    let normalized_right = normalize_text(right);
+    let left = NormalizedText::from_text(left);
+    let right = NormalizedText::from_text(right);
+    let mut scratch = LevenshteinScratch::default();
+    combined_similarity_prepared(&left, &right, 0.0, &mut scratch)
+}
 
-    if normalized_left.is_empty() || normalized_right.is_empty() {
+/// Combined Levenshtein + token-overlap similarity over pre-normalized text.
+///
+/// `min_threshold` lets callers that only care whether the score clears a cutoff
+/// (anchor detection, the gap DP) skip the bulk of the Levenshtein matrix: the
+/// token overlap contributes at most `TOKEN_WEIGHT`, so any pair that can still
+/// reach the threshold must have an edit distance within a bounded band. Pairs
+/// outside that band cannot clear the threshold and are reported as `0.0`. With
+/// `min_threshold == 0.0` the full, exact similarity is computed.
+fn combined_similarity_prepared(
+    left: &NormalizedText,
+    right: &NormalizedText,
+    min_threshold: f32,
+    scratch: &mut LevenshteinScratch,
+) -> f32 {
+    if left.is_empty() || right.is_empty() {
         return 0.0;
     }
 
-    let levenshtein_similarity = normalized_levenshtein(&normalized_left, &normalized_right);
-    let token_similarity = token_overlap_similarity(&normalized_left, &normalized_right);
-    (levenshtein_similarity * 0.75) + (token_similarity * 0.25)
+    // Token overlap is far cheaper than the edit distance and bounds the result:
+    // the combined score is at most `LEVENSHTEIN_WEIGHT * 1.0 + TOKEN_WEIGHT * token`.
+    // For the high thresholds used by anchor detection this rejects the vast
+    // majority of candidate pairs before the expensive Levenshtein runs at all.
+    let token_similarity = token_overlap_sorted(&left.tokens, &right.tokens);
+    if LEVENSHTEIN_WEIGHT + TOKEN_WEIGHT * token_similarity < min_threshold {
+        return 0.0;
+    }
+
+    let left_len = left.chars.len();
+    let right_len = right.chars.len();
+    let max_len = left_len.max(right_len);
+
+    // Minimum Levenshtein similarity that could still reach `min_threshold`,
+    // given the token overlap we just computed.
+    let needed_levenshtein = (min_threshold - TOKEN_WEIGHT * token_similarity) / LEVENSHTEIN_WEIGHT;
+    let max_distance = if needed_levenshtein <= 0.0 {
+        max_len
+    } else {
+        let cap = (max_len as f32 * (1.0 - needed_levenshtein)).ceil() as usize;
+        cap.max(left_len.abs_diff(right_len))
+    };
+
+    let distance = bounded_levenshtein(&left.chars, &right.chars, max_distance, scratch);
+    if distance > max_distance {
+        return 0.0;
+    }
+
+    let levenshtein_similarity = 1.0 - (distance as f32 / max_len as f32);
+    (levenshtein_similarity * LEVENSHTEIN_WEIGHT) + (token_similarity * TOKEN_WEIGHT)
 }
 
 fn split_word_ranges_by_reference(
@@ -1222,54 +1475,125 @@ fn is_punctuation_only(text: &str) -> bool {
         })
 }
 
-fn normalized_levenshtein(left: &str, right: &str) -> f32 {
-    let left_chars = left.chars().collect::<Vec<_>>();
-    let right_chars = right.chars().collect::<Vec<_>>();
+/// Banded Levenshtein distance with an early-out at `max_distance`.
+///
+/// Returns the exact edit distance whenever it is `<= max_distance`; otherwise
+/// returns a value strictly greater than `max_distance` (capped at
+/// `max_distance + 1`). Restricting each row to a `±max_distance` band around the
+/// diagonal turns the worst case from `O(n*m)` into `O(n * max_distance)`, which
+/// is the key win for the high thresholds used by anchor detection. The optimal
+/// path for any distance `<= max_distance` is guaranteed to stay inside the band,
+/// so banding never affects results that callers actually use.
+fn bounded_levenshtein(
+    left: &[char],
+    right: &[char],
+    max_distance: usize,
+    scratch: &mut LevenshteinScratch,
+) -> usize {
+    let n = left.len();
+    let m = right.len();
 
-    if left_chars.is_empty() && right_chars.is_empty() {
-        return 1.0;
+    if n == 0 {
+        return m.min(max_distance + 1);
+    }
+    if m == 0 {
+        return n.min(max_distance + 1);
+    }
+    if n.abs_diff(m) > max_distance {
+        return max_distance + 1;
     }
 
-    let mut previous_row = (0..=right_chars.len()).collect::<Vec<_>>();
-    let mut current_row = vec![0usize; right_chars.len() + 1];
+    let unreachable = max_distance + 1;
 
-    for (left_index, left_char) in left_chars.iter().enumerate() {
-        current_row[0] = left_index + 1;
+    // Ensure the scratch rows are large enough, growing only when a longer input
+    // is seen. Crucially we do NOT clear them per call: every cell that is read is
+    // either written within the band this call or explicitly set to `unreachable`
+    // at a band boundary, so stale values from previous calls are never observed.
+    // This keeps the per-call cost O(n * band) instead of O(n * m).
+    if scratch.previous.len() < m + 1 {
+        scratch.previous.resize(m + 1, unreachable);
+    }
+    if scratch.current.len() < m + 1 {
+        scratch.current.resize(m + 1, unreachable);
+    }
+    let previous = &mut scratch.previous;
+    let current = &mut scratch.current;
 
-        for (right_index, right_char) in right_chars.iter().enumerate() {
-            let substitution_cost = if left_char == right_char { 0 } else { 1 };
-            current_row[right_index + 1] = std::cmp::min(
-                std::cmp::min(
-                    current_row[right_index] + 1,
-                    previous_row[right_index + 1] + 1,
-                ),
-                previous_row[right_index] + substitution_cost,
-            );
+    // Row 0 only needs to be valid across the first row's read window.
+    let init_high = max_distance.min(m);
+    for (j, slot) in previous.iter_mut().enumerate().take(init_high + 1) {
+        *slot = j;
+    }
+    if init_high + 1 <= m {
+        previous[init_high + 1] = unreachable;
+    }
+
+    for i in 1..=n {
+        let low = i.saturating_sub(max_distance).max(1);
+        let high = (i + max_distance).min(m);
+        let left_char = left[i - 1];
+
+        // Left boundary: column `low - 1` is read as the insertion source for the
+        // first band cell. It is only a real value when it is column 0 (deleting
+        // all `i` leading characters); otherwise it lies outside the band.
+        if low == 1 {
+            current[0] = i;
+        } else {
+            current[low - 1] = unreachable;
         }
 
-        std::mem::swap(&mut previous_row, &mut current_row);
+        let mut row_min = unreachable;
+        for j in low..=high {
+            let substitution_cost = if left_char == right[j - 1] { 0 } else { 1 };
+            let deletion = previous[j].saturating_add(1);
+            let insertion = current[j - 1].saturating_add(1);
+            let substitution = previous[j - 1].saturating_add(substitution_cost);
+            let value = deletion.min(insertion).min(substitution);
+            current[j] = value;
+            row_min = row_min.min(value);
+        }
+
+        if row_min > max_distance {
+            return unreachable;
+        }
+
+        // The cell just past the band must read as `unreachable` when it becomes
+        // `previous[high]` for the next row (the band advances by one).
+        if high + 1 <= m {
+            current[high + 1] = unreachable;
+        }
+
+        std::mem::swap(previous, current);
     }
 
-    let distance = previous_row[right_chars.len()];
-    let max_len = left_chars.len().max(right_chars.len()) as f32;
-    1.0 - (distance as f32 / max_len)
+    previous[m].min(unreachable)
 }
 
-fn token_overlap_similarity(left: &str, right: &str) -> f32 {
-    let left_tokens = left
-        .split_whitespace()
-        .collect::<std::collections::BTreeSet<_>>();
-    let right_tokens = right
-        .split_whitespace()
-        .collect::<std::collections::BTreeSet<_>>();
-
-    if left_tokens.is_empty() || right_tokens.is_empty() {
+/// Jaccard token overlap over two sorted, de-duplicated token lists. Linear
+/// merge, no allocation (the previous `BTreeSet` version allocated two trees per
+/// comparison).
+fn token_overlap_sorted(left: &[Box<str>], right: &[Box<str>]) -> f32 {
+    if left.is_empty() || right.is_empty() {
         return 0.0;
     }
 
-    let intersection = left_tokens.intersection(&right_tokens).count() as f32;
-    let union = left_tokens.union(&right_tokens).count() as f32;
-    intersection / union
+    let (mut i, mut j) = (0, 0);
+    let mut intersection = 0usize;
+
+    while i < left.len() && j < right.len() {
+        match left[i].as_ref().cmp(right[j].as_ref()) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => {
+                intersection += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+
+    let union = left.len() + right.len() - intersection;
+    intersection as f32 / union as f32
 }
 
 fn apply_inferred_speaker_labels(
@@ -1934,5 +2258,328 @@ mod tests {
             )
         );
         assert_eq!(merged[2].start, "02:28.500");
+    }
+
+    /// Reference full-matrix Levenshtein used to verify the banded version.
+    fn naive_levenshtein(left: &[char], right: &[char]) -> usize {
+        let mut previous: Vec<usize> = (0..=right.len()).collect();
+        let mut current = vec![0usize; right.len() + 1];
+        for (i, lc) in left.iter().enumerate() {
+            current[0] = i + 1;
+            for (j, rc) in right.iter().enumerate() {
+                let cost = if lc == rc { 0 } else { 1 };
+                current[j + 1] = (current[j] + 1)
+                    .min(previous[j + 1] + 1)
+                    .min(previous[j] + cost);
+            }
+            std::mem::swap(&mut previous, &mut current);
+        }
+        previous[right.len()]
+    }
+
+    fn chars(text: &str) -> Vec<char> {
+        text.chars().collect()
+    }
+
+    #[test]
+    fn bounded_levenshtein_matches_naive_within_band() {
+        let mut scratch = LevenshteinScratch::default();
+        let cases = [
+            ("", ""),
+            ("a", ""),
+            ("kitten", "sitting"),
+            ("security operations center", "security operations center"),
+            ("security operations center", "security operation center"),
+            ("the quick brown fox", "a completely different sentence here"),
+        ];
+        for (left, right) in cases {
+            let l = chars(left);
+            let r = chars(right);
+            let expected = naive_levenshtein(&l, &r);
+            // A band at least as wide as the true distance must reproduce it exactly.
+            let result = bounded_levenshtein(&l, &r, expected, &mut scratch);
+            assert_eq!(result, expected, "exact band for {left:?} vs {right:?}");
+            // A generous band must also reproduce it exactly.
+            let generous = bounded_levenshtein(&l, &r, expected + 5, &mut scratch);
+            assert_eq!(generous, expected, "generous band for {left:?} vs {right:?}");
+        }
+    }
+
+    #[test]
+    fn bounded_levenshtein_reports_overflow_beyond_band() {
+        let mut scratch = LevenshteinScratch::default();
+        let l = chars("kitten");
+        let r = chars("sitting");
+        let true_distance = naive_levenshtein(&l, &r);
+        // With a band tighter than the true distance, the result must exceed the band
+        // (never an under-estimate that a caller would mistake for a match).
+        let capped = bounded_levenshtein(&l, &r, true_distance - 1, &mut scratch);
+        assert!(capped > true_distance - 1);
+    }
+
+    fn naive_combined(left: &str, right: &str) -> f32 {
+        let left = normalize_text(left);
+        let right = normalize_text(right);
+        if left.is_empty() || right.is_empty() {
+            return 0.0;
+        }
+        let lc = chars(&left);
+        let rc = chars(&right);
+        let distance = naive_levenshtein(&lc, &rc);
+        let max_len = lc.len().max(rc.len()) as f32;
+        let levenshtein = 1.0 - distance as f32 / max_len;
+
+        let left_tokens: std::collections::BTreeSet<&str> = left.split_whitespace().collect();
+        let right_tokens: std::collections::BTreeSet<&str> = right.split_whitespace().collect();
+        let intersection = left_tokens.intersection(&right_tokens).count() as f32;
+        let union = left_tokens.union(&right_tokens).count() as f32;
+        let token = if union == 0.0 { 0.0 } else { intersection / union };
+
+        levenshtein * LEVENSHTEIN_WEIGHT + token * TOKEN_WEIGHT
+    }
+
+    #[test]
+    fn combined_similarity_is_exact_with_no_threshold() {
+        let cases = [
+            ("Hello itemis team", "hello itemis team."),
+            ("security operations center", "Security Operation Center."),
+            ("totally unrelated phrase", "nothing in common whatsoever"),
+            ("we reviewed the release plan", "We reviewed the release plan."),
+        ];
+        for (left, right) in cases {
+            let expected = naive_combined(left, right);
+            let actual = combined_similarity_text(left, right);
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "{left:?} vs {right:?}: expected {expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn combined_similarity_threshold_preserves_matches_and_rejects_below() {
+        let mut scratch = LevenshteinScratch::default();
+        let cases = [
+            ("security operations center", "security operations center."),
+            ("security operations center", "Security Operation Center."),
+            ("alpha beta gamma delta", "alpha beta gamma delta"),
+            ("alpha beta gamma delta", "completely different words entirely"),
+        ];
+        for threshold in [MIN_MATCH_SIMILARITY, ANCHOR_MATCH_SIMILARITY] {
+            for (left, right) in cases {
+                let exact = naive_combined(left, right);
+                let left_norm = NormalizedText::from_text(left);
+                let right_norm = NormalizedText::from_text(right);
+                let pruned = combined_similarity_prepared(
+                    &left_norm,
+                    &right_norm,
+                    threshold,
+                    &mut scratch,
+                );
+                if exact >= threshold {
+                    // Matches must be returned with the exact score.
+                    assert!(
+                        (pruned - exact).abs() < 1e-6,
+                        "{left:?} vs {right:?} @ {threshold}: kept score {pruned} != exact {exact}"
+                    );
+                } else {
+                    // Non-matches must stay below the threshold (pruned to 0.0 or exact).
+                    assert!(
+                        pruned < threshold,
+                        "{left:?} vs {right:?} @ {threshold}: {pruned} should be below threshold"
+                    );
+                }
+            }
+        }
+    }
+
+    fn synth_pair(n: usize) -> (Vec<TranscriptSegment>, Vec<TranscriptSegment>) {
+        const VOCAB: &[&str] = &[
+            "team", "release", "roadmap", "security", "operations", "center", "review", "update",
+            "customer", "feedback", "sprint", "deadline", "architecture", "service", "deployment",
+            "pipeline", "incident", "mitigation", "stakeholder", "alignment", "transcript",
+            "analysis", "model", "inference", "latency", "throughput", "benchmark", "optimization",
+            "regression", "coverage",
+        ];
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let mut rng = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut primary = Vec::with_capacity(n);
+        let mut reference = Vec::with_capacity(n);
+        let mut clock = 0u64;
+        for _ in 0..n {
+            let wc = 5 + (rng() as usize % 8);
+            let mut words = Vec::with_capacity(wc);
+            let mut toks = Vec::with_capacity(wc);
+            let start = clock;
+            for _ in 0..wc {
+                let t = VOCAB[rng() as usize % VOCAB.len()];
+                let w0 = clock;
+                clock += 200 + rng() % 300;
+                words.push(TranscriptWord {
+                    start: format!("{:02}:{:02}.000", w0 / 60000, (w0 / 1000) % 60),
+                    end: format!("{:02}:{:02}.000", clock / 60000, (clock / 1000) % 60),
+                    text: t.to_string(),
+                    speaker: Some("Speaker 1".into()),
+                });
+                toks.push(t);
+            }
+            clock += 80;
+            let text = toks.join(" ");
+            primary.push(TranscriptSegment {
+                start: format!("{:02}:{:02}.000", start / 60000, (start / 1000) % 60),
+                end: format!("{:02}:{:02}.000", clock / 60000, (clock / 1000) % 60),
+                speaker: "Speaker 1".into(),
+                text: text.clone(),
+                words: Some(words),
+                ..Default::default()
+            });
+            let mut rt = toks.clone();
+            if rng() % 100 < 12 {
+                let p = rng() as usize % rt.len();
+                rt[p] = VOCAB[rng() as usize % VOCAB.len()];
+            }
+            let mut rtext = rt.join(" ");
+            rtext.push('.');
+            reference.push(TranscriptSegment {
+                start: primary.last().unwrap().start.clone(),
+                end: primary.last().unwrap().end.clone(),
+                speaker: "Ref 1".into(),
+                text: rtext,
+                ..Default::default()
+            });
+        }
+        (primary, reference)
+    }
+
+    #[test]
+    #[ignore = "profiling harness; run with --ignored --nocapture"]
+    fn profile_phases() {
+        for n in [200usize, 1000, 4000] {
+            let (primary, reference) = synth_pair(n);
+
+            let t = Instant::now();
+            let anchors = detect_alignment_anchors(&primary, &reference);
+            let t_anchors = t.elapsed();
+
+            let t = Instant::now();
+            let gaps = build_alignment_gaps(primary.len(), reference.len(), &anchors);
+            let gap_alignments = align_gaps(&primary, &reference, &gaps);
+            let t_gaps = t.elapsed();
+
+            // Reassemble the alignment exactly as compute_alignment does.
+            let mut alignment = Vec::new();
+            for i in 0..gaps.len() {
+                alignment.extend(gap_alignments[i].iter().copied());
+                if let Some(anchor) = anchors.get(i) {
+                    alignment.push(AlignmentStep::Match {
+                        primary_len: 1,
+                        reference_len: 1,
+                        similarity: anchor.similarity,
+                    });
+                }
+            }
+
+            let t = Instant::now();
+            let merged = materialize_alignment(&primary, &reference, &alignment);
+            let t_materialize = t.elapsed();
+
+            // Break materialize into its sub-phases.
+            let t = Instant::now();
+            let mut assembled = Vec::new();
+            {
+                let mut pi = 0usize;
+                let mut ri = 0usize;
+                for step in &alignment {
+                    match *step {
+                        AlignmentStep::Match {
+                            primary_len,
+                            reference_len,
+                            similarity,
+                        } => {
+                            assembled.extend(build_matched_segments(
+                                &primary[pi..pi + primary_len],
+                                &reference[ri..ri + reference_len],
+                                similarity,
+                            ));
+                            pi += primary_len;
+                            ri += reference_len;
+                        }
+                        AlignmentStep::MissingGoogle => {
+                            assembled.push(build_missing_google_segment(&primary[pi]));
+                            pi += 1;
+                        }
+                        AlignmentStep::MissingParakeet => {
+                            assembled
+                                .push(build_missing_parakeet_segment(&primary, pi, &reference[ri]));
+                            ri += 1;
+                        }
+                    }
+                }
+            }
+            let t_build = t.elapsed();
+            let t = Instant::now();
+            let rebalanced = rebalance_adjacent_boundaries(assembled);
+            let t_rebalance = t.elapsed();
+            let t = Instant::now();
+            let _final = apply_inferred_speaker_labels(&primary, rebalanced);
+            let t_speakers = t.elapsed();
+
+            eprintln!(
+                "n={n:5}  detect={t_anchors:>9.2?}  gaps={t_gaps:>9.2?}  materialize={t_materialize:>9.2?}  out={}  anchors={}",
+                merged.len(),
+                anchors.len(),
+            );
+            eprintln!(
+                "         materialize breakdown: build={t_build:>9.2?}  rebalance={t_rebalance:>9.2?}  speakers={t_speakers:>9.2?}"
+            );
+
+            // Micro-cost of a single prepared similarity call (the inner primitive).
+            let a = NormalizedText::from_text(&primary[0].text);
+            let b = NormalizedText::from_text(&reference[0].text);
+            let mut scratch = LevenshteinScratch::default();
+            let iters = 1_000_000u32;
+            let t = Instant::now();
+            let mut acc = 0.0f32;
+            for _ in 0..iters {
+                acc += combined_similarity_prepared(
+                    &a,
+                    &b,
+                    ANCHOR_MATCH_SIMILARITY,
+                    &mut scratch,
+                );
+            }
+            let per = t.elapsed() / iters;
+            eprintln!("         per combined_similarity_prepared call (anchor thr): {per:?}  (acc={acc})");
+        }
+    }
+
+    #[test]
+    fn group_table_matches_joined_normalization() {
+        let segments = vec![
+            segment("00:00.000", "00:01.000", "S", "Hello there,"),
+            segment("00:01.000", "00:02.000", "S", "general Kenobi!"),
+            segment("00:02.000", "00:03.000", "S", "welcome back"),
+        ];
+        let table = build_group_table(&segments, MAX_PRIMARY_GROUP);
+        for start in 0..segments.len() {
+            for len in 1..=(segments.len() - start) {
+                let joined = join_segment_text(&segments[start..start + len]);
+                let expected = NormalizedText::from_text(&joined);
+                let actual = &table[start][len - 1];
+                assert_eq!(
+                    actual.chars, expected.chars,
+                    "chars mismatch at start={start} len={len}"
+                );
+                assert_eq!(
+                    actual.tokens, expected.tokens,
+                    "tokens mismatch at start={start} len={len}"
+                );
+            }
+        }
     }
 }

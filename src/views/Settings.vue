@@ -16,6 +16,7 @@ const localBaseUrl = ref(settings.value.baseUrl);
 const localApiKey = ref(settings.value.apiKey);
 const localModel = ref(settings.value.model);
 const localEnforceJsonSchema = ref(settings.value.enforceJsonSchema ?? true);
+const localMaxAnalysisChunkMinutes = ref(settings.value.maxAnalysisChunkMinutes ?? 30);
 const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const localPreClipPadding = ref(settings.value.preClipPadding || 0);
 const localPostClipPadding = ref(settings.value.postClipPadding || 0);
@@ -155,6 +156,7 @@ const hasChanges = computed(() => {
         localApiKey.value !== settings.value.apiKey ||
         localModel.value !== settings.value.model ||
         localEnforceJsonSchema.value !== (settings.value.enforceJsonSchema ?? true) ||
+        localMaxAnalysisChunkMinutes.value !== (settings.value.maxAnalysisChunkMinutes ?? 30) ||
         localPreClipPadding.value !== (settings.value.preClipPadding || 0) ||
         localPostClipPadding.value !== (settings.value.postClipPadding || 0) ||
         localTranscriptionBackend.value !== (settings.value.transcriptionBackend ?? 'llm') ||
@@ -341,6 +343,7 @@ function saveSettings() {
         apiKey: localApiKey.value,
         model: localModel.value,
         enforceJsonSchema: localEnforceJsonSchema.value,
+        maxAnalysisChunkMinutes: localMaxAnalysisChunkMinutes.value,
         preClipPadding: localPreClipPadding.value,
         postClipPadding: localPostClipPadding.value,
         transcriptionBackend: localTranscriptionBackend.value,
@@ -548,6 +551,23 @@ function cancel() {
                             </p>
                         </div>
                     </div>
+                </div>
+
+                <div class="mb-6 group">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
+                        Long Audio Handling
+                    </label>
+                    <label class="block text-xs font-medium text-gray-500 mb-2">Max analysis chunk length (minutes)</label>
+                    <input v-model.number="localMaxAnalysisChunkMinutes" type="number" step="1" min="0"
+                        class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                        placeholder="30" />
+                    <p class="text-xs text-gray-500 mt-2">
+                        Audio longer than this is split into chunks before LLM transcription, so each request stays
+                        under the provider's request timeout (avoids <span class="text-gray-400">504 Gateway Timeout</span>
+                        on long videos). Splits prefer a ~1s silence near the boundary and fall back to Parakeet word
+                        boundaries. Set to 0 to disable chunking. Only applies to LLM-based transcription.
+                    </p>
                 </div>
 
                 <!-- Clip Settings -->
