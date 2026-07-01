@@ -11,6 +11,7 @@ import HomeSourcePanel from "../components/HomeSourcePanel.vue";
 import TranscriptWorkspacePanel from "../components/TranscriptWorkspacePanel.vue";
 import WorkspaceTabs from "../components/WorkspaceTabs.vue";
 import type {
+    AudioChunk,
     AudioInfo,
     Clip,
     ClipWorkspaceState,
@@ -25,7 +26,7 @@ import type {
 import StatusBar from "../components/StatusBar.vue";
 import { useSettings } from "../composables/useSettings";
 import { useHomeSessionPersistence } from "../composables/useHomeSessionPersistence";
-import { adjustTimestamp } from "../composables/useTimeFormat";
+import { adjustTimestamp, formatTime, parseTime } from "../composables/useTimeFormat";
 import { beginRun, isRunCancelled } from "../composables/useRunCancellation";
 import { parseTranscriptResponse } from "../utils/transcriptParsing";
 import { buildTranscriptSidecar, parseTranscriptSidecar } from "../utils/transcriptSidecar";
@@ -91,6 +92,22 @@ const viralClipsState = ref<ViralClipsWorkspaceState>(createDefaultViralClipsWor
 const podcastWorkspaceState = ref<PodcastWorkspaceState>(createDefaultPodcastWorkspaceState());
 
 const lastAnalyzedSettings = ref<LastAnalyzedSettings>(createDefaultLastAnalyzedSettings());
+
+// Cache of the raw (pre-offset) Parakeet+Sortformer output so that changing
+// only LLM-side inputs (context, glossary, speaker count, filler removal) does
+// not re-run the expensive local transcription/diarization. The cache is keyed
+// by the audio-level inputs it depends on and persisted with the transcript.
+const rawParakeetSegments = ref<TranscriptSegment[]>([]);
+const parakeetCacheKey = ref<string>("");
+
+function currentParakeetCacheKey(): string {
+    return JSON.stringify({
+        inputPath: inputPath.value,
+        trimSilence: trimSilence.value,
+        parakeetModelPath: settings.value.parakeetModelPath,
+        sortformerModelPath: settings.value.sortformerModelPath,
+    });
+}
 
 const isLlmOnlyBackend = computed(() => settings.value.transcriptionBackend === 'llm');
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
@@ -188,6 +205,8 @@ const transcriptWorkspaceState = computed<TranscriptWorkspaceState>(() => ({
     useAdvancedAlignment: useAdvancedAlignment.value,
     speakerOrder: speakerOrder.value,
     lastAnalyzedSettings: lastAnalyzedSettings.value,
+    rawParakeetSegments: rawParakeetSegments.value,
+    parakeetCacheKey: parakeetCacheKey.value,
     settingsSnapshot: {
         glossary: settings.value.glossary,
         transcriptionBackend: settings.value.transcriptionBackend,
@@ -296,6 +315,8 @@ function resetTranscriptWorkspaceState() {
     useAdvancedAlignment.value = false;
     speakerOrder.value = [];
     lastAnalyzedSettings.value = createDefaultLastAnalyzedSettings();
+    rawParakeetSegments.value = [];
+    parakeetCacheKey.value = "";
 }
 
 function resetDerivedWorkspaceState() {
@@ -317,6 +338,8 @@ function applyTranscriptWorkspace(state: TranscriptWorkspaceState) {
     useAdvancedAlignment.value = state.useAdvancedAlignment;
     speakerOrder.value = state.speakerOrder;
     lastAnalyzedSettings.value = state.lastAnalyzedSettings;
+    rawParakeetSegments.value = state.rawParakeetSegments ?? [];
+    parakeetCacheKey.value = state.parakeetCacheKey ?? "";
     settings.value.glossary = state.settingsSnapshot.glossary;
     settings.value.transcriptionBackend = state.settingsSnapshot.transcriptionBackend;
     settings.value.parakeetModelPath = state.settingsSnapshot.parakeetModelPath;
@@ -514,6 +537,12 @@ async function loadTranscript() {
                 sortformerModelPath: settings.value.sortformerModelPath ?? '',
             };
         }
+        if (parsed.rawParakeetSegments !== undefined) {
+            rawParakeetSegments.value = parsed.rawParakeetSegments;
+        }
+        if (parsed.parakeetCacheKey !== undefined) {
+            parakeetCacheKey.value = parsed.parakeetCacheKey;
+        }
         if (parsed.transcriptionBackend !== undefined) {
             settings.value.transcriptionBackend = parsed.transcriptionBackend;
         }
@@ -696,34 +725,25 @@ function logExecution(type: 'analysis' | 'generation', inputSize: number, durati
     localStorage.setItem('executionHistory', JSON.stringify(executionHistory.value));
 }
 
-async function analyzeWithLlmTranscript(
+async function requestLlmTranscriptForChunk(
     runId: number,
-    analysisAudioPath: string,
-    adjustTimestamps?: boolean,
-    processedOffsets?: ProcessedAudio['offsets'],
-): Promise<TranscriptSegment[]> {
+    chunkAudioPath: string,
+): Promise<string> {
     const isGoogleApi = settings.value.baseUrl.includes('generativelanguage.googleapis.com');
     let uri: string | null = null;
     let audioBase64: string | null = null;
 
     if (isGoogleApi) {
-        status.value = "Uploading file...";
         uri = await invoke<string | null>("upload_file", {
             runId,
             apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
-            path: analysisAudioPath
+            path: chunkAudioPath
         });
         assertActiveRun(runId);
-
-        if (uri) {
-            status.value = "File uploaded successfully";
-        }
     } else {
-        status.value = "Encoding audio as base64...";
-        audioBase64 = await invoke<string>("read_file_as_base64", { path: analysisAudioPath });
+        audioBase64 = await invoke<string>("read_file_as_base64", { path: chunkAudioPath });
         assertActiveRun(runId);
-        status.value = "Audio encoded successfully";
     }
 
     const response = await invoke<string>("analyze_audio", {
@@ -740,12 +760,133 @@ async function analyzeWithLlmTranscript(
         audioBase64: audioBase64
     });
     assertActiveRun(runId);
+    return response;
+}
 
-    const timestampAdjuster = adjustTimestamps && processedOffsets
+// Don't re-split below this; if a chunk this small still times out, the
+// problem isn't size and splitting further won't help.
+const MIN_RESPLIT_SECONDS = 120;
+// Backstop against pathological recursion.
+const MAX_RESPLIT_DEPTH = 4;
+
+// A failure worth retrying by shrinking the chunk: gateway/upstream timeouts
+// (the 504 case) and length-driven truncation that breaks transcript parsing.
+function isResplittableError(error: unknown): boolean {
+    if (isRunCancelled(error)) return false;
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return /\b50[234]\b|gateway timeout|timed out|timeout|deadline exceeded|failed to (parse|find) (transcript|json)|json/.test(message);
+}
+
+// Builds the timestamp mapper for a chunk: shift chunk-relative timestamps by
+// the chunk's absolute offset in the (trimmed) timeline, then apply any
+// silence-trim offset that maps the trimmed timeline back onto the original.
+function buildChunkAdjuster(
+    baseOffset: number,
+    silenceAdjuster?: (timestamp: string) => string,
+): (timestamp: string) => string {
+    return (timestamp: string) => {
+        const shifted = baseOffset === 0 ? timestamp : formatTime(parseTime(timestamp) + baseOffset);
+        return silenceAdjuster ? silenceAdjuster(shifted) : shifted;
+    };
+}
+
+// Transcribe one chunk; on a size-related failure (504/timeout/truncation),
+// re-split that chunk into smaller pieces and retry each recursively rather
+// than failing the whole run.
+async function transcribeChunkWithResplit(
+    runId: number,
+    chunkPath: string,
+    baseOffset: number,
+    chunkMaxSeconds: number,
+    silenceAdjuster: ((timestamp: string) => string) | undefined,
+    depth: number,
+    label: string,
+): Promise<TranscriptSegment[]> {
+    try {
+        const response = await requestLlmTranscriptForChunk(runId, chunkPath);
+        return parseTranscriptResponse(response, buildChunkAdjuster(baseOffset, silenceAdjuster));
+    } catch (error) {
+        const halfMax = chunkMaxSeconds / 2;
+        if (depth >= MAX_RESPLIT_DEPTH || halfMax < MIN_RESPLIT_SECONDS || !isResplittableError(error)) {
+            throw error;
+        }
+
+        console.warn(`Chunk ${label} failed (${error}); re-splitting into smaller parts and retrying.`);
+        status.value = `Part ${label} timed out; splitting it into smaller parts and retrying...`;
+        const subChunks = await invoke<AudioChunk[]>("split_audio_for_analysis", {
+            runId,
+            path: chunkPath,
+            maxChunkSeconds: halfMax,
+            parakeetModelPath: settings.value.parakeetModelPath,
+        });
+        assertActiveRun(runId);
+
+        if (subChunks.length <= 1) {
+            // The chunk couldn't be divided further (e.g. no usable boundary);
+            // surface the original failure rather than looping.
+            throw error;
+        }
+
+        const resplitSegments: TranscriptSegment[] = [];
+        for (let index = 0; index < subChunks.length; index++) {
+            const subChunk = subChunks[index];
+            resplitSegments.push(...await transcribeChunkWithResplit(
+                runId,
+                subChunk.path,
+                baseOffset + subChunk.start_offset,
+                halfMax,
+                silenceAdjuster,
+                depth + 1,
+                `${label}.${index + 1}`,
+            ));
+        }
+        return resplitSegments;
+    }
+}
+
+async function analyzeWithLlmTranscript(
+    runId: number,
+    analysisAudioPath: string,
+    adjustTimestamps?: boolean,
+    processedOffsets?: ProcessedAudio['offsets'],
+): Promise<TranscriptSegment[]> {
+    // Long audio is split into chunks so each request stays under the
+    // provider's request timeout. Short audio yields a single chunk pointing at
+    // the original file (no extra work).
+    const maxChunkSeconds = (settings.value.maxAnalysisChunkMinutes ?? 30) * 60;
+    status.value = "Planning audio chunks...";
+    const chunks = await invoke<AudioChunk[]>("split_audio_for_analysis", {
+        runId,
+        path: analysisAudioPath,
+        maxChunkSeconds,
+        parakeetModelPath: settings.value.parakeetModelPath,
+    });
+    assertActiveRun(runId);
+
+    // Maps a silence-trimmed timestamp back onto the original timeline.
+    const silenceAdjuster = adjustTimestamps && processedOffsets
         ? (timestamp: string) => adjustTimestamp(timestamp, processedOffsets)
         : undefined;
 
-    return parseTranscriptResponse(response, timestampAdjuster);
+    const allSegments: TranscriptSegment[] = [];
+    for (let index = 0; index < chunks.length; index++) {
+        const chunk = chunks[index];
+        if (chunks.length > 1) {
+            status.value = `Analyzing with AI (part ${index + 1}/${chunks.length})...`;
+        }
+
+        allSegments.push(...await transcribeChunkWithResplit(
+            runId,
+            chunk.path,
+            chunk.start_offset,
+            maxChunkSeconds,
+            silenceAdjuster,
+            0,
+            `${index + 1}`,
+        ));
+    }
+
+    return allSegments;
 }
 
 function adjustWordWithOffsets(word: TranscriptWord, offsets: ProcessedAudio['offsets']): TranscriptWord {
@@ -872,12 +1013,22 @@ async function processFile() {
             } else {
                 let parakeetSegments: TranscriptSegment[];
                 try {
-                    parakeetSegments = await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
-                        audioPath: analysisAudioPath,
-                        parakeetModelPath: settings.value.parakeetModelPath,
-                        sortformerModelPath: settings.value.sortformerModelPath,
-                    });
-                    assertActiveRun(runId);
+                    const cacheKey = currentParakeetCacheKey();
+                    if (parakeetCacheKey.value === cacheKey && rawParakeetSegments.value.length > 0) {
+                        status.value = "Reusing Parakeet transcript (audio unchanged)...";
+                        parakeetSegments = rawParakeetSegments.value;
+                    } else {
+                        parakeetSegments = await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
+                            audioPath: analysisAudioPath,
+                            parakeetModelPath: settings.value.parakeetModelPath,
+                            sortformerModelPath: settings.value.sortformerModelPath,
+                        });
+                        assertActiveRun(runId);
+                        // Cache the raw, pre-offset Parakeet output for reuse when
+                        // only LLM-side inputs change later.
+                        rawParakeetSegments.value = parakeetSegments;
+                        parakeetCacheKey.value = cacheKey;
+                    }
                 } catch (error) {
                     failStage("Parakeet transcription", error);
                     return;
