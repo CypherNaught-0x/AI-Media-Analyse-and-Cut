@@ -37,7 +37,7 @@ import {
     createDefaultViralClipsWorkspaceState,
 } from "../utils/editSession";
 
-import type { TranscriptWord } from '../types';
+import { adjustSegmentsWithOffsets } from "../utils/transcriptOffsets";
 
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
@@ -157,13 +157,15 @@ async function refreshExtractedAudioPath() {
         extractedAudioPath.value = "";
         return;
     }
-    // prepare_audio_for_ai writes the extracted stream next to the source with an .ogg extension.
-    const candidate = input.replace(/\.[^/.]+$/, "") + ".ogg";
+    // The seekable preview audio is written next to the source as
+    // "<name>_preview.m4a" (see prepare_preview_audio). Reuse it if a previous
+    // run already produced it; otherwise it is created during analysis.
+    const candidate = input.replace(/\.[^/.]+$/, "") + "_preview.m4a";
     try {
         const exists = await invoke<boolean>("path_exists", { path: candidate });
         extractedAudioPath.value = exists ? candidate : "";
     } catch (error) {
-        console.error("Failed to check extracted audio path:", error);
+        console.error("Failed to check preview audio path:", error);
         extractedAudioPath.value = "";
     }
 }
@@ -889,26 +891,6 @@ async function analyzeWithLlmTranscript(
     return allSegments;
 }
 
-function adjustWordWithOffsets(word: TranscriptWord, offsets: ProcessedAudio['offsets']): TranscriptWord {
-    return {
-        ...word,
-        start: adjustTimestamp(word.start, offsets),
-        end: adjustTimestamp(word.end, offsets),
-    };
-}
-
-function adjustSegmentsWithOffsets(
-    transcriptSegments: TranscriptSegment[],
-    offsets: ProcessedAudio['offsets'],
-): TranscriptSegment[] {
-    return transcriptSegments.map((segment) => ({
-        ...segment,
-        start: adjustTimestamp(segment.start, offsets),
-        end: adjustTimestamp(segment.end, offsets),
-        words: segment.words?.map((word) => adjustWordWithOffsets(word, offsets)),
-    }));
-}
-
 async function processFile() {
     if (!inputPath.value) {
         status.value = "Please provide a media file.";
@@ -959,8 +941,22 @@ async function processFile() {
             failStage("Audio preparation", error);
             return;
         }
-        extractedAudioPath.value = audioInfo.path;
         status.value = `Audio prepared: ${audioInfo.path} (${(audioInfo.size / 1024 / 1024).toFixed(2)} MB)`;
+
+        // Produce a seekable, webview-playable preview (AAC/m4a) from the extracted
+        // stream for the in-app audio scrubber. Failure here is non-fatal: it only
+        // disables the audio preview, not the transcription itself.
+        try {
+            const previewPath = await invoke<string>("prepare_preview_audio", {
+                runId,
+                sourcePath: audioInfo.path,
+            });
+            extractedAudioPath.value = previewPath;
+            await grantMediaAccess(previewPath);
+        } catch (error) {
+            console.warn("Preview audio preparation failed; audio scrubber disabled.", error);
+            extractedAudioPath.value = "";
+        }
 
         let processedAudio: ProcessedAudio;
         if (trimSilence.value) {
