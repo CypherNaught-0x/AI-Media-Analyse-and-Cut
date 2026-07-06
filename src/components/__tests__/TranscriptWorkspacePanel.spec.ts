@@ -176,12 +176,15 @@ describe('TranscriptWorkspacePanel', () => {
     expect(wrapper.text()).toContain('2 Segments');
   });
 
-  it('loads the extracted audio stream and enables segment previews when available', () => {
+  it('plays the seekable preview audio (not the source) and enables segment previews', () => {
     const wrapper = mount(TranscriptWorkspacePanel, {
       props: {
         inputPath: '/tmp/audio.mp3',
         hasMediaFile: true,
-        extractedAudioPath: '/tmp/audio.ogg',
+        // The preview scrubber plays the transcoded, seekable AAC/m4a preview —
+        // not the source file (whose audio codec the webview may not decode) and
+        // not the Opus/Ogg analysis audio (which WKWebView can't reliably seek).
+        extractedAudioPath: '/tmp/audio_preview.m4a',
         displaySegments: segments,
         originalSegments: segments,
         translations: {},
@@ -196,7 +199,7 @@ describe('TranscriptWorkspacePanel', () => {
     });
 
     const audio = wrapper.get('[data-testid="extracted-audio"]');
-    expect(audio.attributes('src')).toBe('/tmp/audio.ogg');
+    expect(audio.attributes('src')).toBe('/tmp/audio_preview.m4a');
     expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('true');
     // Video playback buttons are gated on the source media being present.
     expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('true');
@@ -223,7 +226,7 @@ describe('TranscriptWorkspacePanel', () => {
     expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('false');
   });
 
-  it('hides the extracted audio player and disables previews without an extracted stream', () => {
+  it('hides the audio player and disables audio previews without a preview stream', () => {
     const wrapper = mount(TranscriptWorkspacePanel, {
       props: {
         inputPath: '/tmp/audio.mp3',
