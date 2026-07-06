@@ -326,8 +326,15 @@ function onTimeUpdate() {
         <svg class="h-4 w-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <path stroke-linecap="round" stroke-linejoin="round" d="M4 12h2l2-6 4 16 3-10 2 4h3" />
         </svg>
-        <span>Extracted Audio</span>
+        <span>Audio</span>
       </div>
+      <!--
+        `extractedAudioPath` is the seekable AAC/m4a preview (see
+        prepare_preview_audio), on the transcript's original timeline. We use it
+        rather than the source file because the webview (WKWebView on macOS)
+        often can't decode the source's audio track, and it can't reliably seek
+        the Opus/Ogg analysis audio (bogus duration + mis-seeking).
+      -->
       <audio
         ref="audioRef"
         :src="convertFileSrc(extractedAudioPath!)"
@@ -341,7 +348,7 @@ function onTimeUpdate() {
         @ended="clearPreviewState"
       ></audio>
       <p class="mt-2 text-xs text-gray-500">
-        Use the play buttons next to each segment to preview the original audio at that timestamp.
+        Use the play buttons next to each segment to preview the audio at that timestamp.
       </p>
     </div>
 
