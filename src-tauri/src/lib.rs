@@ -301,6 +301,131 @@ async fn prepare_audio_for_ai(
     })
 }
 
+/// Transcode `source_path` into a seekable `<stem>_preview.m4a` sitting next to
+/// it, purely for in-app playback preview.
+///
+/// The analysis audio is Opus in an Ogg container, and the source media's own
+/// audio track is often a codec the webview can't decode. WKWebView (macOS) can
+/// neither seek Ogg/Opus (it reports a bogus duration and mis-seeks) nor decode
+/// many source codecs, so segment previews need a transcoded, seekable file.
+/// AAC in an MP4/M4A container with `+faststart` (moov atom at the front) plays
+/// and seeks reliably. This does not touch the Ogg/Opus analysis+upload pipeline.
+///
+/// `source_path` is expected to be the already-extracted analysis `.ogg` (fast,
+/// and on the same original timeline), but any decodable audio/video file works.
+/// A cached preview is reused when it is at least as new as the source.
+#[tauri::command]
+async fn prepare_preview_audio(
+    run_id: u64,
+    window: tauri::Window,
+    source_path: String,
+    run_control: State<'_, RunControl>,
+) -> Result<String, String> {
+    run_control.ensure_active(run_id)?;
+
+    let source = PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("Source audio file does not exist".to_string());
+    }
+
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio");
+    let output_path = source.with_file_name(format!("{}_preview.m4a", stem));
+
+    // Reuse an existing preview when it is not older than its source.
+    if let (Ok(out_meta), Ok(src_meta)) =
+        (std::fs::metadata(&output_path), std::fs::metadata(&source))
+    {
+        if let (Ok(out_modified), Ok(src_modified)) = (out_meta.modified(), src_meta.modified()) {
+            if out_modified >= src_modified {
+                return Ok(output_path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    let duration = get_media_duration(source.to_str().unwrap());
+    let mut last_error = None;
+
+    let mut child = FfmpegCommand::new()
+        .input(source.to_str().unwrap())
+        .args(&[
+            "-y",
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-movflags",
+            "+faststart",
+        ])
+        .output(output_path.to_str().unwrap())
+        .spawn()
+        .map_err(|e| {
+            format_ffmpeg_spawn_error("prepare preview audio", &source, Some(&output_path), &e)
+        })?;
+
+    let pid = child.as_inner().id();
+    run_control.register_pid(run_id, pid)?;
+
+    child
+        .iter()
+        .map_err(|e| {
+            format!(
+                "Failed while reading FFmpeg output during preview audio preparation for '{}': {}",
+                source.display(),
+                e
+            )
+        })?
+        .for_each(|event| match event {
+            FfmpegEvent::Progress(progress) => {
+                let current_seconds = crate::time_utils::parse_timestamp_to_seconds_raw(
+                    &progress.time,
+                )
+                .unwrap_or(0.0);
+                let percentage = duration
+                    .filter(|d| *d > 0.0)
+                    .map(|d| (current_seconds / d) * 100.0);
+                let _ = window.emit(
+                    "progress",
+                    serde_json::json!({ "time": progress.time, "percentage": percentage }),
+                );
+            }
+            FfmpegEvent::Error(err) => {
+                last_error = Some(err);
+            }
+            FfmpegEvent::Log(level, msg) => {
+                if matches!(
+                    level,
+                    ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal
+                ) {
+                    last_error = Some(msg);
+                }
+            }
+            _ => {}
+        });
+
+    run_control.clear_pid(run_id, pid);
+
+    if run_control.is_cancelled(run_id) {
+        return Err(RUN_CANCELLED_MESSAGE.to_string());
+    }
+
+    if !output_path.exists() {
+        let msg = last_error
+            .unwrap_or_else(|| "FFmpeg finished without creating the preview file".to_string());
+        return Err(format!(
+            "Preview audio preparation failed for '{}' -> '{}': {}",
+            source.display(),
+            output_path.display(),
+            msg
+        ));
+    }
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
 mod alignment;
 pub mod chunking;
 pub mod gemini;
@@ -878,6 +1003,7 @@ pub fn run() {
             cancel_current_run,
             init_ffmpeg,
             prepare_audio_for_ai,
+            prepare_preview_audio,
             upload_file,
             split_audio_for_analysis,
             analyze_audio,
