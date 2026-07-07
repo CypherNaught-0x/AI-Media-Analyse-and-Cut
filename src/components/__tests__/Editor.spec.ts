@@ -179,6 +179,57 @@ describe('Editor.vue', () => {
     expect(updatedSegments[0].text).toBe('Hello world How are you?');
   });
 
+  it('merges only the selected adjacent segments into one', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+      },
+    });
+
+    const segs = wrapper.findAll('.segment');
+    await segs[0].trigger('click', { shiftKey: true });
+    await segs[1].trigger('click', { shiftKey: true });
+
+    const mergeButton = wrapper.findAll('button').find(b => b.text() === 'Merge Selected');
+    expect(mergeButton).toBeDefined();
+    await mergeButton!.trigger('click');
+
+    const updated = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    expect(updated).toHaveLength(1);
+    expect(updated[0].start).toBe('00:00');
+    expect(updated[0].end).toBe('00:20');
+    expect(updated[0].text).toBe('Hello world How are you?');
+  });
+
+  it('absorbs unselected in-between segments so the merge stays contiguous', async () => {
+    const threeSegments: TranscriptSegment[] = [
+      { start: '00:00', end: '00:10', speaker: 'Speaker 1', text: 'First' },
+      { start: '00:10', end: '00:20', speaker: 'Speaker 2', text: 'Second' },
+      { start: '00:20', end: '00:30', speaker: 'Speaker 1', text: 'Third' },
+    ];
+
+    const wrapper = mount(Editor, {
+      props: {
+        segments: threeSegments,
+      },
+    });
+
+    const segs = wrapper.findAll('.segment');
+    // Select only the first and last, skipping the middle segment.
+    await segs[0].trigger('click', { shiftKey: true });
+    await segs[2].trigger('click', { shiftKey: true });
+
+    const mergeButton = wrapper.findAll('button').find(b => b.text() === 'Merge Selected');
+    await mergeButton!.trigger('click');
+
+    const updated = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    // The in-between segment is absorbed, leaving a single non-overlapping segment.
+    expect(updated).toHaveLength(1);
+    expect(updated[0].start).toBe('00:00');
+    expect(updated[0].end).toBe('00:30');
+    expect(updated[0].text).toBe('First Second Third');
+  });
+
   it('filters to segments that require review below the selected threshold', () => {
     const reviewSegments: TranscriptSegment[] = [
       { start: '00:00', end: '00:05', speaker: 'Speaker 1', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.96 },

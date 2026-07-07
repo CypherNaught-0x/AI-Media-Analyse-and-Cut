@@ -1,7 +1,13 @@
+<script lang="ts">
+// Module-scoped guard so FFmpeg is initialized only once per app session
+// rather than on every remount of the Home view (e.g. Home -> Settings -> Home).
+let ffmpegInitialized = false;
+</script>
+
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
 import ViralClipsGenerator from "../components/ViralClipsGenerator.vue";
@@ -38,6 +44,7 @@ import {
 } from "../utils/editSession";
 
 import { adjustSegmentsWithOffsets } from "../utils/transcriptOffsets";
+import { appendFileNameSuffix } from "../utils/filePath";
 
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
@@ -381,6 +388,8 @@ const sessionPersistence = useHomeSessionPersistence({
     applyClipWorkspace,
 });
 
+let unlistenProgress: UnlistenFn | null = null;
+
 onMounted(async () => {
     const history = localStorage.getItem('executionHistory');
     if (history) {
@@ -392,11 +401,11 @@ onMounted(async () => {
     }
     await sessionPersistence.restoreAutosavedSession();
 
+    // Register the progress listener on every mount and keep the returned
+    // unlisten handle so onUnmounted can tear it down. Without this, navigating
+    // away and back stacks a new listener on each remount.
     try {
-        const res = await invoke<string>("init_ffmpeg");
-        status.value = res;
-        
-        await listen<any>('progress', (event) => {
+        unlistenProgress = await listen<any>('progress', (event) => {
             const payload = event.payload;
             if (typeof payload === 'number') {
                  status.value = `Processing... ${payload.toFixed(1)}s`;
@@ -412,11 +421,11 @@ onMounted(async () => {
                         ? payload.etaSeconds
                         : null;
                      let statusMsg = `Processing... ${payload.percentage.toFixed(1)}%`;
-                     
+
                      if (payload.current_clip && payload.total_clips) {
                          statusMsg = `Exporting clip ${payload.current_clip}/${payload.total_clips} (${payload.percentage.toFixed(1)}%)`;
                      }
-                     
+
                      status.value = statusMsg;
                  }
                  if (payload.message) {
@@ -425,11 +434,27 @@ onMounted(async () => {
             }
         });
     } catch (e) {
-        status.value = `Error initializing FFmpeg: ${e}`;
+        console.error("Failed to register progress listener:", e);
+    }
+
+    // FFmpeg only needs to be initialized once per app session; skip the work on
+    // subsequent remounts to avoid redundant re-initialization side effects.
+    if (!ffmpegInitialized) {
+        try {
+            const res = await invoke<string>("init_ffmpeg");
+            status.value = res;
+            ffmpegInitialized = true;
+        } catch (e) {
+            status.value = `Error initializing FFmpeg: ${e}`;
+        }
     }
 });
 
 onUnmounted(() => {
+    if (unlistenProgress) {
+        unlistenProgress();
+        unlistenProgress = null;
+    }
     sessionPersistence.dispose();
 });
 
@@ -710,15 +735,28 @@ function stopSimulatedProgress() {
 }
 
 function estimateTime(type: 'analysis' | 'generation', inputSize: number): number {
-    const relevant = executionHistory.value.filter(h => h.type === type);
+    const DEFAULT_ESTIMATE = 30;
+    // Only learn from entries with a positive inputSize; a zero/negative size
+    // would make duration/inputSize produce Infinity/NaN and poison the rate.
+    const relevant = executionHistory.value.filter(h => h.type === type && h.inputSize > 0);
+
+    let estimate: number;
     if (relevant.length === 0) {
         // Default estimates
-        if (type === 'analysis') return inputSize * 0.1; // e.g. 10% of audio duration
-        if (type === 'generation') return inputSize * 0.005; // e.g. 5ms per char
-        return 30;
+        if (type === 'analysis') estimate = inputSize * 0.1; // e.g. 10% of audio duration
+        else if (type === 'generation') estimate = inputSize * 0.005; // e.g. 5ms per char
+        else estimate = DEFAULT_ESTIMATE;
+    } else {
+        const rate = relevant.reduce((acc, h) => acc + (h.duration / h.inputSize), 0) / relevant.length;
+        estimate = inputSize * rate;
     }
-    const rate = relevant.reduce((acc, h) => acc + (h.duration / h.inputSize), 0) / relevant.length;
-    return inputSize * rate;
+
+    // Guard the caller against NaN/Infinity/non-positive estimates (e.g. when
+    // inputSize itself is <= 0), which would otherwise poison the progress bar.
+    if (!Number.isFinite(estimate) || estimate <= 0) {
+        return DEFAULT_ESTIMATE;
+    }
+    return estimate;
 }
 
 function logExecution(type: 'analysis' | 'generation', inputSize: number, duration: number) {
@@ -1182,7 +1220,7 @@ async function cutVideo() {
 
     try {
         const cutSegments = segments.value.map(s => ({ start: s.start, end: s.end }));
-        const outputPath = inputPath.value.replace(/(\.[\ w\d]+)$/, "_cut$1");
+        const outputPath = appendFileNameSuffix(inputPath.value, "_cut");
 
         await invoke("cut_video", {
             runId,

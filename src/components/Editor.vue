@@ -583,31 +583,32 @@ const mergeSelected = () => {
   const indices = Array.from(selectedIndices.value).sort((a, b) => a - b);
   if (indices.length < 2) return;
 
-  // Check for contiguity (optional, but good for sanity)
-  // For now, we just merge everything between first and last selected?
-  // Or just the selected ones.
-  
-  const first = props.segments[indices[0]];
-  const last = props.segments[indices[indices.length - 1]];
-  
-  const mergedText = indices.map(i => props.segments[i].text).join(' ');
-  
+  const firstIndex = indices[0];
+  const lastIndex = indices[indices.length - 1];
+
+  // Absorb every segment between the first and last selected (inclusive),
+  // including unselected ones in between. Leaving those in place would create
+  // a merged segment whose time range overlaps them and corrupts the timeline.
+  const range: number[] = [];
+  for (let i = firstIndex; i <= lastIndex; i++) range.push(i);
+
+  const first = props.segments[firstIndex];
+  const last = props.segments[lastIndex];
+
+  const mergedText = range.map((i) => props.segments[i].text).join(' ');
+
   const merged: TranscriptSegment = {
     start: first.start,
     end: last.end,
     speaker: first.speaker,
     text: mergedText,
-    words: mergeWords(indices.map((i) => props.segments[i]))
+    words: mergeWords(range.map((i) => props.segments[i]))
   };
-  
+
   const newSegments = [...props.segments];
-  // Remove in reverse order
-  for (let i = indices.length - 1; i >= 0; i--) {
-    newSegments.splice(indices[i], 1);
-  }
-  // Insert at first index
-  newSegments.splice(indices[0], 0, merged);
-  
+  // Replace the whole contiguous range with the single merged segment.
+  newSegments.splice(firstIndex, range.length, merged);
+
   emit('update:segments', newSegments);
   selectedIndices.value.clear();
 };
