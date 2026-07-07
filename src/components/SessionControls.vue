@@ -14,13 +14,13 @@ defineEmits<{
   <div class="mb-8 flex flex-wrap gap-3">
     <button
       @click="$emit('save-session')"
-      class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10"
+      class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
     >
       Save Session
     </button>
     <button
       @click="$emit('load-session')"
-      class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10"
+      class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
     >
       Load Session
     </button>

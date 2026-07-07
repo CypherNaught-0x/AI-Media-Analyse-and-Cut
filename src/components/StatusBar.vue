@@ -42,7 +42,7 @@ function formatEta(seconds: number | null | undefined): string {
                     v-if="isProcessing"
                     @click="emit('cancel')"
                     :disabled="isCancelling"
-                    class="ml-auto rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    class="ml-auto rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-red-500/50 focus-visible:outline-none"
                 >
                     {{ isCancelling ? 'Cancelling...' : 'Cancel' }}
                 </button>
