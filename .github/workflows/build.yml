@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - 'app-v*'
   pull_request:
     branches:
       - main
@@ -65,6 +65,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
+      - name: Run Frontend Tests
+        run: pnpm test -- --run
+
       - name: Run Backend Tests
         env:
           API_KEY: ${{ secrets.API_KEY }}
@@ -81,7 +84,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          TAURI_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: app-v__VERSION__
           releaseName: 'App v__VERSION__'

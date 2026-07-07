@@ -39,7 +39,7 @@ You can download the latest version for Windows and MacOS from the releases page
 
 #### MacOS
 
-1. Download the `.dmg` file (e.g., `ai-media-cutter_x.x.x_aarch64.dmg` for Apple Silicon or `_x64.dmg` for Intel).
+1. Download the `.dmg` file (e.g., `ai-media-cutter_x.x.x_aarch64.dmg`). macOS builds are provided for Apple Silicon only.
 2. Drag the app to your **Applications** folder.
 3. If you get an "App is Damaged and can't be opened" error run `xattr -dr com.apple.quarantine /Applications/ai-media-cutter.app`
 4. **"Unidentified Developer" Warning**:
@@ -58,8 +58,8 @@ You can download the latest version for Windows and MacOS from the releases page
 3.  **Install pnpm**: `npm install -g pnpm`
 4.  **Clone the repository**:
     ```bash
-    git clone https://github.com/itemis/ai-media-cutter.git
-    cd ai-media-cutter
+    git clone https://github.com/CypherNaught-0x/AI-Media-Analyse-and-Cut.git
+    cd AI-Media-Analyse-and-Cut
     ```
 5.  **Install dependencies**:
     ```bash
@@ -93,7 +93,7 @@ The integration tests include:
 *   **Mock Tests**: Verify the application logic against simulated API responses.
 *   **Real Pipeline Tests**: Run the full transcription, translation, and clip generation pipeline against a real API.
 
-To run the **Real Pipeline Tests**, you need to configure the following environment variables (or create a `.env` file in `src-tauri/`). See `.env.example` for values.
+To run the **Real Pipeline Tests**, you need to configure the environment variables `TEST_API_KEY`, `TEST_BASE_URL`, and `TEST_MODEL` (or create a `.env` file in `src-tauri/`). See `src-tauri/.env.example` for a template.
 
 
 If these variables are not set, the real pipeline tests will be skipped automatically.
