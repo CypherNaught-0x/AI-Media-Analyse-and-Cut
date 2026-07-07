@@ -77,7 +77,7 @@ const toneStyles = computed(() => {
             </div>
             <div v-if="actionLabel" class="mt-3">
               <button
-                class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded-lg bg-white/10 text-gray-100 hover:bg-white/20 transition"
+                class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded-lg bg-white/10 text-gray-100 hover:bg-white/20 transition focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
                 @click="emit('action')"
               >
                 {{ actionLabel }}
@@ -85,7 +85,7 @@ const toneStyles = computed(() => {
             </div>
           </div>
           <button
-            class="h-7 w-7 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/10 transition"
+            class="h-7 w-7 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/10 transition focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
             @click="emit('dismiss')"
             aria-label="Dismiss"
           >

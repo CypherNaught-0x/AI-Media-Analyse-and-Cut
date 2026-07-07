@@ -1302,7 +1302,7 @@ function updateProcessing(processing: boolean) {
 </script>
 
 <template>
-    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans selection:bg-blue-500/30">
+    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 pb-24 font-sans selection:bg-blue-500/30">
         <div class="max-w-5xl mx-auto">
             <WorkspaceTabs
                 :tabs="workspaceTabs"
