@@ -65,12 +65,6 @@ vi.mock('../../components/FileSelector.vue', () => ({
 vi.mock('../../components/AnalysisSettings.vue', () => ({
   default: { template: '<div class="mock-analysis-settings"></div>' }
 }));
-vi.mock('../../components/ClipGenerator.vue', () => ({
-  default: { template: '<div class="mock-clip-generator"></div>' }
-}));
-vi.mock('../../components/ClipList.vue', () => ({
-  default: { template: '<div class="mock-clip-list"></div>' }
-}));
 vi.mock('../../components/ViralClipsGenerator.vue', () => ({
   default: { template: '<div class="mock-viral-clips-generator"></div>' }
 }));
