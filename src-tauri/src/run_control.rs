@@ -116,6 +116,6 @@ fn kill_process(pid: u32) -> Result<(), String> {
             return Ok(());
         }
 
-        return Err(format!("Failed to cancel run (kill exited with {})", status));
+        Err(format!("Failed to cancel run (kill exited with {})", status))
     }
 }
