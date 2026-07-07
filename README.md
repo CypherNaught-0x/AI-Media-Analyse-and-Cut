@@ -19,7 +19,7 @@
 *   **Export Options**: Export subtitles (SRT, VTT, TXT) or the cut video file directly.
 *   **Context-Aware**: Provide context and glossaries to the AI to improve transcription accuracy for technical terms or specific names.
 
-![Viral Clips Feature](dev-resources/preview_2.png)
+![Transcript Editing](dev-resources/preview_2.png)
 
 ## Installation
 
@@ -73,6 +73,14 @@ You can download the latest version for Windows and MacOS from the releases page
     ```bash
     pnpm tauri build
     ```
+
+#### Regenerating the preview screenshots
+
+The preview images above are generated from the live UI (with mocked backend data). With [`just`](https://github.com/casey/just) installed, run:
+
+```bash
+just screenshots
+```
 
 ## Testing
 
