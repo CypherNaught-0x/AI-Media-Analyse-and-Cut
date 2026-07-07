@@ -1,4 +1,5 @@
 use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use crate::time_utils::parse_timestamp_to_seconds_raw;
 use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
@@ -108,13 +109,13 @@ where
         segments.len()
     );
 
-    let (filter_complex, _inputs) = build_filter_complex(segments);
+    let (filter_complex, _inputs) = build_filter_complex(segments)?;
 
     let mut last_error = None;
 
     let mut child = FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
-        .args(&[
+        .args([
             "-y",
             "-filter_complex",
             &filter_complex,
@@ -165,21 +166,30 @@ where
     Ok(())
 }
 
-fn build_filter_complex(segments: &[Segment]) -> (String, String) {
+fn build_filter_complex(segments: &[Segment]) -> Result<(String, String)> {
     let mut filter_complex = String::new();
     let mut inputs = String::new();
 
     for (i, segment) in segments.iter().enumerate() {
+        // Parse timestamps to bare numbers so untrusted strings can't be
+        // injected into the ffmpeg filtergraph.
+        let start = parse_timestamp_to_seconds_raw(&segment.start).map_err(|e| {
+            anyhow::anyhow!("Invalid segment start timestamp '{}': {}", segment.start, e)
+        })?;
+        let end = parse_timestamp_to_seconds_raw(&segment.end).map_err(|e| {
+            anyhow::anyhow!("Invalid segment end timestamp '{}': {}", segment.end, e)
+        })?;
+
         // Video trim
         filter_complex.push_str(&format!(
             "[0:v]trim=start={}:end={},setpts=PTS-STARTPTS[v{}];",
-            segment.start, segment.end, i
+            start, end, i
         ));
 
         // Audio trim
         filter_complex.push_str(&format!(
             "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS[a{}];",
-            segment.start, segment.end, i
+            start, end, i
         ));
 
         inputs.push_str(&format!("[v{}][a{}]", i, i));
@@ -191,7 +201,7 @@ fn build_filter_complex(segments: &[Segment]) -> (String, String) {
         segments.len()
     ));
 
-    (filter_complex, inputs)
+    Ok((filter_complex, inputs))
 }
 
 pub fn export_clips<F>(
@@ -261,9 +271,9 @@ where
             cmd.input(input_path.to_str().unwrap());
 
             if fast_mode {
-                cmd.args(&["-y", "-ss", &s.start, "-to", &s.end, "-c", "copy"]);
+                cmd.args(["-y", "-ss", &s.start, "-to", &s.end, "-c", "copy"]);
             } else {
-                cmd.args(&[
+                cmd.args([
                     "-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac",
                 ]);
             }
@@ -328,7 +338,7 @@ fn build_clip_output_filename(i: usize, segment: &ClipSegment) -> String {
         .label
         .as_ref()
         .map(|l| l.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', ""))
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
 
     if suffix.is_empty() {
         format!("clip_{:03}.mp4", i + 1)
@@ -354,12 +364,12 @@ mod tests {
             },
         ];
 
-        let (filter, inputs) = build_filter_complex(&segments);
+        let (filter, inputs) = build_filter_complex(&segments).unwrap();
 
-        assert!(filter.contains("[0:v]trim=start=00:00:end=00:10,setpts=PTS-STARTPTS[v0];"));
-        assert!(filter.contains("[0:a]atrim=start=00:00:end=00:10,asetpts=PTS-STARTPTS[a0];"));
-        assert!(filter.contains("[0:v]trim=start=00:20:end=00:30,setpts=PTS-STARTPTS[v1];"));
-        assert!(filter.contains("[0:a]atrim=start=00:20:end=00:30,asetpts=PTS-STARTPTS[a1];"));
+        assert!(filter.contains("[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];"));
+        assert!(filter.contains("[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS[a0];"));
+        assert!(filter.contains("[0:v]trim=start=20:end=30,setpts=PTS-STARTPTS[v1];"));
+        assert!(filter.contains("[0:a]atrim=start=20:end=30,asetpts=PTS-STARTPTS[a1];"));
         assert!(filter.contains("concat=n=2:v=1:a=1[v][a]"));
         assert_eq!(inputs, "[v0][a0][v1][a1]");
     }
