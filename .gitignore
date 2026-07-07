@@ -27,3 +27,6 @@ dist-ssr
 test_podcast_full.m4a
 .env
 package-lock.json
+
+# Transient screenshot demo media (see scripts/generate-screenshots.mjs)
+public/__demo-media__*
