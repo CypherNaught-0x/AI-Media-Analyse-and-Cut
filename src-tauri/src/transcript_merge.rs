@@ -223,11 +223,9 @@ where
             }
         }
 
-        let center = if primary_len == 0 {
-            0
-        } else {
-            (primary_index * reference_len) / primary_len
-        };
+        let center = (primary_index * reference_len)
+            .checked_div(primary_len)
+            .unwrap_or(0);
         let reference_start = center.saturating_sub(dynamic_band);
         let reference_end = (center + dynamic_band).min(reference_len);
 
@@ -1524,7 +1522,7 @@ fn bounded_levenshtein(
     for (j, slot) in previous.iter_mut().enumerate().take(init_high + 1) {
         *slot = j;
     }
-    if init_high + 1 <= m {
+    if init_high < m {
         previous[init_high + 1] = unreachable;
     }
 
@@ -1559,7 +1557,7 @@ fn bounded_levenshtein(
 
         // The cell just past the band must read as `unreachable` when it becomes
         // `previous[high]` for the next row (the band advances by one).
-        if high + 1 <= m {
+        if high < m {
             current[high + 1] = unreachable;
         }
 
