@@ -204,7 +204,7 @@ impl ParakeetModel {
         let (features_tensor, t_len) = if feat_shape[1] == 128 {
             let t_dim = feat_shape[2];
             let ft = Value::from_array((vec![feat_shape[0], 128, t_dim], feat_slice.to_vec()))?;
-            (ft, t_dim as i64)
+            (ft, t_dim)
         } else {
             // Transpose [B, T, 128] -> [B, 128, T]
             let b = feat_shape[0];
@@ -220,7 +220,7 @@ impl ParakeetModel {
                 }
             }
             let ft = Value::from_array((vec![b, 128, t], transposed))?;
-            (ft, t as i64)
+            (ft, t)
         };
 
         drop(fe_outputs);
@@ -636,7 +636,7 @@ fn load_audio(path: &Path) -> Result<Vec<f32>> {
     }
 
     if sample_rate != 16000 {
-        let ratio = 16000 as f64 / sample_rate as f64;
+        let ratio = 16000_f64 / sample_rate as f64;
         let params = SincInterpolationParameters {
             sinc_len: 256,
             f_cutoff: 0.95,
