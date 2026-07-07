@@ -102,26 +102,26 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
     <div class="flex flex-col gap-2">
         <div class="flex items-center gap-2">
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                <button @click="exportSubtitles('srt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed">SRT</button>
-                <button @click="exportSubtitles('srt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Save SRT as...">
+                <button @click="exportSubtitles('srt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">SRT</button>
+                <button @click="exportSubtitles('srt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none" title="Save SRT as...">
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                <button @click="exportSubtitles('vtt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed">VTT</button>
-                <button @click="exportSubtitles('vtt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Save VTT as...">
+                <button @click="exportSubtitles('vtt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">VTT</button>
+                <button @click="exportSubtitles('vtt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none" title="Save VTT as...">
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
-                <button @click="exportSubtitles('txt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed">TXT</button>
-                <button @click="exportSubtitles('txt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Save TXT as...">
+                <button @click="exportSubtitles('txt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">TXT</button>
+                <button @click="exportSubtitles('txt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none" title="Save TXT as...">
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
             <button 
-                @click="validateAndShow" 
-                class="px-3 py-1.5 text-xs rounded-lg border transition-colors"
+                @click="validateAndShow"
+                class="px-3 py-1.5 text-xs rounded-lg border transition-colors focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
                 :class="{
                     'bg-red-500/20 border-red-500/30 text-red-400 hover:bg-red-500/30': hasErrors,
                     'bg-yellow-500/20 border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/30': hasWarnings && !hasErrors,
@@ -137,7 +137,7 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
         <div v-if="showValidationPanel" class="mt-2 p-3 rounded-lg bg-white/5 border border-white/10 max-h-48 overflow-y-auto">
             <div class="flex items-center justify-between mb-2">
                 <span class="text-xs font-medium text-gray-300">Validation Results</span>
-                <button @click="showValidationPanel = false" class="text-xs text-gray-500 hover:text-gray-300">×</button>
+                <button @click="showValidationPanel = false" class="text-xs text-gray-500 hover:text-gray-300 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">×</button>
             </div>
             <div v-if="validationErrors.length === 0" class="text-xs text-emerald-400">
                 ✓ All subtitles meet comfortable display requirements

@@ -78,7 +78,7 @@ async function exportLogs() {
               <p class="text-sm text-gray-400">{{ message }}</p>
             </div>
           </div>
-          <button @click="emit('dismiss')" class="p-2 hover:bg-white/10 rounded-lg transition-colors">
+          <button @click="emit('dismiss')" class="p-2 hover:bg-white/10 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">
             <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -105,18 +105,18 @@ async function exportLogs() {
           <p class="text-xs text-gray-500">Export logs and copy this information when reporting issues.</p>
           <div class="flex gap-3">
             <button @click="emit('dismiss')"
-              class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10">
+              class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">
               Dismiss
             </button>
             <button @click="exportLogs"
-              class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10 flex items-center gap-2">
+              class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10 flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M7 10l5 5m0 0l5-5m-5 5V3" />
               </svg>
               Export Logs
             </button>
             <button @click="copyErrorDetails"
-              class="px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl transition-all flex items-center gap-2">
+              class="px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl transition-all flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-red-500/50 focus-visible:outline-none">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
               </svg>

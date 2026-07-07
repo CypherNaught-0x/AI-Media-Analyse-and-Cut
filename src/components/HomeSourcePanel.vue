@@ -53,7 +53,7 @@ defineEmits<{
       </div>
       <button
         @click="$emit('open-settings')"
-        class="px-6 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10"
+        class="px-6 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
       >
         Settings
       </button>
@@ -91,7 +91,7 @@ defineEmits<{
       <button
         @click="$emit('process')"
         :disabled="isProcessing || !hasMediaFile || !hasBackendConfiguration || (hasTranscript && !settingsChanged)"
-        class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2"
+        class="btn-primary flex-1 py-4 px-6 flex items-center justify-center gap-2"
       >
         <SpinnerIcon v-if="isProcessing" class="animate-spin h-5 w-5 text-white" />
         {{ isProcessing ? 'Processing...' : (hasTranscript && !settingsChanged ? 'Transcript Loaded' : (hasTranscript ? 'Re-analyze Media' : 'Analyze Media')) }}
