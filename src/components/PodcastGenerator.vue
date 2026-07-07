@@ -193,9 +193,16 @@ async function generatePodcast() {
     });
     assertActiveRun(runId);
 
-    let script = parseScriptResponse(response);
-    if (!script) {
-      emit('update:status', "Failed to parse podcast script from AI response.");
+    let script: PodcastScript;
+    try {
+      const parsedScript = parseScriptResponse(response);
+      if (!parsedScript) {
+        emit('update:status', "Failed to parse podcast script from AI response.");
+        return;
+      }
+      script = parsedScript;
+    } catch (e) {
+      emit('update:status', e instanceof Error ? e.message : String(e));
       return;
     }
 
@@ -228,7 +235,13 @@ async function generatePodcast() {
       });
       assertActiveRun(runId);
 
-      const refinedScript = parseScriptResponse(response);
+      let refinedScript: PodcastScript | null = null;
+      try {
+        refinedScript = parseScriptResponse(response);
+      } catch (e) {
+        // A malformed refinement is non-fatal: keep the previous valid script.
+        console.warn("Refined podcast script was malformed, keeping previous script:", e);
+      }
       if (refinedScript) {
         script = refinedScript;
       } else {
@@ -260,32 +273,56 @@ async function generatePodcast() {
 }
 
 function parseScriptResponse(response: string): PodcastScript | null {
+  // Locate and parse the JSON object. A missing/invalid envelope is a soft
+  // failure (return null); a well-formed object with malformed segments is a
+  // hard failure (throw with details) so it never reaches parseTime later.
+  const jsonMatch = response.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+
+  let parsed: any;
   try {
-    // Try to find JSON object in response
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (parsed.title && parsed.segments && Array.isArray(parsed.segments)) {
-        return {
-          title: parsed.title,
-          summary: parsed.summary || "",
-          segments: parsed.segments.map((s: any) => ({
-            start: s.start,
-            end: s.end,
-            text: s.text || "",
-            speaker: s.speaker,
-            type: s.segment_type || s.type || 'content', // Handle both snake_case and camelCase
-            includeReason: s.include_reason || s.includeReason,
-            transitionNote: s.transition_note || s.transitionNote
-          })),
-          totalDuration: 0
-        };
-      }
-    }
+    parsed = JSON.parse(jsonMatch[0]);
   } catch (e) {
     console.error("Failed to parse script response:", e);
+    return null;
   }
-  return null;
+
+  if (!parsed.title || !parsed.segments || !Array.isArray(parsed.segments)) {
+    return null;
+  }
+
+  const problems: string[] = [];
+  const segments: PodcastSegment[] = parsed.segments.map((s: any, index: number) => {
+    const type: PodcastSegment['type'] = s.segment_type || s.type || 'content'; // Handle both snake_case and camelCase
+    // Every segment needs string timestamps; parseTime throws on anything else.
+    if (typeof s.start !== 'string' || typeof s.end !== 'string') {
+      problems.push(`segment ${index + 1}: missing or non-string start/end`);
+    }
+    // Content segments must carry text; voiceover placeholders use transitionNote.
+    if (type === 'content' && (typeof s.text !== 'string' || s.text.trim().length === 0)) {
+      problems.push(`segment ${index + 1}: content segment has empty text`);
+    }
+    return {
+      start: s.start,
+      end: s.end,
+      text: s.text || "",
+      speaker: s.speaker,
+      type,
+      includeReason: s.include_reason || s.includeReason,
+      transitionNote: s.transition_note || s.transitionNote
+    };
+  });
+
+  if (problems.length > 0) {
+    throw new Error(`Podcast script has malformed segments: ${problems.join('; ')}`);
+  }
+
+  return {
+    title: parsed.title,
+    summary: parsed.summary || "",
+    segments,
+    totalDuration: 0
+  };
 }
 
 // Segment Editor Functions
