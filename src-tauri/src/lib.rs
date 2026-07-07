@@ -1,9 +1,3 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
 use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
@@ -214,7 +208,7 @@ async fn prepare_audio_for_ai(
     // Normalize input to OGG/Opus for downstream silence removal and AI upload.
     let mut child = FfmpegCommand::new()
         .input(input.to_str().unwrap())
-        .args(&["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
+        .args(["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
         .output(output_path.to_str().unwrap())
         .spawn()
         .map_err(|e| {
@@ -350,7 +344,7 @@ async fn prepare_preview_audio(
 
     let mut child = FfmpegCommand::new()
         .input(source.to_str().unwrap())
-        .args(&[
+        .args([
             "-y",
             "-vn",
             "-c:a",
@@ -998,7 +992,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
             begin_run,
             cancel_current_run,
             init_ffmpeg,
