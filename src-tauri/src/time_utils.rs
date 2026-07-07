@@ -118,14 +118,14 @@ pub fn parse_timestamp_to_seconds_raw(ts: &str) -> Result<f64> {
     // Convert 60 seconds to next minute
     if s >= 60 {
         let extra_minutes = s / 60;
-        s = s % 60;
+        s %= 60;
         m += extra_minutes;
     }
 
     // Convert 60+ minutes to next hour
     if m >= 60 {
         let extra_hours = m / 60;
-        m = m % 60;
+        m %= 60;
         h += extra_hours;
     }
 

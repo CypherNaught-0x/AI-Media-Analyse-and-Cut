@@ -2,6 +2,7 @@ use crate::{format_ffmpeg_spawn_error, format_path_io_error};
 use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
+use ffmpeg_sidecar::paths::ffmpeg_path;
 use log::{debug, info};
 use regex::Regex;
 use serde::Serialize;
@@ -70,7 +71,7 @@ pub(crate) async fn detect_silence_internal(
 
     let mut child = FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
-        .args(&[
+        .args([
             "-af",
             &format!("silencedetect=noise=-30dB:d={}", min_duration),
             "-f",
@@ -223,7 +224,9 @@ async fn remove_silence_internal(
     // Or we can probe.
 
     // Let's probe duration using ffmpeg output
-    let duration = probe_duration(&path).await.unwrap_or(last_end + 3600.0);
+    let duration = probe_duration(&path).await.map_err(|e| {
+        format!("Failed to probe media duration for silence removal: {}", e)
+    })?;
 
     if duration > last_end {
         keep_segments.push((last_end, duration));
@@ -273,7 +276,7 @@ async fn remove_silence_internal(
 
     let mut child = FfmpegCommand::new()
         .input(input_path.to_str().unwrap())
-        .args(&[
+        .args([
             "-y",
             "-filter_complex",
             &filter_complex,
@@ -344,7 +347,7 @@ pub(crate) async fn probe_duration(path: &str) -> Result<f64, String> {
     // Try using ffmpeg -i path
     // We assume ffmpeg is in PATH (which it should be if init_ffmpeg was called or if installed globally)
     // In tests, we saw it works.
-    let output = Command::new("ffmpeg")
+    let output = Command::new(ffmpeg_path())
         .arg("-i")
         .arg(path)
         .output()

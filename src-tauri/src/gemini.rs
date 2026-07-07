@@ -450,7 +450,8 @@ SPEAKER LABEL GUIDANCE (IMPORTANT):
             {
                 warn!(
                     "Structured transcript response failed on '{}' with '{}'. Retrying once without json_schema enforcement.",
-                    url, err
+                    redact_url(&url),
+                    err
                 );
 
                 let fallback_payload = build_openai_analyze_payload(
@@ -954,7 +955,7 @@ Rules:
             transcript
         );
 
-        self.send_request(&system_prompt, &user_prompt).await
+        self.send_request(system_prompt, &user_prompt).await
     }
 
     /// Refine podcast script when duration doesn't fit constraints
@@ -1032,7 +1033,7 @@ Rules:
             original_transcript
         );
 
-        self.send_request(&system_prompt, &user_prompt).await
+        self.send_request(system_prompt, &user_prompt).await
     }
 
     /// Helper to send a request to the API with retry logic
@@ -1219,6 +1220,27 @@ fn should_retry_analysis_without_schema(
         )
 }
 
+/// Redacts the value of a `key=` query parameter in a URL so API keys never
+/// reach logs or error messages (logs are shipped to support via `zip_logs`).
+fn redact_url(url: &str) -> String {
+    let mut result = String::with_capacity(url.len());
+    let mut rest = url;
+    while let Some(idx) = rest.find("key=") {
+        // Only treat as a query parameter when preceded by `?` or `&`.
+        let is_param = idx == 0
+            || matches!(rest.as_bytes().get(idx - 1), Some(b'?') | Some(b'&'));
+        result.push_str(&rest[..idx + 4]);
+        rest = &rest[idx + 4..];
+        if is_param {
+            let end = rest.find('&').unwrap_or(rest.len());
+            result.push_str("[REDACTED]");
+            rest = &rest[end..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 fn build_json_request(request: RequestBuilder) -> RequestBuilder {
     request
         .header(ACCEPT, "application/json")
@@ -1238,25 +1260,26 @@ async fn execute_json_request(
 
     let status = response.status();
     let headers = format!("{:?}", response.headers());
+    let safe_url = redact_url(url);
 
-    debug!("AI response status from '{}': {}", url, status);
-    debug!("AI response headers from '{}': {}", url, headers);
+    debug!("AI response status from '{}': {}", safe_url, status);
+    debug!("AI response headers from '{}': {}", safe_url, headers);
 
     let body = response.bytes().await.map_err(|err| {
         error!(
             "Failed to read AI response body from '{}': {}. Headers: {}",
-            url, err, headers
+            safe_url, err, headers
         );
         RetryableError::from(err)
     })?;
 
     let raw_body = String::from_utf8_lossy(&body).into_owned();
-    debug!("Raw AI response body from '{}': {}", url, raw_body);
+    debug!("Raw AI response body from '{}': {}", safe_url, raw_body);
 
     if !status.is_success() {
         error!(
             "AI request to '{}' failed with status {}. Raw response body: {}",
-            url, status, raw_body
+            safe_url, status, raw_body
         );
         return Err(RetryableError::Http {
             status: status.as_u16(),
@@ -1268,11 +1291,11 @@ async fn execute_json_request(
         let preview = preview_for_error(&raw_body);
         error!(
             "Failed to parse AI response JSON from '{}': {}. Raw response body: {}",
-            url, err, raw_body
+            safe_url, err, raw_body
         );
         RetryableError::Permanent(format!(
             "Failed to parse response from '{}': {}. Raw body preview: {}",
-            url, err, preview
+            safe_url, err, preview
         ))
     })
 }

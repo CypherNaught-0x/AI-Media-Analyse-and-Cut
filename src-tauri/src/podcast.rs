@@ -8,17 +8,12 @@ use std::path::Path;
 
 use crate::time_utils::parse_time;
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PodcastSegmentType {
+    #[default]
     Content,
     Voiceover,
-}
-
-impl Default for PodcastSegmentType {
-    fn default() -> Self {
-        PodcastSegmentType::Content
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -135,7 +130,7 @@ where
         cmd.input(outro.to_str().unwrap());
     }
 
-    let mut child = cmd.args(&[
+    let mut child = cmd.args([
         "-y",
         "-filter_complex",
         &filter_complex,
@@ -318,7 +313,7 @@ where
         let cb = on_progress.clone();
         let mut child = FfmpegCommand::new()
             .input(input_path.to_str().unwrap())
-            .args(&[
+            .args([
                 "-y",
                 "-ss",
                 &start_secs.to_string(),
