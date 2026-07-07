@@ -22,3 +22,14 @@
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Shared primary action button */
+@layer components {
+  .btn-primary {
+    @apply bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none;
+    /* transition-colors + transition-transform (never transition-all) */
+    transition-property: color, background-color, box-shadow, transform, scale;
+    transition-timing-function: var(--default-transition-timing-function);
+    transition-duration: var(--default-transition-duration);
+  }
+}

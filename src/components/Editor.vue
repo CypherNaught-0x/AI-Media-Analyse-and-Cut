@@ -975,20 +975,3 @@ const mergeDown = (originalIndex: number) => {
     </div>
   </div>
 </template>
-
-<style scoped>
-/* Custom scrollbar if needed */
-.editor-container::-webkit-scrollbar {
-  width: 8px;
-}
-.editor-container::-webkit-scrollbar-track {
-  background: #1f2937; 
-}
-.editor-container::-webkit-scrollbar-thumb {
-  background: #4b5563; 
-  border-radius: 4px;
-}
-.editor-container::-webkit-scrollbar-thumb:hover {
-  background: #6b7280; 
-}
-</style>

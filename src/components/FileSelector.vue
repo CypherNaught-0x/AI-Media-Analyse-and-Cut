@@ -184,7 +184,7 @@ onUnmounted(() => {
                 </p>
             </div>
             <button @click="selectFile"
-                class="px-8 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-2xl shadow-lg shadow-blue-900/20 transition-all transform active:scale-95">
+                class="btn-primary px-8">
                 Browse
             </button>
         </div>
