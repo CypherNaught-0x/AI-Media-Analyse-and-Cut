@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
 import { invoke } from '@tauri-apps/api/core';
-import { open, save } from '@tauri-apps/plugin-dialog';
+import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -87,7 +87,10 @@ async function checkForUpdates() {
             newVersion.value = update.version;
             updateStatus.value = `Update available: v${update.version}`;
             
-            const confirmed = await confirm(`Update to v${update.version} is available.\n\nRelease notes:\n${update.body}\n\nDo you want to download and install it now?`);
+            const confirmed = await ask(`Update to v${update.version} is available.\n\nRelease notes:\n${update.body}\n\nDo you want to download and install it now?`, {
+                title: 'Update Available',
+                kind: 'info',
+            });
             
             if (confirmed) {
                 updateStatus.value = 'Downloading and installing update...';
@@ -209,10 +212,12 @@ async function fetchModels(silent = false) {
             'Content-Type': 'application/json',
         };
 
+        modelsUrl = `${normalizedUrl}${apiPath}`;
         if (isGoogleApi.value) {
-            modelsUrl = `${normalizedUrl}${apiPath}?key=${localApiKey.value}`;
+            // Send the key via header rather than the URL query string so it does
+            // not leak into logs/history. Google accepts x-goog-api-key.
+            headers['x-goog-api-key'] = localApiKey.value;
         } else {
-            modelsUrl = `${normalizedUrl}${apiPath}`;
             headers['Authorization'] = `Bearer ${localApiKey.value}`;
         }
 
@@ -300,10 +305,10 @@ async function exportLogs() {
         
         if (path) {
             await invoke('zip_logs', { targetPath: path });
-            alert('Logs exported successfully!');
+            await message('Logs exported successfully!', { title: 'Export Logs' });
         }
     } catch (e) {
-        alert(`Failed to export logs: ${e}`);
+        await message(`Failed to export logs: ${e}`, { title: 'Export Logs', kind: 'error' });
     }
 }
 

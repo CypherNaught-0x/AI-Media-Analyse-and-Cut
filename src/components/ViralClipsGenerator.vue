@@ -28,7 +28,7 @@ const emit = defineEmits<{
 const { settings } = useSettings();
 
 const isProcessing = ref(false);
-const silenceIntervalsCache = ref<SilenceInterval[] | null>(null);
+const silenceIntervalsCache = ref<{ path: string; intervals: SilenceInterval[] } | null>(null);
 const activeRunId = ref<number | null>(null);
 
 function invalidateRun() {
@@ -179,17 +179,20 @@ async function exportClips() {
     if (trimBoundarySilence.value) {
       emit('update:status', "Detecting clip boundary silence...");
 
-      if (!silenceIntervalsCache.value) {
-        silenceIntervalsCache.value = await invoke<SilenceInterval[]>("detect_silence", {
+      // Cache the detected silence per input path so a changed source file
+      // never reuses stale intervals to mis-trim clips.
+      if (!silenceIntervalsCache.value || silenceIntervalsCache.value.path !== props.inputPath) {
+        const intervals = await invoke<SilenceInterval[]>("detect_silence", {
           runId,
           path: props.inputPath,
         });
         assertActiveRun(runId);
+        silenceIntervalsCache.value = { path: props.inputPath, intervals };
       }
 
       clipSegments = clipSegments.map((clip) => ({
         ...clip,
-        segments: trimClipBoundarySilence(clip.segments, silenceIntervalsCache.value ?? []),
+        segments: trimClipBoundarySilence(clip.segments, silenceIntervalsCache.value?.intervals ?? []),
       }));
     }
 
