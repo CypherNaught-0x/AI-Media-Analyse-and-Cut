@@ -48,6 +48,7 @@ let videoPreviewEndTime: number | null = null;
 let lastPlayheadSource: 'audio' | 'video' | null = null;
 const showOnlyReviewSegments = ref(false);
 const reviewThresholdPercent = ref(85);
+const hideBlacklistFromReviewFilter = ref(false);
 const speakerVisibility = ref<Record<string, boolean>>({});
 
 const syncSpeakerVisibility = (speakers: string[]) => {
@@ -99,6 +100,8 @@ const hasSpeakerVisibilityFilter = computed(
 );
 
 const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
+  if (segment.reviewResolved) return false;
+
   if (segment.similarityScore !== undefined) {
     return segment.similarityScore < reviewThresholdPercent.value / 100;
   }
@@ -134,8 +137,13 @@ const remainingBlacklistWordCount = computed(() =>
   Math.max(visibleBlacklistWarnings.value.uniqueWords.length - previewBlacklistWords.value.length, 0),
 );
 
-const segmentNeedsAttention = (segment: TranscriptSegment, index: number): boolean =>
-  segmentNeedsReview(segment) || (blacklistWarnings.value.matchesBySegment[index]?.length ?? 0) > 0;
+const segmentNeedsAttention = (segment: TranscriptSegment, index: number): boolean => {
+  if (segment.reviewResolved) return false;
+  if (segmentNeedsReview(segment)) return true;
+  if (hideBlacklistFromReviewFilter.value) return false;
+
+  return (blacklistWarnings.value.matchesBySegment[index]?.length ?? 0) > 0;
+};
 
 const hasReviewMetadata = computed(() =>
   speakerVisibleSegments.value.some(({ segment, originalIndex }) =>
@@ -479,6 +487,15 @@ function onTimeUpdate() {
             />
             Show only review items
           </label>
+          <label class="flex items-center gap-2 text-xs text-gray-300">
+            <input
+              v-model="hideBlacklistFromReviewFilter"
+              data-testid="review-filter-hide-blacklist-toggle"
+              type="checkbox"
+              class="h-4 w-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500/40"
+            />
+            Hide blacklist-only matches
+          </label>
           <label class="flex items-center gap-3 text-xs text-gray-300">
             <span>Review below</span>
             <input
@@ -557,6 +574,7 @@ function onTimeUpdate() {
       :speakerVisibility="speakerVisibility"
       :showOnlyReviewSegments="showOnlyReviewSegments"
       :reviewThreshold="reviewThresholdPercent / 100"
+      :hideBlacklistFromReview="hideBlacklistFromReviewFilter"
       :blacklistMatchesBySegment="blacklistWarnings.matchesBySegment"
       :audioAvailable="hasExtractedAudio"
       :previewIndex="previewIndex"
