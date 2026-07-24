@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
   segments: TranscriptSegment[];
   showOnlyReviewSegments?: boolean;
   reviewThreshold?: number;
+  hideBlacklistFromReview?: boolean;
   blacklistMatchesBySegment?: Record<number, TranscriptBlacklistMatch[]>;
   speakerVisibility?: Record<string, boolean>;
   audioAvailable?: boolean;
@@ -31,6 +32,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   showOnlyReviewSegments: false,
   reviewThreshold: 0.85,
+  hideBlacklistFromReview: false,
   blacklistMatchesBySegment: () => ({}),
   speakerVisibility: () => ({}),
   audioAvailable: false,
@@ -75,18 +77,16 @@ const getBlacklistMatches = (originalIndex: number): TranscriptBlacklistMatch[] 
   props.blacklistMatchesBySegment[originalIndex] ?? [];
 
 const segmentNeedsReview = (segment: TranscriptSegment, originalIndex: number): boolean => {
-  if (segment.similarityScore !== undefined) {
-    return (
-      segment.similarityScore < reviewThreshold.value ||
-      getBlacklistMatches(originalIndex).length > 0
-    );
-  }
+  if (segment.reviewResolved) return false;
 
-  return (
-    segment.mergeStatus === 'missing_google' ||
-    segment.mergeStatus === 'missing_parakeet' ||
-    getBlacklistMatches(originalIndex).length > 0
-  );
+  const belowThreshold = segment.similarityScore !== undefined
+    ? segment.similarityScore < reviewThreshold.value
+    : segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_parakeet';
+
+  if (belowThreshold) return true;
+  if (props.hideBlacklistFromReview) return false;
+
+  return getBlacklistMatches(originalIndex).length > 0;
 };
 
 const visibleSegments = computed(() =>
@@ -549,6 +549,15 @@ const saveEdit = () => {
   }
 };
 
+const toggleReviewResolved = (originalIndex: number) => {
+  const segment = props.segments[originalIndex];
+  if (!segment) return;
+
+  const newSegments = [...props.segments];
+  newSegments[originalIndex] = { ...segment, reviewResolved: !segment.reviewResolved };
+  emit('update:segments', newSegments);
+};
+
 const deleteSegment = async (originalIndex: number) => {
   const confirmed = await ask('Are you sure you want to delete this segment?', {
     title: 'Confirm Deletion',
@@ -749,6 +758,12 @@ const mergeDown = (originalIndex: number) => {
             >
               {{ getBlacklistMatches(originalIndex).length }} blacklist match{{ getBlacklistMatches(originalIndex).length > 1 ? 'es' : '' }}
             </span>
+            <span
+              v-if="segment.reviewResolved"
+              class="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-200"
+            >
+              Resolved
+            </span>
           </div>
           <div class="flex items-center gap-2">
             <button
@@ -855,6 +870,18 @@ const mergeDown = (originalIndex: number) => {
         
         <!-- Action Toolbar -->
         <div class="absolute top-2 right-2 hidden group-hover:flex gap-2 bg-black/60 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl">
+          <button
+            v-if="segmentNeedsReview(segment, originalIndex) || segment.reviewResolved"
+            :data-testid="`segment-mark-done-${originalIndex}`"
+            @click.stop="toggleReviewResolved(originalIndex)"
+            class="px-2 py-1 rounded text-xs transition-colors border"
+            :class="segment.reviewResolved
+              ? 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+              : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30'"
+            :title="segment.reviewResolved ? 'Return this segment to the review list' : 'Mark this segment as reviewed and hide it from the review list'"
+          >
+            {{ segment.reviewResolved ? 'Reopen' : 'Mark Done' }}
+          </button>
           <button @click.stop="startEditing(originalIndex)" class="px-2 py-1 bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 transition-colors">Edit</button>
           <button :data-testid="`segment-split-${originalIndex}`" @click.stop="startSplitting(originalIndex)" class="px-2 py-1 bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded text-xs hover:bg-teal-500/30 transition-colors" title="Split this segment at a chosen point">Split</button>
           <button v-if="originalIndex < segments.length - 1" @click.stop="mergeDown(originalIndex)" class="px-2 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors" title="Merge with next">Merge ↓</button>
