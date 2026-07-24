@@ -28,6 +28,7 @@ export interface TranscriptSegment {
   mergeStatus?: TranscriptMergeStatus;
   activeSource?: TranscriptAlternativeSource;
   similarityScore?: number;
+  reviewResolved?: boolean;
 }
 
 export interface Clip {
