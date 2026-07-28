@@ -50,6 +50,13 @@ const emit = defineEmits<{
 
 const editingIndex = ref<number | null>(null);
 const tempSegment = ref<TranscriptSegment | null>(null);
+// Sentinel select value that switches the speaker field from the existing-speaker
+// dropdown to a free-text input for adding a brand-new speaker.
+const NEW_SPEAKER_OPTION = '__add_new_speaker__';
+const addingNewSpeaker = ref(false);
+const newSpeakerInput = ref<HTMLInputElement | null>(null);
+const addingNewSplitSpeaker = ref(false);
+const newSplitSpeakerInput = ref<HTMLInputElement | null>(null);
 const splittingIndex = ref<number | null>(null);
 const splitDraft = ref<SplitDraft | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
@@ -88,6 +95,17 @@ const segmentNeedsReview = (segment: TranscriptSegment, originalIndex: number): 
 
   return getBlacklistMatches(originalIndex).length > 0;
 };
+
+// Unique, sorted list of speaker names already present in the transcript, used to
+// populate the speaker dropdown when editing a segment.
+const existingSpeakers = computed(() => {
+  const names = new Set<string>();
+  for (const segment of props.segments) {
+    const name = segment.speaker?.trim();
+    if (name) names.add(name);
+  }
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+});
 
 const visibleSegments = computed(() =>
   props.segments
@@ -281,6 +299,30 @@ const startEditing = (originalIndex: number) => {
   cancelSplit();
   editingIndex.value = originalIndex;
   tempSegment.value = { ...props.segments[originalIndex] };
+  addingNewSpeaker.value = false;
+};
+
+// Handle a choice in the speaker dropdown: either adopt an existing speaker or
+// switch to the free-text field for a new one.
+const onSpeakerSelect = (value: string) => {
+  if (!tempSegment.value) return;
+  if (value === NEW_SPEAKER_OPTION) {
+    addingNewSpeaker.value = true;
+    tempSegment.value.speaker = '';
+    void nextTick(() => newSpeakerInput.value?.focus());
+    return;
+  }
+  addingNewSpeaker.value = false;
+  tempSegment.value.speaker = value;
+};
+
+// Leave the new-speaker input and return to the dropdown, restoring the segment's
+// original speaker so cancelling the add does not blank the field.
+const cancelNewSpeaker = () => {
+  if (!tempSegment.value) return;
+  addingNewSpeaker.value = false;
+  const original = editingIndex.value !== null ? props.segments[editingIndex.value]?.speaker : undefined;
+  tempSegment.value.speaker = original?.trim() || existingSpeakers.value[0] || '';
 };
 
 // Partition a segment's word-level timing at a split point so the text follows
@@ -322,11 +364,34 @@ const startSplitting = (originalIndex: number) => {
     secondText: derived ? derived.second : '',
     secondSpeaker: segment.speaker
   };
+  addingNewSplitSpeaker.value = false;
 };
 
 const cancelSplit = () => {
   splittingIndex.value = null;
   splitDraft.value = null;
+  addingNewSplitSpeaker.value = false;
+};
+
+// Speaker-dropdown handling for the split panel's "second part" speaker, mirroring
+// the edit form: pick an existing speaker or switch to a free-text new-speaker field.
+const onSplitSpeakerSelect = (value: string) => {
+  if (!splitDraft.value) return;
+  if (value === NEW_SPEAKER_OPTION) {
+    addingNewSplitSpeaker.value = true;
+    splitDraft.value.secondSpeaker = '';
+    void nextTick(() => newSplitSpeakerInput.value?.focus());
+    return;
+  }
+  addingNewSplitSpeaker.value = false;
+  splitDraft.value.secondSpeaker = value;
+};
+
+const cancelNewSplitSpeaker = () => {
+  if (!splitDraft.value) return;
+  addingNewSplitSpeaker.value = false;
+  const original = splittingIndex.value !== null ? props.segments[splittingIndex.value]?.speaker : undefined;
+  splitDraft.value.secondSpeaker = original?.trim() || existingSpeakers.value[0] || '';
 };
 
 // Re-derive the text boundary as the split point moves (only when word timing exists).
@@ -491,6 +556,7 @@ const selectAlternative = (originalIndex: number, source: TranscriptAlternativeS
 const cancelEdit = () => {
   editingIndex.value = null;
   tempSegment.value = null;
+  addingNewSpeaker.value = false;
 };
 
 const emitUpdatedSegments = (updates: Array<{ originalIndex: number; text: string }>) => {
@@ -823,8 +889,10 @@ const mergeDown = (originalIndex: number) => {
           </div>
       </div>
 
-      <!-- Display Mode body -->
-      <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
+      <!-- Display Mode body. `relative` scopes the action toolbar's absolute
+           positioning to here (not the whole card), so it no longer overlaps
+           the header row's play buttons/timestamp above. -->
+      <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex" class="relative">
         <p class="text-gray-200 leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
 
         <div
@@ -902,7 +970,32 @@ const mergeDown = (originalIndex: number) => {
             </div>
             <div class="flex flex-col gap-1.5 flex-1">
                 <label class="text-xs font-medium text-gray-400">Speaker</label>
-                <input v-model="tempSegment.speaker" class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all" placeholder="Speaker Name">
+                <select
+                    v-if="!addingNewSpeaker"
+                    :value="tempSegment.speaker"
+                    @change="onSpeakerSelect(($event.target as HTMLSelectElement).value)"
+                    data-testid="edit-speaker-select"
+                    class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
+                >
+                    <option v-if="!tempSegment.speaker" value="" disabled>Select speaker</option>
+                    <option v-for="name in existingSpeakers" :key="name" :value="name">{{ name }}</option>
+                    <option :value="NEW_SPEAKER_OPTION">+ Add new speaker…</option>
+                </select>
+                <div v-else class="flex gap-2">
+                    <input
+                        ref="newSpeakerInput"
+                        v-model="tempSegment.speaker"
+                        data-testid="edit-speaker-input"
+                        class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
+                        placeholder="New speaker name"
+                    >
+                    <button
+                        type="button"
+                        @click="cancelNewSpeaker"
+                        title="Choose an existing speaker instead"
+                        class="shrink-0 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-gray-300 hover:bg-white/10 transition-colors"
+                    >List</button>
+                </div>
             </div>
         </div>
         <div class="flex flex-col gap-1.5">
@@ -978,12 +1071,32 @@ const mergeDown = (originalIndex: number) => {
 
         <div class="flex flex-col gap-1.5">
           <label class="text-xs font-medium text-gray-400">Speaker for second part</label>
-          <input
-            v-model="splitDraft.secondSpeaker"
-            placeholder="Speaker name"
-            class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
+          <select
+            v-if="!addingNewSplitSpeaker"
+            :value="splitDraft.secondSpeaker"
+            @change="onSplitSpeakerSelect(($event.target as HTMLSelectElement).value)"
             data-testid="split-second-speaker"
+            class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
           >
+            <option v-if="!splitDraft.secondSpeaker" value="" disabled>Select speaker</option>
+            <option v-for="name in existingSpeakers" :key="name" :value="name">{{ name }}</option>
+            <option :value="NEW_SPEAKER_OPTION">+ Add new speaker…</option>
+          </select>
+          <div v-else class="flex gap-2">
+            <input
+              ref="newSplitSpeakerInput"
+              v-model="splitDraft.secondSpeaker"
+              placeholder="New speaker name"
+              data-testid="split-second-speaker-input"
+              class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
+            >
+            <button
+              type="button"
+              @click="cancelNewSplitSpeaker"
+              title="Choose an existing speaker instead"
+              class="shrink-0 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-gray-300 hover:bg-white/10 transition-colors"
+            >List</button>
+          </div>
         </div>
 
         <div class="flex justify-end gap-3 pt-2">
