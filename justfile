@@ -26,5 +26,9 @@ release level="patch":
     version="$(node -p "require('./package.json').version")"
     git commit -am "chore: release v$version"
     git tag "app-v$version"
-    git push --follow-tags
+    # Push the branch and the tag explicitly. `--follow-tags` only pushes
+    # annotated tags, so the (lightweight) release tag must be pushed by name
+    # or the tag-triggered CI release never fires.
+    git push
+    git push origin "app-v$version"
     echo "Released v$version (tag app-v$version pushed)."
