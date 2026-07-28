@@ -104,6 +104,65 @@ describe('Editor.vue', () => {
     expect(wrapper.find('textarea').exists()).toBe(true);
   });
 
+  it('offers existing speakers in a dropdown preselected to the current speaker', async () => {
+    const wrapper = mount(Editor, {
+      props: { segments: mockSegments },
+    });
+
+    const editButton = wrapper.findAll('button').find(b => b.text() === 'Edit');
+    await editButton!.trigger('click');
+
+    const select = wrapper.get('[data-testid="edit-speaker-select"]');
+    const optionValues = select.findAll('option').map(o => o.attributes('value'));
+    // Both existing speakers plus the "add new" affordance are offered.
+    expect(optionValues).toContain('Speaker 1');
+    expect(optionValues).toContain('Speaker 2');
+    expect(optionValues).toContain('__add_new_speaker__');
+    // The dropdown starts on the segment's current speaker.
+    expect((select.element as HTMLSelectElement).value).toBe('Speaker 1');
+  });
+
+  it('reassigns a segment to another existing speaker via the dropdown', async () => {
+    const wrapper = mount(Editor, {
+      props: { segments: mockSegments },
+    });
+
+    const editButton = wrapper.findAll('button').find(b => b.text() === 'Edit');
+    await editButton!.trigger('click');
+
+    await wrapper.get('[data-testid="edit-speaker-select"]').setValue('Speaker 2');
+    const saveButton = wrapper.findAll('button').find(b => b.text() === 'Save Changes');
+    await saveButton!.trigger('click');
+
+    const emitted = wrapper.emitted('update:segments');
+    expect(emitted).toBeTruthy();
+    const updated = emitted!.at(-1)![0] as TranscriptSegment[];
+    expect(updated[0].speaker).toBe('Speaker 2');
+  });
+
+  it('adds a brand-new speaker via the free-text input', async () => {
+    const wrapper = mount(Editor, {
+      props: { segments: mockSegments },
+    });
+
+    const editButton = wrapper.findAll('button').find(b => b.text() === 'Edit');
+    await editButton!.trigger('click');
+
+    // Switching to the "add new" option reveals a text field in place of the dropdown.
+    await wrapper.get('[data-testid="edit-speaker-select"]').setValue('__add_new_speaker__');
+    const input = wrapper.get('[data-testid="edit-speaker-input"]');
+    expect(wrapper.find('[data-testid="edit-speaker-select"]').exists()).toBe(false);
+
+    await input.setValue('Alice Example');
+    const saveButton = wrapper.findAll('button').find(b => b.text() === 'Save Changes');
+    await saveButton!.trigger('click');
+
+    const emitted = wrapper.emitted('update:segments');
+    expect(emitted).toBeTruthy();
+    const updated = emitted!.at(-1)![0] as TranscriptSegment[];
+    expect(updated[0].speaker).toBe('Alice Example');
+  });
+
   it('keeps the segment header and playback buttons visible while editing', async () => {
     const wrapper = mount(Editor, {
       props: {
@@ -532,6 +591,20 @@ describe('Editor.vue', () => {
     expect(updated[1].speaker).toBe('Speaker 2');
     // The untouched segment is preserved after the split pair.
     expect(updated[2].text).toBe('How are you?');
+  });
+
+  it('adds a brand-new speaker to the second half when splitting', async () => {
+    const wrapper = mount(Editor, { props: { segments: mockSegments } });
+
+    await wrapper.get('[data-testid="segment-split-0"]').trigger('click');
+    await wrapper.get('[data-testid="split-time-input"]').setValue(5);
+    await wrapper.get('[data-testid="split-second-speaker"]').setValue('__add_new_speaker__');
+    await wrapper.get('[data-testid="split-second-speaker-input"]').setValue('Bob Example');
+    await wrapper.get('[data-testid="confirm-split"]').trigger('click');
+
+    const updated = wrapper.emitted('update:segments')![0][0] as TranscriptSegment[];
+    expect(updated).toHaveLength(3);
+    expect(updated[1].speaker).toBe('Bob Example');
   });
 
   it('disables the split confirmation when the point is at a boundary', async () => {
