@@ -145,6 +145,7 @@ If these variables are not set, the real pipeline tests will be skipped automati
 7.  **Export**:
     *   Click **Export Video** to render the final edited video based on your transcript.
     *   Use the **SRT / VTT / TXT** buttons to export subtitles.
+    *   Pick the timeline first: *Source timeline* matches the media you selected, *Cut timeline* re-times the cues for the `_cut` file (which contains only the transcript segments, so it starts at the first cue) and saves them as `<name>_cut.srt` next to it.
 
 ## Transcript Blacklists
 
