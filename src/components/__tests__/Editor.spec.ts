@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import Editor from '../Editor.vue';
 import type { TranscriptSegment } from '../../types';
 import { ask } from '@tauri-apps/plugin-dialog';
@@ -161,6 +162,38 @@ describe('Editor.vue', () => {
     expect(emitted).toBeTruthy();
     const updated = emitted!.at(-1)![0] as TranscriptSegment[];
     expect(updated[0].speaker).toBe('Alice Example');
+  });
+
+  it('focuses the new-speaker inputs, which live inside the segment v-for', async () => {
+    // A plain string `ref` inside a `v-for` collects an array of elements, not
+    // the element, so `.focus()` threw an unhandled rejection and the field was
+    // never focused. Both inputs use function refs instead.
+    const focusSpy = vi.spyOn(HTMLInputElement.prototype, 'focus');
+
+    try {
+      const editWrapper = mount(Editor, { props: { segments: mockSegments } });
+      const editButton = editWrapper.findAll('button').find(b => b.text() === 'Edit');
+      await editButton!.trigger('click');
+      await editWrapper.get('[data-testid="edit-speaker-select"]').setValue('__add_new_speaker__');
+      await nextTick();
+
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(focusSpy.mock.instances[0]).toBe(
+        editWrapper.get('[data-testid="edit-speaker-input"]').element
+      );
+
+      const splitWrapper = mount(Editor, { props: { segments: mockSegments } });
+      await splitWrapper.get('[data-testid="segment-split-0"]').trigger('click');
+      await splitWrapper.get('[data-testid="split-second-speaker"]').setValue('__add_new_speaker__');
+      await nextTick();
+
+      expect(focusSpy).toHaveBeenCalledTimes(2);
+      expect(focusSpy.mock.instances[1]).toBe(
+        splitWrapper.get('[data-testid="split-second-speaker-input"]').element
+      );
+    } finally {
+      focusSpy.mockRestore();
+    }
   });
 
   it('keeps the segment header and playback buttons visible while editing', async () => {
