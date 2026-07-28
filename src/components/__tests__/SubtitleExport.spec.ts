@@ -217,6 +217,58 @@ describe('SubtitleExport', () => {
     processSpy.mockRestore();
   });
 
+  it('should export cut-timeline subtitles that start at zero, next to the cut video', async () => {
+    // Regression: with a silent intro the source timeline starts at 03:17.449,
+    // which runs that far late against the `_cut` export.
+    const introSegments: TranscriptSegment[] = [
+      { start: '03:17.449', end: '03:21.289', text: 'First line', speaker: 'Speaker 1' },
+      { start: '03:21.289', end: '03:29.049', text: 'Second line', speaker: 'Speaker 1' },
+    ];
+
+    const wrapper = mount(SubtitleExport, {
+      props: {
+        segments: introSegments,
+        cutSegments: introSegments,
+        inputPath: '/test/video.mp4',
+      },
+    });
+
+    await wrapper.find('[data-testid="subtitle-timeline"]').setValue('cut');
+    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
+    await srtButton?.trigger('click');
+
+    const writeCall = vi.mocked(invoke).mock.calls.find(([command]) => command === 'write_text_file');
+    const payload = writeCall?.[1] as { path: string; content: string };
+
+    expect(payload.path).toBe('/test/video_cut.srt');
+    expect(payload.content).toContain('00:00:00,000 --> 00:00:03,840');
+    expect(payload.content).toContain('00:00:03,840 --> 00:00:11,600');
+    expect(payload.content).not.toContain('00:03:17,449');
+  });
+
+  it('should keep source-timeline timestamps and file name by default', async () => {
+    const introSegments: TranscriptSegment[] = [
+      { start: '03:17.449', end: '03:21.289', text: 'First line', speaker: 'Speaker 1' },
+    ];
+
+    const wrapper = mount(SubtitleExport, {
+      props: {
+        segments: introSegments,
+        cutSegments: introSegments,
+        inputPath: '/test/video.mp4',
+      },
+    });
+
+    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
+    await srtButton?.trigger('click');
+
+    const writeCall = vi.mocked(invoke).mock.calls.find(([command]) => command === 'write_text_file');
+    const payload = writeCall?.[1] as { path: string; content: string };
+
+    expect(payload.path).toBe('/test/video.srt');
+    expect(payload.content).toContain('00:03:17,449 --> 00:03:21,289');
+  });
+
   it('should close validation panel when close button is clicked', async () => {
     const wrapper = mount(SubtitleExport, {
       props: {
