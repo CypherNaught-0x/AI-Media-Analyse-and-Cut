@@ -360,14 +360,14 @@ function onTimeUpdate() {
       </p>
     </div>
 
-    <div class="flex justify-between items-center mb-6">
+    <div class="flex flex-wrap justify-between items-center gap-x-3 gap-y-2 mb-6">
       <div class="flex items-center gap-4">
         <h2 class="text-2xl font-bold text-white">Transcript</h2>
         <span class="px-3 py-1 rounded-full bg-white/10 text-gray-300 text-xs font-bold border border-white/10">
           {{ visibleSegmentCount }}{{ hasSpeakerVisibilityFilter ? ` of ${displaySegments.length}` : '' }} Segments
         </span>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
         <div class="flex items-center gap-2 bg-black/20 rounded-lg p-1 border border-white/10">
           <select
             :value="currentLanguage"
@@ -431,7 +431,7 @@ function onTimeUpdate() {
           Export Video
         </button>
 
-        <SubtitleExport :segments="displaySegments" :inputPath="inputPath" :language="currentLanguage" :disabled="!hasMediaFile" />
+        <SubtitleExport :segments="displaySegments" :cutSegments="originalSegments" :inputPath="inputPath" :language="currentLanguage" :disabled="!hasMediaFile" />
       </div>
     </div>
 
