@@ -10,14 +10,23 @@ import {
   type SubtitleValidationError 
 } from '../utils/subtitleValidation';
 import { formatSubtitleTimeRange } from '../utils/subtitle';
+import { remapSegmentsToCutTimeline } from '../utils/subtitleTimeline';
 
 const props = defineProps<{
   segments: TranscriptSegment[];
   inputPath: string;
+  /**
+   * The segment list "Export Video" cuts with. Subtitles exported on the cut
+   * timeline are re-timed against it; defaults to the displayed segments.
+   */
+  cutSegments?: TranscriptSegment[];
   language?: string;
   disabled?: boolean;
 }>();
 
+type SubtitleTimeline = 'source' | 'cut';
+
+const timeline = ref<SubtitleTimeline>('source');
 const status = ref("");
 const showValidationPanel = ref(false);
 const validationErrors = ref<SubtitleValidationError[]>([]);
@@ -33,30 +42,42 @@ const splitOptions = ref<SubtitleSplitOptions>({
 const hasErrors = computed(() => validationErrors.value.some(e => e.severity === 'error'));
 const hasWarnings = computed(() => validationErrors.value.some(e => e.severity === 'warning'));
 
+// Timestamps to export: the source timeline as-is, or re-timed for the cut
+// export, whose first cue starts at 00:00 because it contains only the
+// transcript segments.
+const exportSegments = computed(() =>
+  timeline.value === 'cut'
+    ? remapSegmentsToCutTimeline(props.segments, props.cutSegments ?? props.segments)
+    : props.segments
+);
+
 function validateAndShow() {
-  const { errors } = processSubtitlesForDisplay(props.segments, splitOptions.value);
+  const { errors } = processSubtitlesForDisplay(exportSegments.value, splitOptions.value);
   validationErrors.value = errors;
   showValidationPanel.value = true;
 }
 
 async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolean = false) {
     if (props.segments.length === 0 || props.disabled) return;
-    
+
     // Process segments for comfortable display (split long entries)
     const { segments: processedSegments, errors } = processSubtitlesForDisplay(
-        props.segments, 
+        exportSegments.value,
         splitOptions.value
     );
-    
+
     // Update validation state
     validationErrors.value = errors;
-    
+
     try {
         let content = "";
         // Robustly remove extension
         const baseName = props.inputPath.replace(/\.[^/\\.]+$/, "");
+        // Match the cut video's file name (`<base>_cut.mp4`) so players pick the
+        // subtitle file up automatically next to it.
+        const timelineSuffix = timeline.value === 'cut' ? '_cut' : '';
         let suffix = props.language && props.language !== 'Original' ? `.${props.language}` : '';
-        let outputPath = `${baseName}${suffix}.${format}`;
+        let outputPath = `${baseName}${timelineSuffix}${suffix}.${format}`;
         
         if (format === 'srt') {
             content = processedSegments.map((s, i) => {
@@ -89,7 +110,9 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
         }
         
         await invoke("write_text_file", { path: outputPath, content });
-        status.value = `Exported ${format.toUpperCase()}`;
+        status.value = timeline.value === 'cut'
+            ? `Exported ${format.toUpperCase()} (cut timeline)`
+            : `Exported ${format.toUpperCase()}`;
         setTimeout(() => status.value = "", 3000);
     } catch (e) {
         console.error(e);
@@ -100,7 +123,7 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
 
 <template>
     <div class="flex flex-col gap-2">
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
             <div class="flex rounded-lg bg-white/5 border border-white/10 overflow-hidden">
                 <button @click="exportSubtitles('srt')" :disabled="disabled" class="px-3 py-1.5 hover:bg-white/10 text-xs text-gray-300 transition-colors border-r border-white/10 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none">SRT</button>
                 <button @click="exportSubtitles('srt', true)" :disabled="disabled" class="px-2 py-1.5 hover:bg-white/10 text-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none" title="Save SRT as...">
@@ -119,7 +142,21 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
                     <DownloadIcon class="h-3 w-3" />
                 </button>
             </div>
-            <button 
+            <div
+                class="flex rounded-lg bg-white/5 border border-white/10 px-1"
+                title="Which timeline the exported timestamps use. Source file: matches the media you selected. Cut export: re-timed for the _cut file, which contains only the transcript segments and therefore starts at 00:00."
+            >
+                <select
+                    v-model="timeline"
+                    aria-label="Subtitle timeline"
+                    data-testid="subtitle-timeline"
+                    class="bg-transparent text-xs text-gray-300 outline-none border-none py-1.5 px-1 cursor-pointer [&>option]:bg-gray-900 focus-visible:ring-2 focus-visible:ring-blue-500/50"
+                >
+                    <option value="source">Source timeline</option>
+                    <option value="cut">Cut timeline</option>
+                </select>
+            </div>
+            <button
                 @click="validateAndShow"
                 class="px-3 py-1.5 text-xs rounded-lg border transition-colors focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
                 :class="{

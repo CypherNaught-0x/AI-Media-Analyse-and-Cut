@@ -29,6 +29,77 @@ pub struct ProcessedAudio {
     pub offsets: Vec<SegmentOffset>,
 }
 
+/// Shortest stretch of audio worth keeping. `silencedetect` regularly splits one
+/// long silence into two intervals separated by a fraction of a millisecond (a
+/// single sample poking above the threshold), and the probed duration can end a
+/// few milliseconds past the last silence. Keeping those slivers would add
+/// offset-table entries that map the timestamps falling inside them onto the
+/// wrong original time, so they are folded into the surrounding silence instead.
+const MIN_KEEP_SECONDS: f64 = 0.05;
+
+/// Sort silences and merge the ones that overlap or are separated by less than
+/// [`MIN_KEEP_SECONDS`], so every gap between them is an audible stretch.
+fn merge_silence_intervals(intervals: &[SilenceInterval]) -> Vec<SilenceInterval> {
+    let mut sorted = intervals.to_vec();
+    sorted.sort_by(|a, b| {
+        a.start
+            .partial_cmp(&b.start)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut merged: Vec<SilenceInterval> = Vec::with_capacity(sorted.len());
+    for interval in sorted {
+        match merged.last_mut() {
+            Some(last) if interval.start - last.end < MIN_KEEP_SECONDS => {
+                if interval.end > last.end {
+                    last.end = interval.end;
+                    last.duration = last.end - last.start;
+                }
+            }
+            _ => merged.push(interval),
+        }
+    }
+
+    merged
+}
+
+/// The stretches of `duration` seconds of audio that survive silence removal, in
+/// original-timeline seconds. `silence_intervals` must already be merged.
+fn plan_keep_segments(silence_intervals: &[SilenceInterval], duration: f64) -> Vec<(f64, f64)> {
+    let mut keep_segments = Vec::new();
+    let mut last_end = 0.0;
+
+    for interval in silence_intervals {
+        if interval.start - last_end >= MIN_KEEP_SECONDS {
+            keep_segments.push((last_end, interval.start));
+        }
+        last_end = last_end.max(interval.end);
+    }
+
+    if duration - last_end >= MIN_KEEP_SECONDS {
+        keep_segments.push((last_end, duration));
+    }
+
+    keep_segments
+}
+
+/// Table that maps a position in the trimmed timeline back onto the original
+/// one: for every keep segment, the amount of removed silence to add back.
+fn build_offsets(keep_segments: &[(f64, f64)]) -> Vec<SegmentOffset> {
+    let mut offsets = Vec::with_capacity(keep_segments.len());
+    let mut current_new_time = 0.0;
+
+    for (start, end) in keep_segments {
+        offsets.push(SegmentOffset {
+            min_time: current_new_time,
+            offset: *start - current_new_time,
+        });
+        current_new_time += end - start;
+    }
+
+    offsets
+}
+
 #[tauri::command]
 pub async fn detect_silence(
     run_id: Option<u64>,
@@ -183,7 +254,8 @@ async fn remove_silence_internal(
     run_context: Option<(u64, &RunControl)>,
 ) -> Result<ProcessedAudio, String> {
     let min_duration_val = min_duration.unwrap_or(10.0);
-    let silence_intervals = detect_silence_internal(&path, min_duration_val, run_context).await?;
+    let detected_intervals = detect_silence_internal(&path, min_duration_val, run_context).await?;
+    let silence_intervals = merge_silence_intervals(&detected_intervals);
     let input_path = PathBuf::from(&path);
 
     if silence_intervals.is_empty() {
@@ -202,62 +274,42 @@ async fn remove_silence_internal(
         input_path.file_stem().unwrap().to_string_lossy()
     ));
 
-    // Calculate keep segments
-    // Assuming audio starts at 0.0
-    let mut keep_segments = Vec::new();
-    let mut last_end = 0.0;
+    // `silencedetect` does not report a silence that runs to EOF as ending, so
+    // the tail is derived from the probed duration rather than from the intervals.
+    let duration = probe_duration(&path)
+        .await
+        .map_err(|e| format!("Failed to probe media duration for silence removal: {}", e))?;
 
-    for interval in &silence_intervals {
-        if interval.start > last_end {
-            keep_segments.push((last_end, interval.start));
-        }
-        last_end = interval.end;
-    }
+    // The keep segments drive both the filtergraph and the offset table, so the
+    // trimmed audio and the trimmed -> original mapping cannot disagree.
+    let keep_segments = plan_keep_segments(&silence_intervals, duration);
 
-    // We don't know the total duration easily without probing, but we can assume we want to keep until the end?
-    // Or we can just stop at the last silence?
-    // Ideally we should probe duration. But for now let's assume we might miss the tail if it's not silent?
-    // Actually, silencedetect doesn't report the end of the file as silence end if it's silent.
-    // But if there is audio after the last silence, we need to include it.
-    // Without duration, we can't know for sure.
-    // However, we can use a very large number for the last segment end if we use trim?
-    // Or we can probe.
-
-    // Let's probe duration using ffmpeg output
-    let duration = probe_duration(&path).await.map_err(|e| {
-        format!("Failed to probe media duration for silence removal: {}", e)
-    })?;
-
-    if duration > last_end {
-        keep_segments.push((last_end, duration));
+    if keep_segments.is_empty() {
+        info!("Silence removal found nothing worth keeping; using the original audio.");
+        return Ok(ProcessedAudio {
+            path,
+            silence_intervals,
+            offsets: vec![SegmentOffset {
+                min_time: 0.0,
+                offset: 0.0,
+            }],
+        });
     }
 
     info!("Removing silence. Keep segments: {:?}", keep_segments);
 
+    let offsets = build_offsets(&keep_segments);
+
     // Build filter complex
     let mut filter_complex = String::new();
     let mut inputs = String::new();
-    let mut offsets = Vec::new();
-    let mut current_new_time = 0.0;
 
     for (i, (start, end)) in keep_segments.iter().enumerate() {
-        // If it's the last segment and we are not sure about duration, we can omit end?
-        // But we need to know the duration for the offset calculation of the *next* segment (if there was one).
-        // Since this is the last segment, omitting end is fine for atrim, but we need to be careful.
-        // However, we calculated duration above.
-
         filter_complex.push_str(&format!(
             "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS[a{}];",
             start, end, i
         ));
         inputs.push_str(&format!("[a{}]", i));
-
-        offsets.push(SegmentOffset {
-            min_time: current_new_time,
-            offset: *start - current_new_time,
-        });
-
-        current_new_time += end - start;
     }
 
     filter_complex.push_str(&format!(
@@ -377,6 +429,102 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::process::Command;
+
+    fn interval(start: f64, end: f64) -> SilenceInterval {
+        SilenceInterval {
+            start,
+            end,
+            duration: end - start,
+        }
+    }
+
+    /// Maps a trimmed-timeline position back onto the original one, mirroring
+    /// `adjustTimestamp` in `src/composables/useTimeFormat.ts`.
+    fn to_original(trimmed: f64, offsets: &[SegmentOffset]) -> f64 {
+        let mut offset = 0.0;
+        for entry in offsets {
+            if trimmed >= entry.min_time {
+                offset = entry.offset;
+            } else {
+                break;
+            }
+        }
+        trimmed + offset
+    }
+
+    #[test]
+    fn test_merges_near_adjacent_silences() {
+        // silencedetect splits one silence in two when a single sample pokes
+        // above the threshold; the 104us gap is not a keepable stretch.
+        let merged =
+            merge_silence_intervals(&[interval(0.0, 183.634167), interval(183.634271, 197.049583)]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].start, 0.0);
+        assert_eq!(merged[0].end, 197.049583);
+        assert!((merged[0].duration - 197.049583).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merges_overlapping_and_unsorted_silences() {
+        let merged = merge_silence_intervals(&[
+            interval(30.0, 45.0),
+            interval(10.0, 20.0),
+            interval(15.0, 25.0),
+        ]);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!((merged[0].start, merged[0].end), (10.0, 25.0));
+        assert_eq!((merged[1].start, merged[1].end), (30.0, 45.0));
+    }
+
+    #[test]
+    fn test_offsets_map_trimmed_start_onto_first_kept_audio() {
+        // Real numbers from a 4517.47s recording with a silent 3:17 intro: the
+        // 104us sliver between the two intro silences and the 6.5ms tail past
+        // the last silence must not become keep segments, or the timestamps
+        // landing in them are mapped onto the wrong original time.
+        let duration = 4517.467833;
+        let silences = merge_silence_intervals(&[
+            interval(0.0, 183.634167),
+            interval(183.634271, 197.049583),
+            interval(4462.551937, 4517.461333),
+        ]);
+        let keep_segments = plan_keep_segments(&silences, duration);
+        let offsets = build_offsets(&keep_segments);
+
+        assert_eq!(keep_segments, vec![(197.049583, 4462.551937)]);
+        assert_eq!(offsets.len(), 1);
+        assert_eq!(offsets[0].min_time, 0.0);
+
+        // The first word of the trimmed audio is the first word of the show.
+        assert!((to_original(0.0, &offsets) - 197.049583).abs() < 1e-6);
+        assert!((to_original(0.4, &offsets) - 197.449583).abs() < 1e-6);
+        // The last trimmed instant still maps inside the original media.
+        let trimmed_duration: f64 = keep_segments.iter().map(|(a, b)| b - a).sum();
+        assert!(to_original(trimmed_duration, &offsets) <= duration);
+    }
+
+    #[test]
+    fn test_keep_segments_and_offsets_cover_speech_between_silences() {
+        let silences = merge_silence_intervals(&[interval(0.0, 60.0), interval(120.0, 180.0)]);
+        let keep_segments = plan_keep_segments(&silences, 240.0);
+        let offsets = build_offsets(&keep_segments);
+
+        assert_eq!(keep_segments, vec![(60.0, 120.0), (180.0, 240.0)]);
+        assert_eq!(offsets.len(), 2);
+        // Trimmed 0..60 is original 60..120, trimmed 60..120 is original 180..240.
+        assert_eq!(to_original(0.0, &offsets), 60.0);
+        assert_eq!(to_original(59.999, &offsets), 119.999);
+        assert_eq!(to_original(60.0, &offsets), 180.0);
+        assert_eq!(to_original(119.999, &offsets), 239.999);
+    }
+
+    #[test]
+    fn test_keep_segments_empty_when_everything_is_silent() {
+        let silences = merge_silence_intervals(&[interval(0.0, 120.0)]);
+        assert!(plan_keep_segments(&silences, 120.001).is_empty());
+    }
 
     fn get_test_file_path() -> PathBuf {
         let mut path = std::env::current_dir().unwrap();
