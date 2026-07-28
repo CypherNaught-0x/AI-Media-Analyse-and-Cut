@@ -57,6 +57,17 @@ const addingNewSpeaker = ref(false);
 const newSpeakerInput = ref<HTMLInputElement | null>(null);
 const addingNewSplitSpeaker = ref(false);
 const newSplitSpeakerInput = ref<HTMLInputElement | null>(null);
+
+// Both new-speaker inputs live inside the segment `v-for`, where a plain string
+// `ref` collects an *array* of elements rather than the element itself (so
+// `.focus()` threw). Function refs, as used for `setSegmentRef` below, keep the
+// element itself; only one edit form and one split panel are open at a time.
+const setNewSpeakerInput = (element: unknown) => {
+  newSpeakerInput.value = element instanceof HTMLInputElement ? element : null;
+};
+const setNewSplitSpeakerInput = (element: unknown) => {
+  newSplitSpeakerInput.value = element instanceof HTMLInputElement ? element : null;
+};
 const splittingIndex = ref<number | null>(null);
 const splitDraft = ref<SplitDraft | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
@@ -983,7 +994,7 @@ const mergeDown = (originalIndex: number) => {
                 </select>
                 <div v-else class="flex gap-2">
                     <input
-                        ref="newSpeakerInput"
+                        :ref="setNewSpeakerInput"
                         v-model="tempSegment.speaker"
                         data-testid="edit-speaker-input"
                         class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
@@ -1084,7 +1095,7 @@ const mergeDown = (originalIndex: number) => {
           </select>
           <div v-else class="flex gap-2">
             <input
-              ref="newSplitSpeakerInput"
+              :ref="setNewSplitSpeakerInput"
               v-model="splitDraft.secondSpeaker"
               placeholder="New speaker name"
               data-testid="split-second-speaker-input"
