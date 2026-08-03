@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TranscriptionBackend } from '../types';
+import type { LocalEngine, TranscriptionBackend } from '../types';
 import FileSelector from './FileSelector.vue';
 import AnalysisSettings from './AnalysisSettings.vue';
 import SessionControls from './SessionControls.vue';
@@ -16,6 +16,7 @@ defineProps<{
   hasTranscript: boolean;
   settingsChanged: boolean;
   transcriptionBackend: TranscriptionBackend;
+  localEngine: LocalEngine;
   context: string;
   glossary: string;
   speakerCount: number | null;
@@ -26,6 +27,7 @@ defineProps<{
 defineEmits<{
   (e: 'update:inputPath', value: string): void;
   (e: 'update:transcriptionBackend', value: TranscriptionBackend): void;
+  (e: 'update:localEngine', value: LocalEngine): void;
   (e: 'update:context', value: string): void;
   (e: 'update:glossary', value: string): void;
   (e: 'update:speakerCount', value: number | null): void;
@@ -41,7 +43,7 @@ defineEmits<{
 
 <template>
   <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
-    <div class="mb-8 flex items-center justify-between bg-black/20 p-4 rounded-2xl border border-white/5">
+    <div class="mb-6 flex items-center justify-between gap-4 bg-black/20 p-4 rounded-2xl border border-white/5">
       <div class="flex items-center gap-4">
         <div class="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
           <LightningIcon class="h-6 w-6" />
@@ -74,12 +76,14 @@ defineEmits<{
 
     <AnalysisSettings
       :transcriptionBackend="transcriptionBackend"
+      :localEngine="localEngine"
       :context="context"
       :glossary="glossary"
       :speakerCount="speakerCount"
       :removeFillerWords="removeFillerWords"
       :trimSilence="trimSilence"
       @update:transcriptionBackend="$emit('update:transcriptionBackend', $event)"
+      @update:localEngine="$emit('update:localEngine', $event)"
       @update:context="$emit('update:context', $event)"
       @update:glossary="$emit('update:glossary', $event)"
       @update:speakerCount="$emit('update:speakerCount', $event)"

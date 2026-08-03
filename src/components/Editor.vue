@@ -71,7 +71,7 @@ const setNewSplitSpeakerInput = (element: unknown) => {
 const splittingIndex = ref<number | null>(null);
 const splitDraft = ref<SplitDraft | null>(null);
 const selectedIndices = ref<Set<number>>(new Set());
-const alternativeSources: TranscriptAlternativeSource[] = ['google', 'parakeet'];
+const alternativeSources: TranscriptAlternativeSource[] = ['google', 'local'];
 const searchQuery = ref('');
 const replaceQuery = ref('');
 const wholeWordMatch = ref(false);
@@ -99,7 +99,7 @@ const segmentNeedsReview = (segment: TranscriptSegment, originalIndex: number): 
 
   const belowThreshold = segment.similarityScore !== undefined
     ? segment.similarityScore < reviewThreshold.value
-    : segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_parakeet';
+    : segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_local';
 
   if (belowThreshold) return true;
   if (props.hideBlacklistFromReview) return false;
@@ -488,7 +488,8 @@ const hasAlternativeText = (segment: TranscriptSegment, source: TranscriptAltern
 };
 
 const sourceLabel = (source: TranscriptAlternativeSource): string => {
-  return source === 'google' ? 'Google' : 'Parakeet';
+  // "Local" rather than an engine name: the merge works with any local engine.
+  return source === 'google' ? 'Remote' : 'Local';
 };
 
 const renderSegmentText = (text: string, originalIndex: number): string => {
@@ -521,15 +522,15 @@ const isCurrentSearchSegment = (originalIndex: number): boolean =>
   currentSearchMatch.value?.originalIndex === originalIndex;
 
 const mergeStatusLabel = (status?: TranscriptMergeStatus): string => {
-  if (status === 'missing_google') return 'Missing In Google';
-  if (status === 'missing_parakeet') return 'Missing In Parakeet';
+  if (status === 'missing_google') return 'Missing In Remote';
+  if (status === 'missing_local') return 'Missing In Local';
   if (status === 'conflict') return 'Review Needed';
   return 'Aligned';
 };
 
 const mergeStatusClass = (status?: TranscriptMergeStatus): string => {
   if (status === 'missing_google') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
-  if (status === 'missing_parakeet') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
+  if (status === 'missing_local') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
   if (status === 'conflict') return 'bg-orange-500/15 text-orange-200 border-orange-500/30';
   return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
 };
