@@ -179,7 +179,7 @@ fn make_pair(num_segments: usize, seed: u64) -> (Vec<TranscriptSegment>, Vec<Tra
 
         // Drop ~4% of reference segments => MissingGoogle branch in a gap.
         let drop_reference = rng.chance(0.04);
-        // Drop ~4% of primary segments => MissingParakeet branch in a gap.
+        // Drop ~4% of primary segments => MissingLocal branch in a gap.
         let drop_primary = rng.chance(0.04);
 
         if let Some(prev_ref) = pending_merge.take() {

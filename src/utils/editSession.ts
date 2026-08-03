@@ -2,10 +2,12 @@ import type {
   ClipWorkspaceState,
   EditSessionV1,
   LastAnalyzedSettings,
+  LocalEngine,
   PodcastWorkspaceState,
   TranscriptWorkspaceState,
   ViralClipsWorkspaceState,
 } from '../types';
+import { migrateTranscriptionBackend } from '../types';
 
 export const EDIT_SESSION_VERSION = 1 as const;
 type SupportedEditSessionVersion = 0 | typeof EDIT_SESSION_VERSION;
@@ -18,8 +20,10 @@ export function createDefaultLastAnalyzedSettings(): LastAnalyzedSettings {
     removeFillerWords: false,
     trimSilence: true,
     transcriptionBackend: 'llm',
+    localEngine: 'parakeet',
     parakeetModelPath: '',
     sortformerModelPath: '',
+    crisperSignature: '',
   };
 }
 
@@ -84,6 +88,7 @@ export function createDefaultTranscriptWorkspaceState(): TranscriptWorkspaceStat
     settingsSnapshot: {
       glossary: '',
       transcriptionBackend: 'llm',
+      localEngine: 'parakeet',
       parakeetModelPath: '',
       sortformerModelPath: '',
     },
@@ -118,6 +123,7 @@ const TRANSCRIPT_WORKSPACE_KEYS = [
   'parakeetCacheKey',
   'settingsSnapshot',
   'transcriptionBackend',
+  'localEngine',
   'parakeetModelPath',
   'sortformerModelPath',
 ] as const;
@@ -128,6 +134,33 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasAnyKey(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return keys.some((key) => key in value);
+}
+
+/**
+ * Resolve the pipeline and local engine from a stored workspace.
+ *
+ * Sessions written before the split stored the engine inside the pipeline
+ * ('parakeet' / 'crisper'), and the value could live either at the top level or
+ * inside `settingsSnapshot`.
+ */
+function migrateSnapshotBackend(
+  raw: Record<string, unknown>,
+  defaults: TranscriptWorkspaceState,
+): Pick<TranscriptWorkspaceState['settingsSnapshot'], 'transcriptionBackend' | 'localEngine'> {
+  const snapshot = isRecord(raw.settingsSnapshot) ? raw.settingsSnapshot : {};
+  const storedBackend = raw.transcriptionBackend ?? snapshot.transcriptionBackend;
+  const storedEngine = raw.localEngine ?? snapshot.localEngine;
+
+  const migrated = migrateTranscriptionBackend(storedBackend);
+  const localEngine =
+    storedEngine === 'parakeet' || storedEngine === 'crisper'
+      ? storedEngine
+      : (migrated?.localEngine ?? defaults.settingsSnapshot.localEngine);
+
+  return {
+    transcriptionBackend: migrated?.backend ?? defaults.settingsSnapshot.transcriptionBackend,
+    localEngine,
+  };
 }
 
 function normalizeTranscriptWorkspace(
@@ -141,6 +174,7 @@ function normalizeTranscriptWorkspace(
   const raw = candidate as Partial<TranscriptWorkspaceState> & {
     glossary?: string;
     transcriptionBackend?: LastAnalyzedSettings['transcriptionBackend'];
+    localEngine?: LocalEngine;
     parakeetModelPath?: string;
     sortformerModelPath?: string;
   };
@@ -161,13 +195,7 @@ function normalizeTranscriptWorkspace(
           : isRecord(raw.settingsSnapshot) && typeof raw.settingsSnapshot.glossary === 'string'
             ? raw.settingsSnapshot.glossary
             : defaults.settingsSnapshot.glossary,
-      transcriptionBackend:
-        typeof raw.transcriptionBackend === 'string'
-          ? raw.transcriptionBackend
-          : isRecord(raw.settingsSnapshot) &&
-              typeof raw.settingsSnapshot.transcriptionBackend === 'string'
-            ? raw.settingsSnapshot.transcriptionBackend
-            : defaults.settingsSnapshot.transcriptionBackend,
+      ...migrateSnapshotBackend(raw, defaults),
       parakeetModelPath:
         typeof raw.parakeetModelPath === 'string'
           ? raw.parakeetModelPath
