@@ -35,9 +35,16 @@ function currentScenario(): Scenario {
 
 function seedStorage(scenario: Scenario) {
   localStorage.clear();
+  // Seed a hybrid pipeline so the preview shows both selection rows: the
+  // pipeline and the local engine it runs on top of.
   localStorage.setItem(
     'llm-settings',
-    JSON.stringify({ apiKey: 'demo', model: 'gemini-2.5-flash' })
+    JSON.stringify({
+      apiKey: 'demo',
+      model: 'gemini-2.5-flash',
+      transcriptionBackend: 'hybrid',
+      localEngine: 'parakeet',
+    })
   );
 
   if (scenario === 'transcript') {
