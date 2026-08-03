@@ -530,7 +530,7 @@ function cancel() {
 
 <template>
     <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans">
-        <div class="max-w-2xl mx-auto">
+        <div class="mx-auto w-full max-w-4xl">
             <header class="mb-10">
                 <h1 class="text-4xl font-bold text-white mb-2">
                     AI Settings

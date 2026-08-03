@@ -27,7 +27,7 @@ function formatEta(seconds: number | null | undefined): string {
 
 <template>
     <div class="fixed bottom-0 left-0 right-0 p-4 bg-black/50 backdrop-blur-md border-t border-white/10 flex items-center justify-between z-50">
-        <div class="max-w-5xl mx-auto w-full flex flex-col gap-2">
+        <div class="mx-auto w-full max-w-[1400px] flex flex-col gap-2">
             <div v-if="progressPercentage !== null" class="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
                 <div class="bg-blue-500 h-full transition-all duration-300 ease-out" :style="{ width: `${progressPercentage}%` }"></div>
             </div>
