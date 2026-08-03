@@ -125,6 +125,30 @@ const visibleSegments = computed(() =>
     .filter(({ segment, originalIndex }) => !props.showOnlyReviewSegments || segmentNeedsReview(segment, originalIndex))
 );
 
+/**
+ * Whether a row opens a new speaker run.
+ *
+ * Consecutive segments from the same speaker repeat the name for no
+ * information gain, and the transcript is the surface people scroll most. Only
+ * labelling the first row of a run removes a line from most rows and makes
+ * speaker changes far easier to spot while scanning.
+ */
+function startsSpeakerRun(visibleIndex: number): boolean {
+  const rows = visibleSegments.value;
+  if (visibleIndex <= 0) return true;
+  return rows[visibleIndex - 1]?.segment.speaker !== rows[visibleIndex]?.segment.speaker;
+}
+
+/** Badges force the header line even mid-run, so they are never hidden. */
+function hasRowBadges(segment: TranscriptSegment, originalIndex: number): boolean {
+  return (
+    !!segment.mergeStatus ||
+    segment.similarityScore !== undefined ||
+    segment.reviewResolved === true ||
+    getBlacklistMatches(originalIndex).length > 0
+  );
+}
+
 watch(visibleSegments, (segments) => {
   const visibleIndices = new Set(segments.map(({ originalIndex }) => originalIndex));
 
@@ -721,8 +745,12 @@ const mergeDown = (originalIndex: number) => {
 </script>
 
 <template>
-  <div class="editor-container p-4 bg-black/20 backdrop-blur-md border border-white/10 rounded-xl overflow-y-auto max-h-[600px] relative">
-    <div class="mb-4 rounded-lg border border-white/10 bg-black/30 p-3">
+  <!-- The scroll viewport grows with the window instead of being pinned to a
+       fixed 600px, which wasted most of the height on a maximised window. -->
+  <div class="editor-container relative max-h-[min(72vh,60rem)] min-h-[18rem] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-4 backdrop-blur-md">
+    <!-- Sticky so find/replace stays reachable while scrolling a long
+         transcript. Negative margins let it cover the container padding. -->
+    <div class="sticky top-0 z-20 -mx-4 -mt-4 mb-3 border-b border-white/10 bg-gray-900/95 px-4 pb-3 pt-4 backdrop-blur-md">
       <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
         <input
           v-model="searchQuery"
@@ -799,24 +827,39 @@ const mergeDown = (originalIndex: number) => {
         </div>
     </div>
 
-    <div v-for="{ segment, originalIndex } in visibleSegments" :key="`${originalIndex}-${segment.start}-${segment.end}`" 
+    <!-- Dense list rows rather than spaced cards: state is carried by a left
+         accent bar and a hairline divider, which removes ~64px of padding and
+         margin per segment without losing the hit target or hover affordance. -->
+    <div v-for="({ segment, originalIndex }, visibleIndex) in visibleSegments" :key="`${originalIndex}-${segment.start}-${segment.end}`"
          :ref="(element) => setSegmentRef(originalIndex, element as HTMLDivElement | null)"
-         class="segment mb-4 p-4 rounded-lg transition-all duration-300 group relative border"
+         class="segment group relative grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 border-b border-l-2 border-b-white/5 px-3 py-2 transition-colors md:grid-cols-[auto_minmax(0,80ch)_1fr]"
          :class="[
             selectedIndices.has(originalIndex)
-              ? 'bg-blue-500/20 border-blue-500/50'
+              ? 'border-l-blue-400 bg-blue-500/15'
               : isCurrentSearchSegment(originalIndex)
-                ? 'bg-teal-500/10 border-teal-500/40'
+                ? 'border-l-teal-400 bg-teal-500/10'
                 : isSearchResultSegment(originalIndex)
-                  ? 'bg-amber-500/10 border-amber-500/30'
-                  : 'bg-white/5 border-white/5 hover:bg-white/10 hover:border-white/20'
+                  ? 'border-l-amber-400/70 bg-amber-500/[0.07]'
+                  : 'border-l-transparent hover:bg-white/[0.045]',
+            startsSpeakerRun(visibleIndex) && visibleIndex > 0 ? 'mt-1.5' : ''
          ]"
          @click="handleSegmentClick(originalIndex, $event)">
-      
-      <!-- Segment header (always visible, including while editing) -->
-      <div class="flex justify-between text-sm text-gray-400 mb-2">
-          <div class="flex items-center gap-2">
-            <span class="font-bold text-blue-400">{{ segment.speaker }}</span>
+
+      <!-- Time gutter: the anchor people scan by. -->
+      <span
+        class="select-none pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-gray-500"
+        :title="`${segment.start} – ${segment.end}`"
+      >{{ segment.start }}</span>
+
+      <div class="min-w-0 md:col-start-2">
+      <!-- Header line: only rendered when it carries information (a speaker
+           change or a badge), so mid-run rows are a single line of text. -->
+      <div
+        v-if="startsSpeakerRun(visibleIndex) || hasRowBadges(segment, originalIndex) || editingIndex === originalIndex || splittingIndex === originalIndex"
+        class="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 pr-24 text-sm text-gray-400 md:pr-0"
+      >
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs font-semibold uppercase tracking-wide text-blue-300">{{ segment.speaker }}</span>
             <span
               v-if="segment.mergeStatus"
               class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide"
@@ -843,73 +886,19 @@ const mergeDown = (originalIndex: number) => {
               Resolved
             </span>
           </div>
-          <div class="flex items-center gap-2">
-            <button
-              v-if="audioAvailable"
-              type="button"
-              :data-testid="`segment-preview-${originalIndex}`"
-              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
-              :class="previewIndex === originalIndex
-                ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-300'
-                : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:text-white'"
-              :title="previewIndex === originalIndex ? 'Stop audio preview' : 'Play original audio for this segment'"
-              @click.stop="requestPreview(originalIndex)"
-            >
-              <svg v-if="previewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            </button>
-            <button
-              v-if="videoAvailable"
-              type="button"
-              :data-testid="`segment-play-video-${originalIndex}`"
-              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
-              :class="videoPreviewIndex === originalIndex
-                ? 'border-blue-500/40 bg-blue-500/20 text-blue-300'
-                : 'border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 hover:text-white'"
-              :title="videoPreviewIndex === originalIndex ? 'Stop video preview' : 'Play this video segment'"
-              @click.stop="requestVideoPreview(originalIndex)"
-            >
-              <svg v-if="videoPreviewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <rect x="4" y="5" width="16" height="14" rx="2" />
-                <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none" />
-              </svg>
-              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <rect x="4" y="5" width="16" height="14" rx="2" />
-                <path d="M10 9.2l5 2.8-5 2.8z" fill="currentColor" stroke="none" />
-              </svg>
-            </button>
-            <button
-              v-if="videoAvailable"
-              type="button"
-              :data-testid="`segment-play-from-${originalIndex}`"
-              class="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
-              title="Play video from here"
-              @click.stop="requestPlayFrom(originalIndex)"
-            >
-              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v9" />
-                <path stroke-linecap="round" stroke-linejoin="round" d="M8 8l4 4 4-4" />
-                <path stroke-linecap="round" stroke-linejoin="round" d="M4 19h16" />
-              </svg>
-            </button>
-            <span class="font-mono text-xs bg-black/30 px-2 py-0.5 rounded text-gray-500">{{ segment.start }} - {{ segment.end }}</span>
-          </div>
       </div>
 
-      <!-- Display Mode body. `relative` scopes the action toolbar's absolute
-           positioning to here (not the whole card), so it no longer overlaps
-           the header row's play buttons/timestamp above. -->
-      <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex" class="relative">
-        <p class="text-gray-200 leading-relaxed" v-html="renderSegmentText(segment.text, originalIndex)"></p>
+
+      <!-- Display Mode body -->
+      <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
+        <p
+          class="pr-24 text-sm leading-6 text-gray-200 md:pr-0"
+          v-html="renderSegmentText(segment.text, originalIndex)"
+        ></p>
 
         <div
           v-if="getBlacklistMatches(originalIndex).length > 0"
-          class="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3"
+          class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3"
         >
           <div class="flex items-center justify-between gap-3">
             <span class="text-xs font-semibold uppercase tracking-wide text-amber-100">Blacklist Warning</span>
@@ -946,26 +935,6 @@ const mergeDown = (originalIndex: number) => {
               {{ hasAlternativeText(segment, source) ? getAlternativeText(segment, source) : 'No matching sentence detected.' }}
             </p>
           </div>
-        </div>
-        
-        <!-- Action Toolbar -->
-        <div class="absolute top-2 right-2 hidden group-hover:flex gap-2 bg-black/60 backdrop-blur-md p-1.5 rounded-lg border border-white/10 shadow-xl">
-          <button
-            v-if="segmentNeedsReview(segment, originalIndex) || segment.reviewResolved"
-            :data-testid="`segment-mark-done-${originalIndex}`"
-            @click.stop="toggleReviewResolved(originalIndex)"
-            class="px-2 py-1 rounded text-xs transition-colors border"
-            :class="segment.reviewResolved
-              ? 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
-              : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30'"
-            :title="segment.reviewResolved ? 'Return this segment to the review list' : 'Mark this segment as reviewed and hide it from the review list'"
-          >
-            {{ segment.reviewResolved ? 'Reopen' : 'Mark Done' }}
-          </button>
-          <button @click.stop="startEditing(originalIndex)" class="px-2 py-1 bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded text-xs hover:bg-blue-500/30 transition-colors">Edit</button>
-          <button :data-testid="`segment-split-${originalIndex}`" @click.stop="startSplitting(originalIndex)" class="px-2 py-1 bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded text-xs hover:bg-teal-500/30 transition-colors" title="Split this segment at a chosen point">Split</button>
-          <button v-if="originalIndex < segments.length - 1" @click.stop="mergeDown(originalIndex)" class="px-2 py-1 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors" title="Merge with next">Merge ↓</button>
-          <button @click.stop="deleteSegment(originalIndex)" class="px-2 py-1 bg-red-500/20 text-red-300 border border-red-500/30 rounded text-xs hover:bg-red-500/30 transition-colors">Del</button>
         </div>
       </div>
 
@@ -1122,6 +1091,90 @@ const mergeDown = (originalIndex: number) => {
             Add Split
           </button>
         </div>
+      </div>
+      </div>
+
+      <!-- One row toolbar: playback stays visible (it is the main way people
+           review), the editing actions appear on hover so the list stays quiet
+           while scrolling.
+           On wide screens it occupies its own grid column beside the prose, so
+           the transcript keeps a readable measure, the toolbar sits next to the
+           text it acts on, and nothing ever overlaps the words. Below `md` it
+           falls back to an overlay in the row's corner. -->
+      <div class="absolute right-2 top-1.5 flex items-center gap-1 rounded-lg transition-colors group-hover:bg-black/60 group-hover:px-1.5 group-hover:py-1 group-hover:shadow-lg group-hover:ring-1 group-hover:ring-white/10 group-hover:backdrop-blur-md md:static md:col-start-3 md:row-start-1 md:h-6 md:justify-self-start md:group-hover:bg-transparent md:group-hover:p-0 md:group-hover:shadow-none md:group-hover:ring-0">
+            <button
+              v-if="audioAvailable"
+              type="button"
+              :data-testid="`segment-preview-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
+              :class="previewIndex === originalIndex
+                ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-300'
+                : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'"
+              :title="previewIndex === originalIndex ? 'Stop audio preview' : 'Play original audio for this segment'"
+              @click.stop="requestPreview(originalIndex)"
+            >
+              <svg v-if="previewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </button>
+            <button
+              v-if="videoAvailable"
+              type="button"
+              :data-testid="`segment-play-video-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
+              :class="videoPreviewIndex === originalIndex
+                ? 'border-blue-500/40 bg-blue-500/20 text-blue-300'
+                : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'"
+              :title="videoPreviewIndex === originalIndex ? 'Stop video preview' : 'Play this video segment'"
+              @click.stop="requestVideoPreview(originalIndex)"
+            >
+              <svg v-if="videoPreviewIndex === originalIndex" class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="14" rx="2" />
+                <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none" />
+              </svg>
+              <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="4" y="5" width="16" height="14" rx="2" />
+                <path d="M10 9.2l5 2.8-5 2.8z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <button
+              v-if="videoAvailable"
+              type="button"
+              :data-testid="`segment-play-from-${originalIndex}`"
+              class="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white"
+              title="Play video from here"
+              @click.stop="requestPlayFrom(originalIndex)"
+            >
+              <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v9" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M8 8l4 4 4-4" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 19h16" />
+              </svg>
+            </button>
+
+            <template v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
+              <span class="mx-0.5 hidden h-4 w-px bg-white/15 group-hover:block"></span>
+              <button
+                v-if="segmentNeedsReview(segment, originalIndex) || segment.reviewResolved"
+                :data-testid="`segment-mark-done-${originalIndex}`"
+                @click.stop="toggleReviewResolved(originalIndex)"
+                class="hidden rounded border px-2 py-1 text-xs transition-colors group-hover:block"
+                :class="segment.reviewResolved
+                  ? 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
+                  : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30'"
+                :title="segment.reviewResolved ? 'Return this segment to the review list' : 'Mark this segment as reviewed and hide it from the review list'"
+              >
+                {{ segment.reviewResolved ? 'Reopen' : 'Mark Done' }}
+              </button>
+              <button @click.stop="startEditing(originalIndex)" class="hidden rounded border border-blue-500/30 bg-blue-500/20 px-2 py-1 text-xs text-blue-300 transition-colors hover:bg-blue-500/30 group-hover:block">Edit</button>
+              <button :data-testid="`segment-split-${originalIndex}`" @click.stop="startSplitting(originalIndex)" class="hidden rounded border border-teal-500/30 bg-teal-500/20 px-2 py-1 text-xs text-teal-300 transition-colors hover:bg-teal-500/30 group-hover:block" title="Split this segment at a chosen point">Split</button>
+              <button v-if="originalIndex < segments.length - 1" @click.stop="mergeDown(originalIndex)" class="hidden rounded border border-purple-500/30 bg-purple-500/20 px-2 py-1 text-xs text-purple-300 transition-colors hover:bg-purple-500/30 group-hover:block" title="Merge with next">Merge ↓</button>
+              <button @click.stop="deleteSegment(originalIndex)" class="hidden rounded border border-red-500/30 bg-red-500/20 px-2 py-1 text-xs text-red-300 transition-colors hover:bg-red-500/30 group-hover:block">Del</button>
+            </template>
       </div>
 
     </div>
