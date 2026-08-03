@@ -9,7 +9,7 @@ import { chromium } from "playwright";
 
 const PORT = 5199;
 const BASE_URL = `http://localhost:${PORT}`;
-const VIEWPORT = { width: 1456, height: 1160 };
+const VIEWPORT = { width: 1456, height: 1300 };
 
 const SHOTS = [
   {
