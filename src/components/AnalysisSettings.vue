@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { TranscriptionBackend } from '../types';
+import type { LocalEngine, TranscriptionBackend } from '../types';
+import { usesLocalEngine, usesRemoteModel } from '../types';
 
 const props = defineProps<{
   transcriptionBackend: TranscriptionBackend;
+  localEngine: LocalEngine;
   context: string;
   glossary: string;
   speakerCount: number | null;
@@ -13,6 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:transcriptionBackend', value: TranscriptionBackend): void;
+  (e: 'update:localEngine', value: LocalEngine): void;
   (e: 'update:context', value: string): void;
   (e: 'update:glossary', value: string): void;
   (e: 'update:speakerCount', value: number | null): void;
@@ -22,7 +25,59 @@ const emit = defineEmits<{
 
 const contextTextarea = ref<HTMLTextAreaElement | null>(null);
 const glossaryTextarea = ref<HTMLTextAreaElement | null>(null);
-const usesLlmAssist = computed(() => props.transcriptionBackend !== 'parakeet');
+
+/** The engine row only matters when a local engine actually runs. */
+const showsLocalEngine = computed(() => usesLocalEngine(props.transcriptionBackend));
+/** Context, glossary and speaker count are only sent to a remote LLM. */
+const usesLlmAssist = computed(() => usesRemoteModel(props.transcriptionBackend));
+/**
+ * CrisperWhisper removes fillers itself (it transcribes them verbatim with
+ * timings, so they can be cut from the video), and the LLM stages can too.
+ * Parakeet alone has no such pass.
+ */
+const supportsFillerRemoval = computed(
+    () => usesLlmAssist.value || props.localEngine === 'crisper',
+);
+const isCrisperEngine = computed(
+    () => showsLocalEngine.value && props.localEngine === 'crisper',
+);
+
+const PIPELINES: { value: TranscriptionBackend; title: string; description: string }[] = [
+    {
+        value: 'llm',
+        title: 'LLM Only',
+        description: 'Sends the audio to your configured API model. Uses context, glossary and speaker count.',
+    },
+    {
+        value: 'local',
+        title: 'Local Only',
+        description: 'Runs entirely on this machine with the engine below. No API key, nothing leaves the device.',
+    },
+    {
+        value: 'hybrid',
+        title: 'Hybrid Cleanup',
+        description: 'Keeps the local engine’s timings, then an LLM pass tidies wording and punctuation.',
+    },
+    {
+        value: 'hybrid-merge',
+        title: 'Hybrid Merge',
+        description: 'Transcribes locally and remotely, then merges the strengths of both onto the local timings.',
+    },
+];
+
+const ENGINES: { value: LocalEngine; title: string; badge?: string; description: string }[] = [
+    {
+        value: 'parakeet',
+        title: 'Parakeet',
+        description: 'Parakeet TDT + Sortformer diarization. Fast, multilingual, auto-downloads.',
+    },
+    {
+        value: 'crisper',
+        title: 'CrisperWhisper',
+        badge: 'EN / DE',
+        description: 'Verbatim, ~30 ms word timings, keeps or cuts fillers.',
+    },
+];
 
 function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
     if (!textarea) return;
@@ -48,61 +103,79 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
 </script>
 
 <template>
-    <div class="mb-8">
-        <label class="block text-sm font-medium text-gray-400 mb-3 uppercase tracking-wider">Transcription Backend</label>
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <button
-                type="button"
-                class="text-left p-4 rounded-2xl border transition-all"
-                :class="transcriptionBackend === 'llm'
-                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                @click="$emit('update:transcriptionBackend', 'llm')"
+    <div class="mb-6 space-y-5">
+        <div>
+            <label class="mb-3 block text-sm font-medium uppercase tracking-wider text-gray-400">
+                Transcription Pipeline
+            </label>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <button
+                    v-for="pipeline in PIPELINES"
+                    :key="pipeline.value"
+                    type="button"
+                    class="flex h-full flex-col rounded-2xl border p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                    :class="transcriptionBackend === pipeline.value
+                        ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                        : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                    @click="$emit('update:transcriptionBackend', pipeline.value)"
+                >
+                    <span class="text-sm font-semibold">{{ pipeline.title }}</span>
+                    <span class="mt-1 text-xs leading-relaxed text-gray-400">{{ pipeline.description }}</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- The engine is independent of the pipeline: every non-LLM pipeline
+             runs whichever engine is picked here. -->
+        <div v-if="showsLocalEngine">
+            <label class="mb-2 block text-sm font-medium uppercase tracking-wider text-gray-400">
+                Local Engine
+            </label>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                    v-for="engine in ENGINES"
+                    :key="engine.value"
+                    type="button"
+                    class="flex h-full flex-col rounded-xl border px-4 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                    :class="localEngine === engine.value
+                        ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                        : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                    @click="$emit('update:localEngine', engine.value)"
+                >
+                    <span class="flex items-center gap-2">
+                        <span class="text-sm font-semibold">{{ engine.title }}</span>
+                        <span
+                            v-if="engine.badge"
+                            class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
+                        >{{ engine.badge }}</span>
+                    </span>
+                    <span class="mt-0.5 text-xs text-gray-400">{{ engine.description }}</span>
+                </button>
+            </div>
+
+            <!-- Shown on selection: the weights carry a licence restriction the app cannot enforce. -->
+            <div
+                v-if="isCrisperEngine"
+                class="mt-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4"
             >
-                <div class="text-sm font-semibold">LLM-Based</div>
-                <p class="text-xs mt-1 text-gray-400">Uses your configured API model with context, glossary, and filler-word cleanup.</p>
-            </button>
-            <button
-                type="button"
-                class="text-left p-4 rounded-2xl border transition-all"
-                :class="transcriptionBackend === 'parakeet'
-                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                @click="$emit('update:transcriptionBackend', 'parakeet')"
-            >
-                <div class="text-sm font-semibold">Parakeet</div>
-                <p class="text-xs mt-1 text-gray-400">Runs local Parakeet TDT + Sortformer for diarization and word-level timestamps.</p>
-            </button>
-            <button
-                type="button"
-                class="text-left p-4 rounded-2xl border transition-all"
-                :class="transcriptionBackend === 'hybrid'
-                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                @click="$emit('update:transcriptionBackend', 'hybrid')"
-            >
-                <div class="text-sm font-semibold">Hybrid</div>
-                <p class="text-xs mt-1 text-gray-400">Uses Parakeet for timings, then an LLM pass to clean and merge transcript lines.</p>
-            </button>
-            <button
-                type="button"
-                class="text-left p-4 rounded-2xl border transition-all"
-                :class="transcriptionBackend === 'hybrid-merge'
-                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                @click="$emit('update:transcriptionBackend', 'hybrid-merge')"
-            >
-                <div class="text-sm font-semibold">Hybrid Merge</div>
-                <p class="text-xs mt-1 text-gray-400">Queries both Parakeet and the remote model, then merges the strengths of each onto Parakeet timings.</p>
-            </button>
+                <p class="mb-1 text-xs font-semibold text-amber-200">
+                    Non-commercial use only &middot; English and German only
+                </p>
+                <p class="text-xs leading-relaxed text-amber-100/80">
+                    The CrisperWhisper 2.0 weights are released under the Nyra Health
+                    <strong>Non-Commercial Research License</strong>. Research and other
+                    non-commercial use is free; <strong>commercial use requires a license from
+                    Nyra Health</strong>. The model card is published for English and German only.
+                </p>
+            </div>
         </div>
     </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
         <div class="md:col-span-2">
             <div class="flex items-center justify-between mb-2">
                 <label class="block text-sm font-medium text-gray-400 uppercase tracking-wider">Context</label>
-                <span v-if="transcriptionBackend === 'parakeet'" class="text-[10px] uppercase tracking-wider text-gray-500">Hybrid / LLM</span>
+                <span v-if="!usesLlmAssist" class="text-[10px] uppercase tracking-wider text-gray-500">Hybrid / LLM</span>
             </div>
             <div class="relative">
                 <textarea ref="contextTextarea" :value="context" @input="$emit('update:context', ($event.target as HTMLTextAreaElement).value)" rows="2"
@@ -120,7 +193,7 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
         <div>
             <div class="flex items-center justify-between mb-2">
                 <label class="block text-sm font-medium text-gray-400 uppercase tracking-wider">Glossary</label>
-                <span v-if="transcriptionBackend === 'parakeet'" class="text-[10px] uppercase tracking-wider text-gray-500">Hybrid / LLM</span>
+                <span v-if="!usesLlmAssist" class="text-[10px] uppercase tracking-wider text-gray-500">Hybrid / LLM</span>
             </div>
             <div class="relative">
                 <textarea ref="glossaryTextarea" :value="glossary" @input="$emit('update:glossary', ($event.target as HTMLTextAreaElement).value)" rows="2"
@@ -152,13 +225,16 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
     </div>
 
     <!-- Advanced Options -->
-    <div class="mb-8 flex items-center gap-4">
+    <div class="mb-6 flex flex-wrap items-center gap-3">
         <div
             class="flex items-center gap-3 p-4 rounded-xl border border-white/5 transition-colors"
-            :class="usesLlmAssist
+            :class="supportsFillerRemoval
                 ? 'bg-black/20 cursor-pointer hover:bg-black/30'
                 : 'bg-black/10 opacity-60 cursor-not-allowed'"
-            @click="usesLlmAssist && $emit('update:removeFillerWords', !removeFillerWords)"
+            :title="isCrisperEngine
+                ? 'Cuts [UM] / [UH] out of the transcript and the exported video.'
+                : undefined"
+            @click="supportsFillerRemoval && $emit('update:removeFillerWords', !removeFillerWords)"
         >
             <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none"
                 :class="removeFillerWords ? 'bg-blue-600' : 'bg-gray-700'">

@@ -89,7 +89,7 @@ describe('adjustSegmentsWithOffsets — hybrid-merge output', () => {
       end: '00:16.000',
       speaker: 'Speaker 2',
       text: 'Reference-only line.',
-      mergeStatus: 'missing_parakeet',
+      mergeStatus: 'missing_local',
       activeSource: 'google',
     };
 

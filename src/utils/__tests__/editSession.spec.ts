@@ -67,4 +67,50 @@ describe('editSession', () => {
     expect(normalized?.clipWorkspace.includeSubtitles).toBe(true);
     expect(normalized?.podcastWorkspace.minDurationMinutes).toBe(10);
   });
+
+  it('migrates legacy engine-as-pipeline values into the split representation', () => {
+    // 'parakeet' and 'crisper' used to be pipelines in their own right.
+    const parakeet = normalizeEditSession({
+      inputPath: '/tmp/a.mp3',
+      transcriptionBackend: 'parakeet',
+    });
+    expect(parakeet?.transcriptWorkspace.settingsSnapshot.transcriptionBackend).toBe('local');
+    expect(parakeet?.transcriptWorkspace.settingsSnapshot.localEngine).toBe('parakeet');
+
+    const crisper = normalizeEditSession({
+      inputPath: '/tmp/b.mp3',
+      transcriptionBackend: 'crisper',
+    });
+    expect(crisper?.transcriptWorkspace.settingsSnapshot.transcriptionBackend).toBe('local');
+    expect(crisper?.transcriptWorkspace.settingsSnapshot.localEngine).toBe('crisper');
+
+    // Hybrids implied Parakeet before the split; keep that behaviour.
+    const hybrid = normalizeEditSession({
+      inputPath: '/tmp/c.mp3',
+      transcriptionBackend: 'hybrid',
+    });
+    expect(hybrid?.transcriptWorkspace.settingsSnapshot.transcriptionBackend).toBe('hybrid');
+    expect(hybrid?.transcriptWorkspace.settingsSnapshot.localEngine).toBe('parakeet');
+  });
+
+  it('keeps an explicitly stored engine when both values are present', () => {
+    const normalized = normalizeEditSession({
+      inputPath: '/tmp/d.mp3',
+      transcriptionBackend: 'hybrid-merge',
+      localEngine: 'crisper',
+    });
+
+    expect(normalized?.transcriptWorkspace.settingsSnapshot.transcriptionBackend).toBe('hybrid-merge');
+    expect(normalized?.transcriptWorkspace.settingsSnapshot.localEngine).toBe('crisper');
+  });
+
+  it('falls back to defaults for an unrecognised pipeline value', () => {
+    const normalized = normalizeEditSession({
+      inputPath: '/tmp/e.mp3',
+      transcriptionBackend: 'nonsense',
+    });
+
+    expect(normalized?.transcriptWorkspace.settingsSnapshot.transcriptionBackend).toBe('llm');
+    expect(normalized?.transcriptWorkspace.settingsSnapshot.localEngine).toBe('parakeet');
+  });
 });

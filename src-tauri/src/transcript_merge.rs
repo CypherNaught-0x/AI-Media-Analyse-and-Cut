@@ -31,7 +31,7 @@ enum AlignmentStep {
         similarity: f32,
     },
     MissingGoogle,
-    MissingParakeet,
+    MissingLocal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,7 +84,7 @@ where
                 words: None,
                 alternatives: Some(vec![
                     TranscriptAlternative {
-                        source: TranscriptAlternativeSource::Parakeet,
+                        source: TranscriptAlternativeSource::Local,
                         text: String::new(),
                         speaker: None,
                         similarity_score: None,
@@ -96,7 +96,7 @@ where
                         similarity_score: None,
                     },
                 ]),
-                merge_status: Some(TranscriptMergeStatus::MissingParakeet),
+                merge_status: Some(TranscriptMergeStatus::MissingLocal),
                 active_source: Some(TranscriptAlternativeSource::Google),
                 similarity_score: None,
             })
@@ -249,7 +249,7 @@ where
                 if next_cost < costs[primary_index][reference_index + 1] {
                     costs[primary_index][reference_index + 1] = next_cost;
                     previous[primary_index][reference_index + 1] =
-                        Some(AlignmentStep::MissingParakeet);
+                        Some(AlignmentStep::MissingLocal);
                 }
             }
 
@@ -332,7 +332,7 @@ where
             AlignmentStep::MissingGoogle => {
                 primary_index -= 1;
             }
-            AlignmentStep::MissingParakeet => {
+            AlignmentStep::MissingLocal => {
                 reference_index -= 1;
             }
         }
@@ -612,8 +612,8 @@ fn materialize_alignment(
                 merged.push(build_missing_google_segment(&primary[primary_index]));
                 primary_index += 1;
             }
-            AlignmentStep::MissingParakeet => {
-                merged.push(build_missing_parakeet_segment(
+            AlignmentStep::MissingLocal => {
+                merged.push(build_missing_local_segment(
                     primary,
                     primary_index,
                     &reference[reference_index],
@@ -665,8 +665,8 @@ fn optimize_boundary_between_segments(
 
     let left_google_speaker = alternative_speaker(left, TranscriptAlternativeSource::Google);
     let right_google_speaker = alternative_speaker(right, TranscriptAlternativeSource::Google);
-    let left_parakeet_speaker = alternative_speaker(left, TranscriptAlternativeSource::Parakeet);
-    let right_parakeet_speaker = alternative_speaker(right, TranscriptAlternativeSource::Parakeet);
+    let left_parakeet_speaker = alternative_speaker(left, TranscriptAlternativeSource::Local);
+    let right_parakeet_speaker = alternative_speaker(right, TranscriptAlternativeSource::Local);
 
     let same_google_speaker =
         left_google_speaker.is_some() && left_google_speaker == right_google_speaker;
@@ -816,7 +816,7 @@ fn rebuild_segment_with_words(
                 .clone()
                 .filter(|speaker| !speaker.trim().is_empty())
         })
-        .or_else(|| alternative_speaker(template, TranscriptAlternativeSource::Parakeet));
+        .or_else(|| alternative_speaker(template, TranscriptAlternativeSource::Local));
     let google_speaker = alternative_speaker(template, TranscriptAlternativeSource::Google);
     let resolved_speaker = google_speaker
         .clone()
@@ -831,7 +831,7 @@ fn rebuild_segment_with_words(
         words: Some(words),
         alternatives: Some(vec![
             TranscriptAlternative {
-                source: TranscriptAlternativeSource::Parakeet,
+                source: TranscriptAlternativeSource::Local,
                 text: parakeet_text,
                 speaker: parakeet_speaker,
                 similarity_score: Some(similarity),
@@ -930,7 +930,7 @@ fn build_matched_segment(
         words: merged_words,
         alternatives: Some(vec![
             TranscriptAlternative {
-                source: TranscriptAlternativeSource::Parakeet,
+                source: TranscriptAlternativeSource::Local,
                 text: parakeet_text,
                 speaker: Some(parakeet_speaker),
                 similarity_score: Some(similarity),
@@ -977,7 +977,7 @@ fn build_segment_from_word_range(
         words: Some(words.to_vec()),
         alternatives: Some(vec![
             TranscriptAlternative {
-                source: TranscriptAlternativeSource::Parakeet,
+                source: TranscriptAlternativeSource::Local,
                 text: parakeet_text,
                 speaker: first.speaker.clone(),
                 similarity_score: Some(similarity),
@@ -1008,7 +1008,7 @@ fn build_missing_google_segment(segment: &TranscriptSegment) -> TranscriptSegmen
         words: segment.words.clone(),
         alternatives: Some(vec![
             TranscriptAlternative {
-                source: TranscriptAlternativeSource::Parakeet,
+                source: TranscriptAlternativeSource::Local,
                 text: segment.text.clone(),
                 speaker: Some(segment.speaker.clone()),
                 similarity_score: None,
@@ -1021,12 +1021,12 @@ fn build_missing_google_segment(segment: &TranscriptSegment) -> TranscriptSegmen
             },
         ]),
         merge_status: Some(TranscriptMergeStatus::MissingGoogle),
-        active_source: Some(TranscriptAlternativeSource::Parakeet),
+        active_source: Some(TranscriptAlternativeSource::Local),
         similarity_score: None,
     }
 }
 
-fn build_missing_parakeet_segment(
+fn build_missing_local_segment(
     primary: &[TranscriptSegment],
     insertion_index: usize,
     reference_segment: &TranscriptSegment,
@@ -1061,7 +1061,7 @@ fn build_missing_parakeet_segment(
         words: None,
         alternatives: Some(vec![
             TranscriptAlternative {
-                source: TranscriptAlternativeSource::Parakeet,
+                source: TranscriptAlternativeSource::Local,
                 text: String::new(),
                 speaker: None,
                 similarity_score: None,
@@ -1073,7 +1073,7 @@ fn build_missing_parakeet_segment(
                 similarity_score: None,
             },
         ]),
-        merge_status: Some(TranscriptMergeStatus::MissingParakeet),
+        merge_status: Some(TranscriptMergeStatus::MissingLocal),
         active_source: Some(TranscriptAlternativeSource::Google),
         similarity_score: None,
     }
@@ -1606,7 +1606,7 @@ fn apply_inferred_speaker_labels(
         .into_iter()
         .map(|mut segment| {
             let parakeet_speaker =
-                alternative_speaker(&segment, TranscriptAlternativeSource::Parakeet).or_else(
+                alternative_speaker(&segment, TranscriptAlternativeSource::Local).or_else(
                     || {
                         segment.words.as_ref().and_then(|words| {
                             words.iter().find_map(|word| {
@@ -1794,12 +1794,12 @@ mod tests {
         );
         assert_eq!(
             merged[1].active_source,
-            Some(TranscriptAlternativeSource::Parakeet)
+            Some(TranscriptAlternativeSource::Local)
         );
     }
 
     #[test]
-    fn detects_missing_parakeet_segment() {
+    fn detects_missing_local_segment() {
         let merged = merge_transcript_hypotheses(
             vec![segment("00:00.000", "00:01.000", "Speaker 1", "intro")],
             vec![
@@ -1811,7 +1811,7 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(
             merged[1].merge_status,
-            Some(TranscriptMergeStatus::MissingParakeet)
+            Some(TranscriptMergeStatus::MissingLocal)
         );
         assert_eq!(
             merged[1].active_source,
@@ -2246,7 +2246,7 @@ mod tests {
                 .as_ref()
                 .and_then(|alternatives| {
                     alternatives.iter().find(|alternative| {
-                        alternative.source == TranscriptAlternativeSource::Parakeet
+                        alternative.source == TranscriptAlternativeSource::Local
                     })
                 })
                 .map(|alternative| alternative.text.clone()),
@@ -2511,9 +2511,9 @@ mod tests {
                             assembled.push(build_missing_google_segment(&primary[pi]));
                             pi += 1;
                         }
-                        AlignmentStep::MissingParakeet => {
+                        AlignmentStep::MissingLocal => {
                             assembled
-                                .push(build_missing_parakeet_segment(&primary, pi, &reference[ri]));
+                                .push(build_missing_local_segment(&primary, pi, &reference[ri]));
                             ri += 1;
                         }
                     }
