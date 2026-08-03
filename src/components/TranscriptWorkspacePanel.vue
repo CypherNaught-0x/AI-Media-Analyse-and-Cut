@@ -106,7 +106,7 @@ const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
     return segment.similarityScore < reviewThresholdPercent.value / 100;
   }
 
-  return segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_parakeet';
+  return segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_local';
 };
 
 const blacklistWarnings = computed(() =>
@@ -383,7 +383,7 @@ function onTimeUpdate() {
           <div class="flex items-center gap-2">
             <button
               @click="showLanguageDropdown = !showLanguageDropdown"
-              class="flex items-center gap-2 w-32 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none hover:bg-white/10 transition-colors"
+              class="flex items-center gap-2 w-40 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none hover:bg-white/10 transition-colors"
             >
               <span class="truncate flex-1 text-left">{{ targetLanguage || 'Select Language' }}</span>
               <ChevronDownIcon class="h-3 w-3 text-gray-500" />
