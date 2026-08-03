@@ -1,4 +1,97 @@
-export type TranscriptionBackend = 'llm' | 'parakeet' | 'hybrid' | 'hybrid-merge';
+/**
+ * Which pipeline produces the transcript. Orthogonal to [`LocalEngine`]: every
+ * pipeline except `llm` runs the selected local engine, and the hybrid stages
+ * layer an LLM pass on top of whatever that engine produced.
+ */
+export type TranscriptionBackend = 'llm' | 'local' | 'hybrid' | 'hybrid-merge';
+
+/** The on-device model that produces the timed words. */
+export type LocalEngine = 'parakeet' | 'crisper';
+
+export const TRANSCRIPTION_BACKENDS: TranscriptionBackend[] = [
+  'llm',
+  'local',
+  'hybrid',
+  'hybrid-merge',
+];
+
+export const LOCAL_ENGINES: LocalEngine[] = ['parakeet', 'crisper'];
+
+export const LOCAL_ENGINE_LABELS: Record<LocalEngine, string> = {
+  parakeet: 'Parakeet',
+  crisper: 'CrisperWhisper',
+};
+
+/** True when the pipeline needs a local engine to run. */
+export function usesLocalEngine(backend: TranscriptionBackend): boolean {
+  return backend !== 'llm';
+}
+
+/** True when the pipeline calls a remote LLM. */
+export function usesRemoteModel(backend: TranscriptionBackend): boolean {
+  return backend !== 'local';
+}
+
+/**
+ * Legacy persisted values folded the engine into the pipeline: `parakeet` and
+ * `crisper` were pipelines in their own right, and `hybrid`/`hybrid-merge`
+ * implied Parakeet. Normalise them into the split representation.
+ */
+export function migrateTranscriptionBackend(value: unknown): {
+  backend: TranscriptionBackend;
+  localEngine?: LocalEngine;
+} | null {
+  if (typeof value !== 'string') return null;
+
+  switch (value) {
+    case 'parakeet':
+      return { backend: 'local', localEngine: 'parakeet' };
+    case 'crisper':
+      return { backend: 'local', localEngine: 'crisper' };
+    case 'llm':
+    case 'local':
+    case 'hybrid':
+    case 'hybrid-merge':
+      // Hybrids previously always meant Parakeet; keep that behaviour.
+      return { backend: value };
+    default:
+      return null;
+  }
+}
+
+/**
+ * CrisperWhisper 2.0 is published for English and German only, so the language
+ * picker is deliberately closed rather than a free-text field.
+ */
+export type CrisperLanguage = 'en' | 'de';
+
+/** `verbatim` keeps what was said; `intended` returns the cleaned-up reading. */
+export type CrisperMode = 'verbatim' | 'intended';
+
+export const CRISPER_LANGUAGES: { value: CrisperLanguage; label: string }[] = [
+  { value: 'en', label: 'English' },
+  { value: 'de', label: 'German' },
+];
+
+export const CRISPER_MODELS = ['large', 'medium', 'turbo', 'small'] as const;
+
+/** Result of probing the Python environment CrisperWhisper runs in. */
+export interface CrisperEnvironmentStatus {
+  pythonPath: string;
+  python: string;
+  pythonSupported: boolean;
+  minimumPython: string;
+  installed: boolean;
+  crisperwhisperVersion: string | null;
+  backends: string[];
+  torchVersion: string | null;
+  cuda: boolean;
+  mps: boolean;
+  environmentDir: string;
+  managedEnvironmentExists: boolean;
+  ready: boolean;
+  message: string | null;
+}
 
 export interface TranscriptWord {
   start: string;
@@ -7,7 +100,18 @@ export interface TranscriptWord {
   speaker?: string;
 }
 
-export type TranscriptAlternativeSource = 'parakeet' | 'google';
+/**
+ * Where a merged hypothesis came from. `local` is whichever local engine ran —
+ * the wire value used to be `parakeet`, which the Rust side still accepts as an
+ * alias so previously saved transcripts keep loading.
+ */
+export type TranscriptAlternativeSource = 'local' | 'google';
+
+export function migrateAlternativeSource(value: unknown): TranscriptAlternativeSource | null {
+  if (value === 'local' || value === 'google') return value;
+  if (value === 'parakeet') return 'local';
+  return null;
+}
 
 export interface TranscriptAlternative {
   source: TranscriptAlternativeSource;
@@ -16,7 +120,13 @@ export interface TranscriptAlternative {
   similarityScore?: number;
 }
 
-export type TranscriptMergeStatus = 'matched' | 'conflict' | 'missing_google' | 'missing_parakeet';
+export type TranscriptMergeStatus = 'matched' | 'conflict' | 'missing_google' | 'missing_local';
+
+export function migrateMergeStatus(value: unknown): TranscriptMergeStatus | null {
+  if (value === 'matched' || value === 'conflict' || value === 'missing_google') return value;
+  if (value === 'missing_local' || value === 'missing_parakeet') return 'missing_local';
+  return null;
+}
 
 export interface TranscriptSegment {
   start: string;
@@ -110,8 +220,15 @@ export interface LastAnalyzedSettings {
   removeFillerWords: boolean;
   trimSilence: boolean;
   transcriptionBackend: TranscriptionBackend;
+  localEngine: LocalEngine;
   parakeetModelPath: string;
   sortformerModelPath: string;
+  /**
+   * Serialized CrisperWhisper options that affect the transcript. Kept as one
+   * opaque string so adding a model option does not require touching session
+   * persistence and its migrations.
+   */
+  crisperSignature: string;
 }
 
 export interface TranscriptWorkspaceState {
@@ -132,6 +249,7 @@ export interface TranscriptWorkspaceState {
   settingsSnapshot: {
     glossary: string;
     transcriptionBackend: TranscriptionBackend;
+    localEngine: LocalEngine;
     parakeetModelPath: string;
     sortformerModelPath: string;
   };

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
 import { invoke } from '@tauri-apps/api/core';
@@ -7,7 +7,53 @@ import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { listen } from '@tauri-apps/api/event';
 import Toast from '../components/Toast.vue';
+import { CRISPER_LANGUAGES, CRISPER_MODELS } from '../types';
+import type {
+    CrisperEnvironmentStatus,
+    CrisperLanguage,
+    CrisperMode,
+    LocalEngine,
+    TranscriptionBackend,
+} from '../types';
+
+const PIPELINE_OPTIONS: { value: TranscriptionBackend; title: string; description: string }[] = [
+    {
+        value: 'llm',
+        title: 'LLM Only',
+        description: 'Uses the API settings below for transcription and speaker labeling.',
+    },
+    {
+        value: 'local',
+        title: 'Local Only',
+        description: 'Runs the local engine on this machine. No API key required.',
+    },
+    {
+        value: 'hybrid',
+        title: 'Hybrid Cleanup',
+        description: 'Local timings, then a remote LLM pass to clean up wording.',
+    },
+    {
+        value: 'hybrid-merge',
+        title: 'Hybrid Merge',
+        description: 'Merges a local and a remote transcript onto the local timings.',
+    },
+];
+
+const ENGINE_OPTIONS: { value: LocalEngine; title: string; badge?: string; description: string }[] = [
+    {
+        value: 'parakeet',
+        title: 'Parakeet',
+        description: 'Parakeet TDT + Sortformer diarization with word timestamps.',
+    },
+    {
+        value: 'crisper',
+        title: 'CrisperWhisper',
+        badge: 'EN / DE',
+        description: 'Verbatim transcription with precise word timings. English and German only.',
+    },
+];
 
 const router = useRouter();
 const { settings, updateSettings, modelFetchState, updateModelFetchState } = useSettings();
@@ -20,9 +66,23 @@ const localMaxAnalysisChunkMinutes = ref(settings.value.maxAnalysisChunkMinutes 
 const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const localPreClipPadding = ref(settings.value.preClipPadding || 0);
 const localPostClipPadding = ref(settings.value.postClipPadding || 0);
-const localTranscriptionBackend = ref(settings.value.transcriptionBackend ?? 'llm');
+const localTranscriptionBackend = ref<TranscriptionBackend>(settings.value.transcriptionBackend ?? 'llm');
+const localLocalEngine = ref<LocalEngine>(settings.value.localEngine ?? 'parakeet');
 const localParakeetModelPath = ref(settings.value.parakeetModelPath ?? '');
 const localSortformerModelPath = ref(settings.value.sortformerModelPath ?? '');
+const localCrisperModel = ref(settings.value.crisperModel ?? 'large');
+const localCrisperLanguage = ref<CrisperLanguage>(settings.value.crisperLanguage ?? 'en');
+const localCrisperMode = ref<CrisperMode>(settings.value.crisperMode ?? 'verbatim');
+const localCrisperBackend = ref(settings.value.crisperBackend ?? 'auto');
+const localCrisperDevice = ref(settings.value.crisperDevice ?? 'auto');
+const localCrisperComputeType = ref(settings.value.crisperComputeType ?? 'auto');
+const localCrisperRemoveVocalEvents = ref(settings.value.crisperRemoveVocalEvents ?? false);
+const localCrisperDiarize = ref(settings.value.crisperDiarize ?? true);
+const localCrisperPythonPath = ref(settings.value.crisperPythonPath ?? '');
+const crisperStatus = ref<CrisperEnvironmentStatus | null>(null);
+const isCheckingCrisper = ref(false);
+const isInstallingCrisper = ref(false);
+const crisperProgress = ref('');
 const isFetchingModels = ref(false);
 const fetchError = ref('');
 const showManualInput = ref(false);
@@ -66,6 +126,8 @@ async function handleToastAction() {
     }
 }
 
+let unlistenCrisperProgress: (() => void) | null = null;
+
 onMounted(async () => {
     try {
         appVersion.value = await getVersion();
@@ -73,7 +135,90 @@ onMounted(async () => {
         console.error('Failed to get app version:', e);
         appVersion.value = 'Unknown';
     }
+
+    // The Rust side reports venv creation, pip output and model loading through
+    // the shared "progress" event.
+    try {
+        unlistenCrisperProgress = await listen<{ message: string }>('progress', (event) => {
+            if (isCheckingCrisper.value || isInstallingCrisper.value) {
+                crisperProgress.value = event.payload?.message ?? '';
+            }
+        });
+    } catch (e) {
+        console.error('Failed to listen for CrisperWhisper progress:', e);
+    }
+
+    void refreshCrisperStatus();
 });
+
+onUnmounted(() => {
+    unlistenCrisperProgress?.();
+    unlistenCrisperProgress = null;
+});
+
+async function refreshCrisperStatus() {
+    if (isInstallingCrisper.value) return;
+    isCheckingCrisper.value = true;
+    crisperProgress.value = '';
+    try {
+        crisperStatus.value = await invoke<CrisperEnvironmentStatus>('crisper_environment_status', {
+            pythonPath: localCrisperPythonPath.value.trim(),
+        });
+    } catch (e) {
+        console.error('Failed to probe the CrisperWhisper environment:', e);
+        crisperStatus.value = null;
+        showToast(`Could not check the CrisperWhisper environment: ${e}`, 'error');
+    } finally {
+        isCheckingCrisper.value = false;
+        crisperProgress.value = '';
+    }
+}
+
+async function setUpCrisperEnvironment() {
+    const confirmed = await ask(
+        'This downloads PyTorch and the CrisperWhisper package into a private ' +
+            'environment inside the app data directory (several GB, a few minutes).\n\n' +
+            'The model weights are licensed for non-commercial research use only.\n\n' +
+            'Continue?',
+        { title: 'Set up CrisperWhisper', kind: 'info' },
+    );
+    if (!confirmed) return;
+
+    isInstallingCrisper.value = true;
+    crisperProgress.value = 'Starting...';
+    try {
+        crisperStatus.value = await invoke<CrisperEnvironmentStatus>(
+            'install_crisper_environment',
+            {
+                pythonPath: localCrisperPythonPath.value.trim(),
+                extra: localCrisperBackend.value === 'ct2' ? 'ct2' : 'transformers',
+            },
+        );
+        if (crisperStatus.value?.ready) {
+            showToast('CrisperWhisper is ready to use.', 'success');
+        } else {
+            showToast(crisperStatus.value?.message ?? 'Setup did not complete.', 'error');
+        }
+    } catch (e) {
+        console.error('Failed to set up the CrisperWhisper environment:', e);
+        showToast(`CrisperWhisper setup failed: ${e}`, 'error');
+    } finally {
+        isInstallingCrisper.value = false;
+        crisperProgress.value = '';
+    }
+}
+
+async function selectCrisperPython() {
+    const selected = await open({
+        directory: false,
+        multiple: false,
+        title: 'Select a Python 3.10+ interpreter',
+    });
+    if (typeof selected === 'string') {
+        localCrisperPythonPath.value = selected;
+        void refreshCrisperStatus();
+    }
+}
 
 async function checkForUpdates() {
     isCheckingUpdate.value = true;
@@ -163,8 +308,18 @@ const hasChanges = computed(() => {
         localPreClipPadding.value !== (settings.value.preClipPadding || 0) ||
         localPostClipPadding.value !== (settings.value.postClipPadding || 0) ||
         localTranscriptionBackend.value !== (settings.value.transcriptionBackend ?? 'llm') ||
+        localLocalEngine.value !== (settings.value.localEngine ?? 'parakeet') ||
         localParakeetModelPath.value !== (settings.value.parakeetModelPath ?? '') ||
-        localSortformerModelPath.value !== (settings.value.sortformerModelPath ?? '')
+        localSortformerModelPath.value !== (settings.value.sortformerModelPath ?? '') ||
+        localCrisperModel.value !== (settings.value.crisperModel ?? 'large') ||
+        localCrisperLanguage.value !== (settings.value.crisperLanguage ?? 'en') ||
+        localCrisperMode.value !== (settings.value.crisperMode ?? 'verbatim') ||
+        localCrisperBackend.value !== (settings.value.crisperBackend ?? 'auto') ||
+        localCrisperDevice.value !== (settings.value.crisperDevice ?? 'auto') ||
+        localCrisperComputeType.value !== (settings.value.crisperComputeType ?? 'auto') ||
+        localCrisperRemoveVocalEvents.value !== (settings.value.crisperRemoveVocalEvents ?? false) ||
+        localCrisperDiarize.value !== (settings.value.crisperDiarize ?? true) ||
+        localCrisperPythonPath.value !== (settings.value.crisperPythonPath ?? '')
     );
 });
 
@@ -352,8 +507,18 @@ function saveSettings() {
         preClipPadding: localPreClipPadding.value,
         postClipPadding: localPostClipPadding.value,
         transcriptionBackend: localTranscriptionBackend.value,
+        localEngine: localLocalEngine.value,
         parakeetModelPath: localParakeetModelPath.value.trim(),
         sortformerModelPath: localSortformerModelPath.value.trim(),
+        crisperModel: localCrisperModel.value.trim() || 'large',
+        crisperLanguage: localCrisperLanguage.value,
+        crisperMode: localCrisperMode.value,
+        crisperBackend: localCrisperBackend.value,
+        crisperDevice: localCrisperDevice.value,
+        crisperComputeType: localCrisperComputeType.value,
+        crisperRemoveVocalEvents: localCrisperRemoveVocalEvents.value,
+        crisperDiarize: localCrisperDiarize.value,
+        crisperPythonPath: localCrisperPythonPath.value.trim(),
     });
     router.push('/');
 }
@@ -370,63 +535,61 @@ function cancel() {
                 <h1 class="text-4xl font-bold text-white mb-2">
                     AI Settings
                 </h1>
-                <p class="text-gray-400">Configure remote LLMs and the local Parakeet transcription backend</p>
+                <p class="text-gray-400">Configure the transcription pipeline, local engines, and remote LLM access</p>
             </header>
 
             <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl">
 
-                <!-- Base URL -->
-                <div class="mb-6 group">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">
-                        Default Transcription Backend
+                <div class="mb-6">
+                    <label class="mb-3 block text-sm font-medium uppercase tracking-wider text-gray-400">
+                        Default Pipeline
                     </label>
-                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <button
+                            v-for="pipeline in PIPELINE_OPTIONS"
+                            :key="pipeline.value"
                             type="button"
-                            class="text-left p-4 rounded-2xl border transition-all"
-                            :class="localTranscriptionBackend === 'llm'
+                            class="flex h-full flex-col rounded-2xl border p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                            :class="localTranscriptionBackend === pipeline.value
                                 ? 'bg-blue-600/15 border-blue-500/40 text-white'
                                 : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                            @click="localTranscriptionBackend = 'llm'"
+                            @click="localTranscriptionBackend = pipeline.value"
                         >
-                            <div class="text-sm font-semibold">LLM-Based</div>
-                            <p class="text-xs text-gray-400 mt-1">Uses the API settings below for transcription and speaker labeling.</p>
-                        </button>
-                        <button
-                            type="button"
-                            class="text-left p-4 rounded-2xl border transition-all"
-                            :class="localTranscriptionBackend === 'parakeet'
-                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                            @click="localTranscriptionBackend = 'parakeet'"
-                        >
-                            <div class="text-sm font-semibold">Parakeet</div>
-                            <p class="text-xs text-gray-400 mt-1">Runs local Parakeet TDT + Sortformer with diarization and word timestamps.</p>
-                        </button>
-                        <button
-                            type="button"
-                            class="text-left p-4 rounded-2xl border transition-all"
-                            :class="localTranscriptionBackend === 'hybrid'
-                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                            @click="localTranscriptionBackend = 'hybrid'"
-                        >
-                            <div class="text-sm font-semibold">Hybrid</div>
-                            <p class="text-xs text-gray-400 mt-1">Uses Parakeet for timings and a remote LLM pass to clean and merge transcript lines.</p>
-                        </button>
-                        <button
-                            type="button"
-                            class="text-left p-4 rounded-2xl border transition-all"
-                            :class="localTranscriptionBackend === 'hybrid-merge'
-                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
-                            @click="localTranscriptionBackend = 'hybrid-merge'"
-                        >
-                            <div class="text-sm font-semibold">Hybrid Merge</div>
-                            <p class="text-xs text-gray-400 mt-1">Queries both Parakeet and the remote model, then merges their strengths onto Parakeet timings.</p>
+                            <span class="text-sm font-semibold">{{ pipeline.title }}</span>
+                            <span class="mt-1 text-xs leading-relaxed text-gray-400">{{ pipeline.description }}</span>
                         </button>
                     </div>
+                </div>
+
+                <div class="mb-6">
+                    <label class="mb-3 block text-sm font-medium uppercase tracking-wider text-gray-400">
+                        Default Local Engine
+                    </label>
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <button
+                            v-for="engine in ENGINE_OPTIONS"
+                            :key="engine.value"
+                            type="button"
+                            class="flex h-full flex-col rounded-2xl border p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                            :class="localLocalEngine === engine.value
+                                ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                            @click="localLocalEngine = engine.value"
+                        >
+                            <span class="flex items-center gap-2">
+                                <span class="text-sm font-semibold">{{ engine.title }}</span>
+                                <span
+                                    v-if="engine.badge"
+                                    class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
+                                >{{ engine.badge }}</span>
+                            </span>
+                            <span class="mt-1 text-xs leading-relaxed text-gray-400">{{ engine.description }}</span>
+                        </button>
+                    </div>
+                    <p class="mt-2 text-xs text-gray-500">
+                        Used by every pipeline except <strong>LLM Only</strong> &mdash; including both
+                        hybrids, which layer the AI pass on top of whichever engine you pick.
+                    </p>
                 </div>
 
                 <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
@@ -461,6 +624,227 @@ function cancel() {
                             </div>
                             <p class="text-xs text-gray-500 mt-2">Leave blank to let the app download Sortformer v2 automatically, or provide your own `.onnx` file.</p>
                         </div>
+                    </div>
+                </div>
+
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider">
+                        CrisperWhisper Settings
+                    </label>
+
+                    <div class="mb-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30">
+                        <p class="text-xs text-amber-200 font-semibold mb-1">English and German only</p>
+                        <p class="text-xs text-amber-100/80">
+                            The CrisperWhisper 2.0 model card is published for English (<code>en</code>) and
+                            German (<code>de</code>). Other languages are not supported by this backend &mdash;
+                            use the Parakeet engine or the LLM Only pipeline for those.
+                        </p>
+                        <p class="text-xs text-amber-100/80 mt-2">
+                            The published weights are licensed for
+                            <strong>non-commercial research use</strong> only; commercial use requires a
+                            license from Nyra Health. The app installs the model on first use.
+                        </p>
+                    </div>
+
+                    <!-- Environment status -->
+                    <div class="mb-4 p-4 rounded-2xl bg-black/20 border border-white/10">
+                        <div class="flex items-start justify-between gap-3 mb-2">
+                            <div>
+                                <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">Runtime</p>
+                                <p v-if="isInstallingCrisper || isCheckingCrisper" class="text-sm text-gray-300 mt-1">
+                                    {{ crisperProgress || (isInstallingCrisper ? 'Installing...' : 'Checking...') }}
+                                </p>
+                                <p v-else-if="crisperStatus?.ready" class="text-sm text-green-400 mt-1">
+                                    Ready &mdash; CrisperWhisper {{ crisperStatus.crisperwhisperVersion }},
+                                    Python {{ crisperStatus.python }},
+                                    {{ crisperStatus.backends.join(' + ') }}
+                                    <span v-if="crisperStatus.cuda">(CUDA)</span>
+                                    <span v-else-if="crisperStatus.mps">(Apple GPU available)</span>
+                                    <span v-else>(CPU)</span>
+                                </p>
+                                <p v-else class="text-sm text-amber-300 mt-1">
+                                    {{ crisperStatus?.message ?? 'Not set up yet.' }}
+                                </p>
+                            </div>
+                            <div class="flex gap-2 shrink-0">
+                                <button
+                                    type="button"
+                                    :disabled="isCheckingCrisper || isInstallingCrisper"
+                                    @click="refreshCrisperStatus"
+                                    class="px-3 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all border border-white/10">
+                                    Re-check
+                                </button>
+                                <button
+                                    v-if="!crisperStatus?.ready"
+                                    type="button"
+                                    :disabled="isInstallingCrisper"
+                                    @click="setUpCrisperEnvironment"
+                                    class="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all">
+                                    {{ isInstallingCrisper ? 'Installing...' : 'Set up' }}
+                                </button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-500">
+                            CrisperWhisper ships only PyTorch and CTranslate2 weights, so it runs through a
+                            private Python environment the app manages at
+                            <code class="break-all">{{ crisperStatus?.environmentDir || 'the app data directory' }}</code>.
+                            Setup needs Python {{ crisperStatus?.minimumPython || '3.10' }} or newer on your system.
+                        </p>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs font-medium text-gray-500 mb-2">Model Size</label>
+                                <select v-model="localCrisperModel"
+                                    class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300">
+                                    <option v-for="size in CRISPER_MODELS" :key="size" :value="size">
+                                        {{ size }}
+                                    </option>
+                                </select>
+                                <p class="text-xs text-gray-500 mt-2">
+                                    <code>large</code> is the most accurate, <code>turbo</code> the fastest,
+                                    <code>medium</code> the best tradeoff.
+                                </p>
+                            </div>
+                            <div>
+                                <label class="block text-xs font-medium text-gray-500 mb-2">Language</label>
+                                <select v-model="localCrisperLanguage"
+                                    class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300">
+                                    <option v-for="language in CRISPER_LANGUAGES" :key="language.value" :value="language.value">
+                                        {{ language.label }}
+                                    </option>
+                                </select>
+                                <p class="text-xs text-gray-500 mt-2">Only English and German are supported.</p>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-2">Transcription Mode</label>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <button
+                                    type="button"
+                                    class="text-left p-4 rounded-2xl border transition-all"
+                                    :class="localCrisperMode === 'verbatim'
+                                        ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                        : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                                    @click="localCrisperMode = 'verbatim'"
+                                >
+                                    <div class="text-sm font-semibold">Verbatim</div>
+                                    <p class="text-xs text-gray-400 mt-1">
+                                        Exactly what was said, including fillers, repetitions and stutters. Best
+                                        for cutting &mdash; you can see and remove every &ldquo;um&rdquo;.
+                                    </p>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="text-left p-4 rounded-2xl border transition-all"
+                                    :class="localCrisperMode === 'intended'
+                                        ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                        : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'"
+                                    @click="localCrisperMode = 'intended'"
+                                >
+                                    <div class="text-sm font-semibold">Intended</div>
+                                    <p class="text-xs text-gray-400 mt-1">
+                                        The clean version the speaker meant, with numbers and dates formatted
+                                        for reading. Best for subtitles.
+                                    </p>
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-2">
+                                Filler removal is toggled per run with <strong>Remove Filler Words</strong> on the
+                                analysis panel. In verbatim mode it cuts the filler out of the exported video too.
+                            </p>
+                        </div>
+
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <div class="flex items-center gap-3 p-4 flex-1 bg-black/20 rounded-2xl border border-white/10 cursor-pointer hover:bg-black/30 transition-colors"
+                                @click="localCrisperRemoveVocalEvents = !localCrisperRemoveVocalEvents">
+                                <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0"
+                                    :class="localCrisperRemoveVocalEvents ? 'bg-blue-600' : 'bg-gray-700'">
+                                    <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                                        :class="localCrisperRemoveVocalEvents ? 'translate-x-6' : 'translate-x-1'" />
+                                </div>
+                                <div>
+                                    <span class="text-sm font-medium text-gray-300">Remove Vocal Events</span>
+                                    <p class="text-xs text-gray-500">Cuts [laughter], [breath], [cough], [sigh]&hellip;</p>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-3 p-4 flex-1 bg-black/20 rounded-2xl border border-white/10 cursor-pointer hover:bg-black/30 transition-colors"
+                                @click="localCrisperDiarize = !localCrisperDiarize">
+                                <div class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0"
+                                    :class="localCrisperDiarize ? 'bg-blue-600' : 'bg-gray-700'">
+                                    <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                                        :class="localCrisperDiarize ? 'translate-x-6' : 'translate-x-1'" />
+                                </div>
+                                <div>
+                                    <span class="text-sm font-medium text-gray-300">Identify Speakers</span>
+                                    <p class="text-xs text-gray-500">Adds Sortformer diarization; slower.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <details class="rounded-2xl bg-black/20 border border-white/10">
+                            <summary class="p-4 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none">
+                                Advanced runtime options
+                            </summary>
+                            <div class="px-4 pb-4 space-y-4">
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 mb-2">Inference Backend</label>
+                                        <select v-model="localCrisperBackend"
+                                            class="w-full p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 text-sm">
+                                            <option value="auto">Auto</option>
+                                            <option value="transformers">PyTorch (portable)</option>
+                                            <option value="ct2">CTranslate2 (Linux + NVIDIA)</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 mb-2">Device</label>
+                                        <select v-model="localCrisperDevice"
+                                            class="w-full p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 text-sm">
+                                            <option value="auto">Auto</option>
+                                            <option value="cpu">CPU</option>
+                                            <option value="cuda">CUDA</option>
+                                            <option value="mps">Apple GPU (MPS)</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 mb-2">Precision</label>
+                                        <select v-model="localCrisperComputeType"
+                                            class="w-full p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 text-sm">
+                                            <option value="auto">Auto</option>
+                                            <option value="float32">float32</option>
+                                            <option value="float16">float16</option>
+                                            <option value="int8_float16">int8_float16</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <p class="text-xs text-gray-500">
+                                    CTranslate2 is roughly 4&ndash;5&times; faster but its wheels are Linux x86_64 only;
+                                    everywhere else the portable PyTorch backend is used. Auto precision picks
+                                    float32 on CPU and float16 on CUDA. On Apple Silicon, Auto stays on CPU:
+                                    word timings need eager attention, which measured
+                                    <em>slower</em> on MPS than on CPU.
+                                </p>
+                                <div>
+                                    <label class="block text-xs font-medium text-gray-500 mb-2">Python Interpreter</label>
+                                    <div class="flex gap-3">
+                                        <input v-model="localCrisperPythonPath" type="text"
+                                            class="flex-1 p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 text-sm"
+                                            placeholder="Leave blank to use the app-managed environment" />
+                                        <button @click="selectCrisperPython"
+                                            class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10">
+                                            Browse
+                                        </button>
+                                    </div>
+                                    <p class="text-xs text-gray-500 mt-2">
+                                        Point this at your own environment if you already have
+                                        <code>crisperwhisper</code> installed.
+                                    </p>
+                                </div>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
