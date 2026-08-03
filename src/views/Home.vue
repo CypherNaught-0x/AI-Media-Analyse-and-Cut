@@ -1382,7 +1382,7 @@ function updateProcessing(processing: boolean) {
 
 <template>
     <div class="min-h-screen bg-gray-900 text-gray-200 p-8 pb-24 font-sans selection:bg-blue-500/30">
-        <div class="max-w-5xl mx-auto">
+        <div class="mx-auto w-full max-w-[1400px]">
             <WorkspaceTabs
                 :tabs="workspaceTabs"
                 :activeTab="activeTab"
