@@ -163,7 +163,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="mb-8">
+    <div class="mb-6">
         <label class="block text-sm font-medium text-gray-400 mb-3 uppercase tracking-wider">Source Media</label>
         <div
             ref="dropZoneRef"
@@ -179,14 +179,16 @@ onUnmounted(() => {
                 <div class="absolute left-4 top-4 text-gray-500">
                     <VideoFileIcon class="h-5 w-5" />
                 </div>
-                <p class="mt-2 px-1 text-xs text-gray-500">
-                    Browse or drop a video/audio file here
-                </p>
             </div>
             <button @click="selectFile"
-                class="btn-primary px-8">
+                class="btn-primary px-8 shrink-0">
                 Browse
             </button>
         </div>
+        <!-- Outside the flex row: inside it, the row's stretch alignment made the
+             Browse button as tall as the input *plus* this hint. -->
+        <p class="mt-2 px-1 text-xs text-gray-500">
+            Browse or drop a video/audio file here
+        </p>
     </div>
 </template>
