@@ -475,7 +475,7 @@ SPEAKER LABEL GUIDANCE (IMPORTANT):
         }
     }
 
-    pub async fn cleanup_parakeet_transcript(
+    pub async fn cleanup_local_transcript(
         &self,
         transcript: Vec<TranscriptSegment>,
         context: &str,

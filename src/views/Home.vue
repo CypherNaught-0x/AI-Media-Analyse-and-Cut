@@ -29,6 +29,7 @@ import type {
     TranscriptWorkspaceState,
     ViralClipsWorkspaceState
 } from "../types";
+import { LOCAL_ENGINE_LABELS, usesLocalEngine, usesRemoteModel } from "../types";
 import StatusBar from "../components/StatusBar.vue";
 import { useSettings } from "../composables/useSettings";
 import { useHomeSessionPersistence } from "../composables/useHomeSessionPersistence";
@@ -100,51 +101,88 @@ const podcastWorkspaceState = ref<PodcastWorkspaceState>(createDefaultPodcastWor
 
 const lastAnalyzedSettings = ref<LastAnalyzedSettings>(createDefaultLastAnalyzedSettings());
 
-// Cache of the raw (pre-offset) Parakeet+Sortformer output so that changing
-// only LLM-side inputs (context, glossary, speaker count, filler removal) does
-// not re-run the expensive local transcription/diarization. The cache is keyed
-// by the audio-level inputs it depends on and persisted with the transcript.
+// Cache of the raw (pre-offset) local-engine output so that changing only
+// LLM-side inputs (context, glossary, speaker count) does not re-run the
+// expensive local transcription/diarization. The cache is keyed by the
+// audio-level inputs it depends on and persisted with the transcript.
+//
+// The `parakeet` in these names is now a misnomer — the cache holds whichever
+// engine ran — but they are part of the saved session schema, so renaming them
+// would need a migration for no user-visible gain.
 const rawParakeetSegments = ref<TranscriptSegment[]>([]);
 const parakeetCacheKey = ref<string>("");
+
+/**
+ * The CrisperWhisper options that change the transcript itself. Kept as one
+ * string so it can be compared and persisted without widening the session
+ * schema every time an option is added.
+ */
+function currentCrisperSignature(): string {
+    // Self-contained rather than reusing the computed below, so this stays safe
+    // to call from anywhere during setup.
+    const { transcriptionBackend, localEngine } = settings.value;
+    if (!usesLocalEngine(transcriptionBackend) || localEngine !== 'crisper') return '';
+    return JSON.stringify({
+        model: settings.value.crisperModel,
+        language: settings.value.crisperLanguage,
+        mode: settings.value.crisperMode,
+        removeFillers: removeFillerWords.value,
+        removeVocalEvents: settings.value.crisperRemoveVocalEvents,
+        diarize: settings.value.crisperDiarize,
+    });
+}
 
 function currentParakeetCacheKey(): string {
     return JSON.stringify({
         inputPath: inputPath.value,
         trimSilence: trimSilence.value,
+        // The raw local transcript depends on the engine and its options, not
+        // on which LLM stage runs afterwards — so switching between local and
+        // the hybrids reuses the cache instead of re-transcribing.
+        localEngine: settings.value.localEngine,
         parakeetModelPath: settings.value.parakeetModelPath,
         sortformerModelPath: settings.value.sortformerModelPath,
+        crisperSignature: currentCrisperSignature(),
     });
 }
 
 const isLlmOnlyBackend = computed(() => settings.value.transcriptionBackend === 'llm');
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
-const hasParakeetModels = computed(() => {
-    return true;
-});
+const localEngineLabel = computed(() => LOCAL_ENGINE_LABELS[settings.value.localEngine]);
+
 const hasBackendConfiguration = computed(() => {
-    if (settings.value.transcriptionBackend === 'llm') return hasApiKey.value;
-    if (settings.value.transcriptionBackend === 'hybrid') return hasApiKey.value && hasParakeetModels.value;
-    if (settings.value.transcriptionBackend === 'hybrid-merge') return hasApiKey.value && hasParakeetModels.value;
-    return hasParakeetModels.value;
+    // Local engines need no configuration up front: Parakeet auto-downloads its
+    // models and CrisperWhisper reports a fixable error when its Python
+    // environment is missing. Only the LLM stages need a key.
+    return usesRemoteModel(settings.value.transcriptionBackend) ? hasApiKey.value : true;
 });
+
+/** Short description of the local engine and its notable settings. */
+const localEngineDisplay = computed(() => {
+    if (settings.value.localEngine === 'crisper') {
+        const language = settings.value.crisperLanguage === 'de' ? 'DE' : 'EN';
+        return `CrisperWhisper ${settings.value.crisperModel} (${settings.value.crisperMode}, ${language})`;
+    }
+    const usesCustomPaths =
+        settings.value.parakeetModelPath.trim() || settings.value.sortformerModelPath.trim();
+    return usesCustomPaths ? 'Parakeet-RS (local)' : 'Parakeet-RS (auto-download)';
+});
+
 const currentModelDisplay = computed(() => {
-    if (settings.value.transcriptionBackend === 'hybrid') {
-        if (!hasApiKey.value) return "Hybrid (missing API key)";
-        return `Hybrid: Parakeet + ${settings.value.model}`;
+    const backend = settings.value.transcriptionBackend;
+
+    if (backend === 'llm') {
+        return hasApiKey.value ? settings.value.model : 'No API Key configured';
     }
-    if (settings.value.transcriptionBackend === 'hybrid-merge') {
-        if (!hasApiKey.value) return "Hybrid Merge (missing API key)";
-        return `Hybrid Merge: Parakeet + ${settings.value.model}`;
+    if (backend === 'local') {
+        return localEngineDisplay.value;
     }
-    if (settings.value.transcriptionBackend === 'parakeet') {
-        if (!settings.value.parakeetModelPath.trim() && !settings.value.sortformerModelPath.trim()) {
-            return "Parakeet-RS (auto-download)";
-        }
-        return "Parakeet-RS (local)";
-    }
-    if (!hasApiKey.value) return "No API Key configured";
-    return `${settings.value.model}`;
+
+    const prefix = backend === 'hybrid' ? 'Hybrid' : 'Hybrid Merge';
+    if (!hasApiKey.value) return `${prefix} (missing API key)`;
+    return `${prefix}: ${localEngineLabel.value} + ${settings.value.model}`;
 });
+
 const currentEngineLabel = computed(() => {
     return settings.value.transcriptionBackend === 'llm' ? 'Current Model' : 'Current Pipeline';
 });
@@ -178,8 +216,10 @@ async function refreshExtractedAudioPath() {
 }
 const settingsChanged = computed(() => {
     return settings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
+           settings.value.localEngine !== lastAnalyzedSettings.value.localEngine ||
            settings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
            settings.value.sortformerModelPath !== lastAnalyzedSettings.value.sortformerModelPath ||
+           currentCrisperSignature() !== lastAnalyzedSettings.value.crisperSignature ||
            context.value !== lastAnalyzedSettings.value.context ||
            settings.value.glossary !== lastAnalyzedSettings.value.glossary ||
            speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
@@ -219,6 +259,7 @@ const transcriptWorkspaceState = computed<TranscriptWorkspaceState>(() => ({
     settingsSnapshot: {
         glossary: settings.value.glossary,
         transcriptionBackend: settings.value.transcriptionBackend,
+        localEngine: settings.value.localEngine,
         parakeetModelPath: settings.value.parakeetModelPath,
         sortformerModelPath: settings.value.sortformerModelPath,
     },
@@ -560,8 +601,10 @@ async function loadTranscript() {
                 removeFillerWords: removeFillerWords.value,
                 trimSilence: trimSilence.value,
                 transcriptionBackend: settings.value.transcriptionBackend ?? 'llm',
+                localEngine: settings.value.localEngine ?? 'parakeet',
                 parakeetModelPath: settings.value.parakeetModelPath ?? '',
                 sortformerModelPath: settings.value.sortformerModelPath ?? '',
+                crisperSignature: currentCrisperSignature(),
             };
         }
         if (parsed.rawParakeetSegments !== undefined) {
@@ -929,6 +972,58 @@ async function analyzeWithLlmTranscript(
     return allSegments;
 }
 
+/**
+ * Produce the local (pre-offset) transcript with the selected engine, reusing
+ * the cache when nothing that affects it has changed.
+ *
+ * This is the only place that knows which engine runs; the pipeline stages that
+ * consume the result treat it as an opaque transcript, which is what lets the
+ * hybrid modes work with any engine.
+ */
+async function transcribeWithLocalEngine(
+    runId: number,
+    analysisAudioPath: string,
+): Promise<TranscriptSegment[]> {
+    const cacheKey = currentParakeetCacheKey();
+    if (parakeetCacheKey.value === cacheKey && rawParakeetSegments.value.length > 0) {
+        status.value = `Reusing ${localEngineLabel.value} transcript (audio unchanged)...`;
+        return rawParakeetSegments.value;
+    }
+
+    const segments = settings.value.localEngine === 'crisper'
+        ? await invoke<TranscriptSegment[]>("transcribe_with_crisper", {
+            audioPath: analysisAudioPath,
+            options: {
+                pythonPath: settings.value.crisperPythonPath,
+                model: settings.value.crisperModel,
+                language: settings.value.crisperLanguage,
+                mode: settings.value.crisperMode,
+                backend: settings.value.crisperBackend,
+                device: settings.value.crisperDevice,
+                computeType: settings.value.crisperComputeType,
+                // The editor cuts on word timings, so they are always requested
+                // (the model adds no measurable overhead for them).
+                wordTimestamps: true,
+                removeFillers: removeFillerWords.value,
+                removeVocalEvents: settings.value.crisperRemoveVocalEvents,
+                diarize: settings.value.crisperDiarize,
+                sortformerModelPath: settings.value.sortformerModelPath,
+            },
+        })
+        : await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
+            audioPath: analysisAudioPath,
+            parakeetModelPath: settings.value.parakeetModelPath,
+            sortformerModelPath: settings.value.sortformerModelPath,
+        });
+
+    assertActiveRun(runId);
+    // Cache the raw, pre-offset output so changing only LLM-side inputs (or
+    // switching between local and the hybrid pipelines) does not re-transcribe.
+    rawParakeetSegments.value = segments;
+    parakeetCacheKey.value = cacheKey;
+    return segments;
+}
+
 async function processFile() {
     if (!inputPath.value) {
         status.value = "Please provide a media file.";
@@ -941,11 +1036,9 @@ async function processFile() {
     }
 
     if (!hasBackendConfiguration.value) {
-        status.value = settings.value.transcriptionBackend === 'parakeet'
-            ? "Parakeet models will auto-download or use your custom paths. Please retry if FFmpeg is not initialized."
-            : settings.value.transcriptionBackend === 'llm'
+        status.value = settings.value.transcriptionBackend === 'llm'
             ? "Please provide an API key."
-            : "Please provide an API key for hybrid cleanup.";
+            : "Please provide an API key for the hybrid AI stage.";
         return;
     }
 
@@ -1019,13 +1112,14 @@ async function processFile() {
         const analysisAudioPath = processedAudio.path;
 
         const estimatedTime = estimateTime('analysis', audioInfo.duration);
-        status.value = isLlmOnlyBackend.value
-            ? `Analyzing with AI... (Est. ${estimatedTime.toFixed(0)}s)`
+        const pipelineLabel = isLlmOnlyBackend.value
+            ? 'Analyzing with AI'
             : settings.value.transcriptionBackend === 'hybrid'
-                ? `Running hybrid transcription... (Est. ${estimatedTime.toFixed(0)}s)`
+                ? `Running hybrid transcription (${localEngineLabel.value} + AI cleanup)`
                 : settings.value.transcriptionBackend === 'hybrid-merge'
-                    ? `Running merged hybrid transcription... (Est. ${estimatedTime.toFixed(0)}s)`
-                : `Transcribing with Parakeet... (Est. ${estimatedTime.toFixed(0)}s)`;
+                    ? `Running merged hybrid transcription (${localEngineLabel.value} + AI)`
+                    : `Transcribing with ${localEngineLabel.value}`;
+        status.value = `${pipelineLabel}... (Est. ${estimatedTime.toFixed(0)}s)`;
         const startTime = Date.now();
         let hybridCleanupUsedFallback = false;
 
@@ -1045,81 +1139,66 @@ async function processFile() {
                     return;
                 }
             } else {
-                let parakeetSegments: TranscriptSegment[];
+                // One local transcript, produced by whichever engine is
+                // selected. The hybrid stages below are deliberately unaware of
+                // which engine that was.
+                let localSegments: TranscriptSegment[];
                 try {
-                    const cacheKey = currentParakeetCacheKey();
-                    if (parakeetCacheKey.value === cacheKey && rawParakeetSegments.value.length > 0) {
-                        status.value = "Reusing Parakeet transcript (audio unchanged)...";
-                        parakeetSegments = rawParakeetSegments.value;
-                    } else {
-                        parakeetSegments = await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
-                            audioPath: analysisAudioPath,
-                            parakeetModelPath: settings.value.parakeetModelPath,
-                            sortformerModelPath: settings.value.sortformerModelPath,
-                        });
-                        assertActiveRun(runId);
-                        // Cache the raw, pre-offset Parakeet output for reuse when
-                        // only LLM-side inputs change later.
-                        rawParakeetSegments.value = parakeetSegments;
-                        parakeetCacheKey.value = cacheKey;
-                    }
+                    localSegments = await transcribeWithLocalEngine(runId, analysisAudioPath);
                 } catch (error) {
-                    failStage("Parakeet transcription", error);
+                    failStage(`${localEngineLabel.value} transcription`, error);
                     return;
                 }
 
                 if (settings.value.transcriptionBackend === 'hybrid') {
                     status.value = "Cleaning transcript with AI...";
-                    const originalSegments = parakeetSegments;
                     try {
-                        nextSegments = await invoke<TranscriptSegment[]>("cleanup_parakeet_transcript", {
+                        nextSegments = await invoke<TranscriptSegment[]>("cleanup_local_transcript", {
                             runId,
                             apiKey: settings.value.apiKey,
                             baseUrl: settings.value.baseUrl,
                             model: settings.value.model,
-                            transcript: parakeetSegments,
+                            transcript: localSegments,
                             context: context.value,
                             glossary: settings.value.glossary,
                             removeFillerWords: removeFillerWords.value,
                         });
                         assertActiveRun(runId);
                     } catch (error) {
-                        console.warn("Hybrid cleanup failed, using Parakeet transcript", error);
-                        nextSegments = originalSegments;
+                        console.warn(`Hybrid cleanup failed, using the ${localEngineLabel.value} transcript`, error);
+                        nextSegments = localSegments;
                         hybridCleanupUsedFallback = true;
                     }
                 } else if (settings.value.transcriptionBackend === 'hybrid-merge') {
                     status.value = "Querying remote transcript for merge...";
-                    let referenceTranscript: TranscriptSegment[];
+                    let referenceTranscript: TranscriptSegment[] = [];
                     try {
                         referenceTranscript = await analyzeWithLlmTranscript(runId, analysisAudioPath);
                     } catch (error) {
-                        console.warn("Merged hybrid remote transcript failed, using Parakeet transcript", error);
-                        nextSegments = parakeetSegments;
+                        console.warn(`Merged hybrid remote transcript failed, using the ${localEngineLabel.value} transcript`, error);
                         hybridCleanupUsedFallback = true;
-                        referenceTranscript = [];
                     }
 
                     if (referenceTranscript.length > 0) {
-                        status.value = "Merging Parakeet and remote transcripts...";
+                        status.value = `Merging ${localEngineLabel.value} and remote transcripts...`;
                         try {
                             nextSegments = await invoke<TranscriptSegment[]>("merge_transcript_hypotheses", {
                                 runId,
-                                primaryTranscript: parakeetSegments,
+                                primaryTranscript: localSegments,
                                 referenceTranscript,
                             });
                             assertActiveRun(runId);
                         } catch (error) {
-                            console.warn("Merged hybrid reconciliation failed, using Parakeet transcript", error);
-                            nextSegments = parakeetSegments;
+                            console.warn(`Merged hybrid reconciliation failed, using the ${localEngineLabel.value} transcript`, error);
+                            nextSegments = localSegments;
                             hybridCleanupUsedFallback = true;
                         }
                     } else {
-                        nextSegments = parakeetSegments;
+                        nextSegments = localSegments;
                         hybridCleanupUsedFallback = true;
                     }
                 } else {
-                    nextSegments = parakeetSegments;
+                    nextSegments = localSegments;
                 }
 
                 if (trimSilence.value) {
@@ -1135,17 +1214,15 @@ async function processFile() {
 
         assertActiveRun(runId);
         segments.value = nextSegments;
-        status.value = isLlmOnlyBackend.value
-            ? `Analysis complete. Found ${segments.value.length} segments.`
-            : settings.value.transcriptionBackend === 'hybrid'
-                ? hybridCleanupUsedFallback
-                    ? `Hybrid cleanup failed, using Parakeet transcript. Found ${segments.value.length} segments.`
-                    : `Hybrid transcription complete. Found ${segments.value.length} segments.`
-                : settings.value.transcriptionBackend === 'hybrid-merge'
-                    ? hybridCleanupUsedFallback
-                        ? `Hybrid merge failed, using Parakeet transcript. Found ${segments.value.length} segments.`
-                        : `Hybrid merge complete. Found ${segments.value.length} segments.`
-                : `Parakeet transcription complete. Found ${segments.value.length} segments.`;
+        const foundSuffix = `Found ${segments.value.length} segments.`;
+        const backend = settings.value.transcriptionBackend;
+        status.value = backend === 'llm'
+            ? `Analysis complete. ${foundSuffix}`
+            : backend === 'local'
+                ? `${localEngineLabel.value} transcription complete. ${foundSuffix}`
+                : hybridCleanupUsedFallback
+                    ? `${backend === 'hybrid' ? 'Hybrid cleanup' : 'Hybrid merge'} failed, using the ${localEngineLabel.value} transcript. ${foundSuffix}`
+                    : `${backend === 'hybrid' ? 'Hybrid transcription' : 'Hybrid merge'} complete. ${foundSuffix}`;
 
         lastAnalyzedSettings.value = {
             context: context.value,
@@ -1154,8 +1231,10 @@ async function processFile() {
             removeFillerWords: removeFillerWords.value,
             trimSilence: trimSilence.value,
             transcriptionBackend: settings.value.transcriptionBackend,
+            localEngine: settings.value.localEngine,
             parakeetModelPath: settings.value.parakeetModelPath,
             sortformerModelPath: settings.value.sortformerModelPath,
+            crisperSignature: currentCrisperSignature(),
         };
 
         await saveTranscript();
@@ -1321,6 +1400,7 @@ function updateProcessing(processing: boolean) {
                 :hasTranscript="hasTranscript"
                 :settingsChanged="settingsChanged"
                 :transcriptionBackend="settings.transcriptionBackend"
+                :localEngine="settings.localEngine"
                 :context="context"
                 :glossary="settings.glossary"
                 :speakerCount="speakerCount"
@@ -1328,6 +1408,7 @@ function updateProcessing(processing: boolean) {
                 :trimSilence="trimSilence"
                 @update:inputPath="inputPath = $event"
                 @update:transcriptionBackend="settings.transcriptionBackend = $event"
+                @update:localEngine="settings.localEngine = $event"
                 @update:context="context = $event"
                 @update:glossary="settings.glossary = $event"
                 @update:speakerCount="speakerCount = $event"

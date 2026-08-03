@@ -1,9 +1,11 @@
 import type {
   LastAnalyzedSettings,
+  LocalEngine,
   TranscriptSegment,
   TranscriptWorkspaceState,
   TranscriptionBackend,
 } from '../types';
+import { migrateTranscriptionBackend } from '../types';
 
 export interface ParsedTranscriptSidecar {
   segments?: TranscriptSegment[];
@@ -21,14 +23,9 @@ export interface ParsedTranscriptSidecar {
   rawParakeetSegments?: TranscriptSegment[];
   parakeetCacheKey?: string;
   transcriptionBackend?: TranscriptionBackend;
+  localEngine?: LocalEngine;
   parakeetModelPath?: string;
   sortformerModelPath?: string;
-}
-
-const TRANSCRIPTION_BACKENDS: TranscriptionBackend[] = ['llm', 'parakeet', 'hybrid', 'hybrid-merge'];
-
-function isTranscriptionBackend(value: unknown): value is TranscriptionBackend {
-  return typeof value === 'string' && TRANSCRIPTION_BACKENDS.includes(value as TranscriptionBackend);
 }
 
 export function parseTranscriptSidecar(
@@ -75,9 +72,13 @@ export function parseTranscriptSidecar(
       : undefined,
     parakeetCacheKey:
       typeof sidecar.parakeetCacheKey === 'string' ? sidecar.parakeetCacheKey : undefined,
-    transcriptionBackend: isTranscriptionBackend(sidecar.transcriptionBackend)
-      ? sidecar.transcriptionBackend
-      : undefined,
+    // Sidecars written before the pipeline/engine split stored the engine as
+    // the pipeline ('parakeet' / 'crisper'); migrate rather than discard.
+    transcriptionBackend: migrateTranscriptionBackend(sidecar.transcriptionBackend)?.backend,
+    localEngine:
+      sidecar.localEngine === 'parakeet' || sidecar.localEngine === 'crisper'
+        ? sidecar.localEngine
+        : migrateTranscriptionBackend(sidecar.transcriptionBackend)?.localEngine,
     parakeetModelPath:
       typeof sidecar.parakeetModelPath === 'string' ? sidecar.parakeetModelPath : undefined,
     sortformerModelPath:
@@ -102,6 +103,7 @@ export function buildTranscriptSidecar(transcriptWorkspace: TranscriptWorkspaceS
     rawParakeetSegments: transcriptWorkspace.rawParakeetSegments,
     parakeetCacheKey: transcriptWorkspace.parakeetCacheKey,
     transcriptionBackend: transcriptWorkspace.settingsSnapshot.transcriptionBackend,
+    localEngine: transcriptWorkspace.settingsSnapshot.localEngine,
     parakeetModelPath: transcriptWorkspace.settingsSnapshot.parakeetModelPath,
     sortformerModelPath: transcriptWorkspace.settingsSnapshot.sortformerModelPath,
   };
