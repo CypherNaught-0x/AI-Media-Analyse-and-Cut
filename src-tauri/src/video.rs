@@ -26,8 +26,12 @@ pub struct TranscriptWord {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptAlternativeSource {
+    /// Whichever local engine produced the timed words (Parakeet or
+    /// CrisperWhisper). Serialised as `local`; `parakeet` is accepted as an
+    /// alias so transcripts saved before the engines were split still load.
     #[default]
-    Parakeet,
+    #[serde(rename = "local", alias = "parakeet")]
+    Local,
     Google,
 }
 
@@ -49,7 +53,10 @@ pub enum TranscriptMergeStatus {
     Matched,
     Conflict,
     MissingGoogle,
-    MissingParakeet,
+    /// Missing from the local engine's hypothesis. `missing_parakeet` is
+    /// accepted as an alias for transcripts saved before the split.
+    #[serde(rename = "missing_local", alias = "missing_parakeet")]
+    MissingLocal,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
