@@ -422,7 +422,9 @@ async fn prepare_preview_audio(
 
 mod alignment;
 pub mod chunking;
+pub mod crisper;
 pub mod gemini;
+mod local_asr;
 mod parakeet;
 pub mod podcast;
 pub mod retry;
@@ -435,6 +437,9 @@ pub mod video;
 
 use crate::alignment::align_transcript;
 use crate::chunking::split_audio_for_analysis;
+use crate::crisper::{
+    crisper_environment_status, install_crisper_environment, transcribe_with_crisper,
+};
 use crate::gemini::GeminiClient;
 use crate::parakeet::transcribe_with_parakeet;
 use crate::podcast::{
@@ -534,7 +539,7 @@ async fn analyze_audio(
 }
 
 #[tauri::command]
-async fn cleanup_parakeet_transcript(
+async fn cleanup_local_transcript(
     run_id: u64,
     api_key: String,
     base_url: String,
@@ -550,7 +555,7 @@ async fn cleanup_parakeet_transcript(
     run_control
         .run_cancellable(
             run_id,
-            client.cleanup_parakeet_transcript(transcript, &context, &glossary, remove_filler_words),
+            client.cleanup_local_transcript(transcript, &context, &glossary, remove_filler_words),
         )
         .await
         .map_err(|e| {
@@ -1000,9 +1005,12 @@ pub fn run() {
             upload_file,
             split_audio_for_analysis,
             analyze_audio,
-            cleanup_parakeet_transcript,
+            cleanup_local_transcript,
             merge_transcript_hypotheses,
             transcribe_with_parakeet,
+            transcribe_with_crisper,
+            crisper_environment_status,
+            install_crisper_environment,
             cut_video,
             export_clips,
             read_file_as_base64,

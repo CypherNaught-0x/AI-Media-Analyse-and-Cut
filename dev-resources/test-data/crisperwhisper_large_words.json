@@ -1,0 +1,920 @@
+{
+  "_comment": "Real CrisperWhisper 2.0 large output for test_podcast.m4a (verbatim, en, transformers backend). Captured so the word -> segment mapping can be tested without a Python environment or model weights.",
+  "model": "large",
+  "mode": "verbatim",
+  "language": "en",
+  "duration": 74.26,
+  "text": "Let's unpack this. We've got a fantastic deep dive today, and it's centered on a tool called AI Media Cutter. It's an open source project that's [UH] really trying to redefine video editing using AI. So our mission is to figure out how this thing, this desktop app, uses large language models to turn what is a really complex visual task into something you just do with text. It's a huge shift. We're talking about using LLMs, you know, like Google Gemini or the Open AI models, to edit based on meaning, on the actual content. Exactly. It moves editing from this highly technical frame-by-frame skill to something that's more [UH] editorial. It's all about the story and the text. Right. It starts with a very high accuracy AI transcription.",
+  "words": [
+    {
+      "text": "Let's",
+      "start": 0.06,
+      "end": 0.2,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "unpack",
+      "start": 0.2,
+      "end": 0.5,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "this.",
+      "start": 0.62,
+      "end": 0.94,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "We've",
+      "start": 0.94,
+      "end": 1.1,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "got",
+      "start": 1.1,
+      "end": 1.28,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "a",
+      "start": 1.28,
+      "end": 1.36,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "fantastic",
+      "start": 1.36,
+      "end": 1.86,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "deep",
+      "start": 2.16,
+      "end": 2.34,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "dive",
+      "start": 2.34,
+      "end": 2.54,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "today,",
+      "start": 2.64,
+      "end": 2.94,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "and",
+      "start": 3.38,
+      "end": 3.44,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "it's",
+      "start": 3.44,
+      "end": 3.62,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "centered",
+      "start": 3.62,
+      "end": 3.94,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "on",
+      "start": 3.94,
+      "end": 4.06,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "a",
+      "start": 4.06,
+      "end": 4.18,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "tool",
+      "start": 4.18,
+      "end": 4.55,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "called",
+      "start": 4.55,
+      "end": 4.78,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "AI",
+      "start": 5.0,
+      "end": 5.24,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Media",
+      "start": 5.24,
+      "end": 5.8,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Cutter.",
+      "start": 5.98,
+      "end": 6.48,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "It's",
+      "start": 7.18,
+      "end": 7.28,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "an",
+      "start": 7.28,
+      "end": 7.38,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "open",
+      "start": 7.38,
+      "end": 7.64,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "source",
+      "start": 7.64,
+      "end": 7.86,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "project",
+      "start": 7.98,
+      "end": 8.28,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "that's",
+      "start": 8.38,
+      "end": 8.58,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "[UH]",
+      "start": 8.72,
+      "end": 9.18,
+      "filler": true,
+      "vocalEvent": false
+    },
+    {
+      "text": "really",
+      "start": 9.5,
+      "end": 9.76,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "trying",
+      "start": 9.76,
+      "end": 10.06,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "to",
+      "start": 10.06,
+      "end": 10.23,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "redefine",
+      "start": 10.23,
+      "end": 10.94,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "video",
+      "start": 10.94,
+      "end": 11.51,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "editing",
+      "start": 11.51,
+      "end": 11.88,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "using",
+      "start": 12.42,
+      "end": 12.79,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "AI.",
+      "start": 12.79,
+      "end": 13.12,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "So",
+      "start": 14.26,
+      "end": 14.36,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "our",
+      "start": 14.5,
+      "end": 14.64,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "mission",
+      "start": 14.64,
+      "end": 15.12,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "is",
+      "start": 15.54,
+      "end": 15.67,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "to",
+      "start": 15.67,
+      "end": 15.8,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "figure",
+      "start": 15.8,
+      "end": 16.07,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "out",
+      "start": 16.07,
+      "end": 16.45,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "how",
+      "start": 16.45,
+      "end": 16.76,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "this",
+      "start": 16.76,
+      "end": 17.0,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "thing,",
+      "start": 17.0,
+      "end": 17.3,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "this",
+      "start": 17.3,
+      "end": 17.34,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "desktop",
+      "start": 17.34,
+      "end": 17.68,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "app,",
+      "start": 17.8,
+      "end": 18.02,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "uses",
+      "start": 18.36,
+      "end": 18.66,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "large",
+      "start": 18.66,
+      "end": 19.02,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "language",
+      "start": 19.12,
+      "end": 19.5,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "models",
+      "start": 19.6,
+      "end": 20.02,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "to",
+      "start": 20.22,
+      "end": 20.3,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "turn",
+      "start": 20.3,
+      "end": 20.64,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "what",
+      "start": 20.64,
+      "end": 20.88,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "is",
+      "start": 20.88,
+      "end": 20.98,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "a",
+      "start": 20.98,
+      "end": 21.08,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "really",
+      "start": 21.3,
+      "end": 21.62,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "complex",
+      "start": 21.62,
+      "end": 22.2,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "visual",
+      "start": 22.2,
+      "end": 22.63,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "task",
+      "start": 22.63,
+      "end": 22.96,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "into",
+      "start": 23.1,
+      "end": 23.24,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "something",
+      "start": 23.24,
+      "end": 23.56,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "you",
+      "start": 23.56,
+      "end": 23.7,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "just",
+      "start": 23.82,
+      "end": 24.1,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "do",
+      "start": 24.84,
+      "end": 25.0,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "with",
+      "start": 25.0,
+      "end": 25.17,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "text.",
+      "start": 25.17,
+      "end": 25.64,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "It's",
+      "start": 25.64,
+      "end": 25.8,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "a",
+      "start": 25.8,
+      "end": 25.88,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "huge",
+      "start": 25.88,
+      "end": 26.0,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "shift.",
+      "start": 26.36,
+      "end": 26.8,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "We're",
+      "start": 27.14,
+      "end": 27.2,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "talking",
+      "start": 27.2,
+      "end": 27.4,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "about",
+      "start": 27.4,
+      "end": 27.6,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "using",
+      "start": 27.6,
+      "end": 27.82,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "LLMs,",
+      "start": 27.94,
+      "end": 28.68,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "you",
+      "start": 28.68,
+      "end": 28.78,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "know,",
+      "start": 28.78,
+      "end": 28.94,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "like",
+      "start": 28.94,
+      "end": 29.06,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Google",
+      "start": 29.06,
+      "end": 29.32,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Gemini",
+      "start": 29.32,
+      "end": 29.68,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "or",
+      "start": 29.68,
+      "end": 29.92,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "the",
+      "start": 29.92,
+      "end": 30.04,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Open",
+      "start": 30.04,
+      "end": 30.2,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "AI",
+      "start": 30.2,
+      "end": 30.4,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "models,",
+      "start": 30.4,
+      "end": 30.82,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "to",
+      "start": 31.32,
+      "end": 31.46,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "edit",
+      "start": 31.84,
+      "end": 32.04,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "based",
+      "start": 32.36,
+      "end": 32.59,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "on",
+      "start": 32.59,
+      "end": 32.78,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "meaning,",
+      "start": 32.78,
+      "end": 33.04,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "on",
+      "start": 33.54,
+      "end": 33.64,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "the",
+      "start": 33.64,
+      "end": 33.76,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "actual",
+      "start": 33.76,
+      "end": 34.06,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "content.",
+      "start": 34.34,
+      "end": 34.8,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Exactly.",
+      "start": 36.48,
+      "end": 36.98,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "It",
+      "start": 36.98,
+      "end": 37.13,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "moves",
+      "start": 37.13,
+      "end": 37.44,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "editing",
+      "start": 37.54,
+      "end": 37.92,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "from",
+      "start": 38.46,
+      "end": 38.75,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "this",
+      "start": 38.75,
+      "end": 39.0,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "highly",
+      "start": 39.76,
+      "end": 40.18,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "technical",
+      "start": 40.28,
+      "end": 40.69,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "frame-by-frame",
+      "start": 40.69,
+      "end": 41.46,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "skill",
+      "start": 41.46,
+      "end": 41.92,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "to",
+      "start": 42.42,
+      "end": 42.5,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "something",
+      "start": 42.5,
+      "end": 42.76,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "that's",
+      "start": 42.76,
+      "end": 42.94,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "more",
+      "start": 42.94,
+      "end": 43.24,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "[UH]",
+      "start": 43.6,
+      "end": 43.87,
+      "filler": true,
+      "vocalEvent": false
+    },
+    {
+      "text": "editorial.",
+      "start": 43.87,
+      "end": 44.48,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "It's",
+      "start": 44.48,
+      "end": 44.66,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "all",
+      "start": 44.9,
+      "end": 45.0,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "about",
+      "start": 45.0,
+      "end": 45.22,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "the",
+      "start": 45.22,
+      "end": 45.32,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "story",
+      "start": 45.32,
+      "end": 45.64,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "and",
+      "start": 45.64,
+      "end": 45.72,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "the",
+      "start": 45.72,
+      "end": 45.8,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "text.",
+      "start": 45.8,
+      "end": 46.16,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "Right.",
+      "start": 52.28,
+      "end": 52.5,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "It",
+      "start": 52.62,
+      "end": 52.7,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "starts",
+      "start": 52.7,
+      "end": 52.96,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "with",
+      "start": 52.96,
+      "end": 53.06,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "a",
+      "start": 53.06,
+      "end": 53.14,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "very",
+      "start": 53.14,
+      "end": 53.42,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "high",
+      "start": 53.42,
+      "end": 53.66,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "accuracy",
+      "start": 53.66,
+      "end": 54.06,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "AI",
+      "start": 54.16,
+      "end": 54.36,
+      "filler": false,
+      "vocalEvent": false
+    },
+    {
+      "text": "transcription.",
+      "start": 54.36,
+      "end": 55.26,
+      "filler": false,
+      "vocalEvent": false
+    }
+  ]
+}
