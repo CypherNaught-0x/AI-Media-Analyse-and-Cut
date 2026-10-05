@@ -1,11 +1,12 @@
-import type { ExportQuality } from '../bindings';
+import { commands, type ExportQuality } from '../bindings';
 import type { CrisperLanguage, CrisperMode, LocalEngine, TranscriptionBackend } from '../types';
 import { migrateTranscriptionBackend } from '../types';
 import { ref, watch } from 'vue';
 
 export interface LLMSettings {
     baseUrl: string;
-    apiKey: string;
+    // The API key is not a setting: it lives in the OS credential store (see
+    // apiKeyStored / migrateLegacyApiKey below).
     model: string;
     enforceJsonSchema: boolean;
     maxAnalysisChunkMinutes: number;
@@ -49,7 +50,6 @@ const MODEL_FETCH_STATE_KEY = 'model-fetch-state';
 
 const defaultSettings: LLMSettings = {
     baseUrl: 'https://generativelanguage.googleapis.com',
-    apiKey: '',
     model: 'gemini-2.5-flash',
     enforceJsonSchema: true,
     maxAnalysisChunkMinutes: 30,
@@ -73,11 +73,20 @@ const defaultSettings: LLMSettings = {
 };
 
 // Load from localStorage
+/** An API key found in localStorage that still has to move to the keychain. */
+let legacyApiKey: string | null = null;
+
 const loadSettings = (): LLMSettings => {
     try {
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
-            const parsed = JSON.parse(stored) as Partial<LLMSettings>;
+            const { apiKey, ...parsed } = JSON.parse(stored) as Partial<LLMSettings> & {
+                apiKey?: unknown;
+            };
+            // Versions before 0.14 kept the key here; it moves to the keychain.
+            if (typeof apiKey === 'string' && apiKey.trim()) {
+                legacyApiKey = apiKey.trim();
+            }
             const merged = { ...defaultSettings, ...parsed };
 
             // Older versions stored the engine inside the pipeline value
@@ -128,7 +137,9 @@ watch(
     settings,
     (newSettings) => {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(newSettings));
+            // Keep a not-yet-migrated key until the keychain has it.
+            const stored = legacyApiKey ? { ...newSettings, apiKey: legacyApiKey } : newSettings;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
         } catch (e) {
             console.error('Failed to save settings:', e);
         }
@@ -148,6 +159,37 @@ watch(
     { deep: true },
 );
 
+/** Whether an API key is saved in the OS credential store. */
+const apiKeyStored = ref(false);
+
+/** Re-read whether an API key is stored (after saving or removing one). */
+export async function refreshApiKeyStatus(): Promise<void> {
+    try {
+        apiKeyStored.value = await commands.hasApiKey();
+    } catch (error) {
+        console.error('Failed to check for a stored API key:', error);
+        apiKeyStored.value = false;
+    }
+}
+
+/**
+ * Move an API key that an earlier version kept in localStorage into the OS
+ * credential store, then drop it from localStorage. If the store is
+ * unavailable the key stays where it is and the move is retried next start.
+ */
+export async function migrateLegacyApiKey(): Promise<void> {
+    if (legacyApiKey) {
+        try {
+            await commands.setApiKey(legacyApiKey);
+            legacyApiKey = null;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(settings.value));
+        } catch (error) {
+            console.error('Failed to move the API key to the system keychain:', error);
+        }
+    }
+    await refreshApiKeyStatus();
+}
+
 export const useSettings = () => {
     const updateSettings = (newSettings: Partial<LLMSettings>) => {
         settings.value = { ...settings.value, ...newSettings };
@@ -163,6 +205,7 @@ export const useSettings = () => {
 
     return {
         settings,
+        apiKeyStored,
         updateSettings,
         resetSettings,
         modelFetchState,

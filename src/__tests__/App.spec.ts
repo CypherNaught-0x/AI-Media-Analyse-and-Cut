@@ -13,6 +13,10 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
     ask: vi.fn(() => Promise.resolve(false)),
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({
+    invoke: vi.fn(() => Promise.resolve(false)),
+}));
+
 vi.mock('@tauri-apps/plugin-process', () => ({
     relaunch: vi.fn(),
 }));

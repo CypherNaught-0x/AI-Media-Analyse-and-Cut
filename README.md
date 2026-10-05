@@ -144,6 +144,10 @@ green on a machine that has never set one up.
 1.  **Configure API** *(not needed for the Local Only pipeline)*:
     *   Click the "Configure" button or go to Settings.
     *   Enter your **Google Gemini API Key** (recommended, free tier available) or OpenAI API Key.
+        It is stored in the system keychain (macOS Keychain, Windows Credential Manager, or the
+        Secret Service on Linux), not in the app's settings; keys saved by earlier versions are
+        moved there automatically. On macOS, unsigned builds may ask for your login password to
+        allow access after an update.
     *   You can use any OpenAI compatible endpoint that supports audio processing.
     *   Select your desired model.
 
