@@ -16,6 +16,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::time_utils::format_time;
 use crate::video::{TranscriptSegment, TranscriptWord};
+use parakeet_rs::ExecutionConfig;
 
 pub(crate) const SAMPLE_RATE: usize = 16_000;
 
@@ -468,6 +469,19 @@ pub(crate) async fn resolve_sortformer_file(
 }
 
 /// Run Sortformer speaker diarization over 16 kHz mono samples.
+/// Execution settings for the ONNX speech models (Parakeet TDT, Sortformer).
+///
+/// CPU only, by measurement (`parakeet::profiling`, 74 s of speech on an
+/// M-series Mac): CPU runs at ~37x real time, the CoreML provider at ~6.6x,
+/// because these graphs have dynamic input shapes CoreML can't plan for. The
+/// default of 4 intra-op threads left speed on the table; half the logical
+/// cores, clamped to 4..=8, matched the fastest measured setting (8+ threads
+/// gained nothing).
+pub(crate) fn onnx_execution_config() -> ExecutionConfig {
+    let logical = std::thread::available_parallelism().map_or(4, |n| n.get());
+    ExecutionConfig::default().with_intra_threads((logical / 2).clamp(4, 8))
+}
+
 pub(crate) fn diarize(sortformer_file: &Path, audio: Vec<f32>) -> Result<Vec<SpeakerSegment>> {
     if !sortformer_file.is_file() {
         return Err(anyhow!(
@@ -476,14 +490,17 @@ pub(crate) fn diarize(sortformer_file: &Path, audio: Vec<f32>) -> Result<Vec<Spe
         ));
     }
 
-    let mut sortformer =
-        Sortformer::with_config(sortformer_file, None, DiarizationConfig::callhome())
-            .with_context(|| {
-                format!(
-                    "Failed to load Sortformer model '{}'",
-                    sortformer_file.display()
-                )
-            })?;
+    let mut sortformer = Sortformer::with_config(
+        sortformer_file,
+        Some(onnx_execution_config()),
+        DiarizationConfig::callhome(),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to load Sortformer model '{}'",
+            sortformer_file.display()
+        )
+    })?;
 
     sortformer
         .diarize(audio, SAMPLE_RATE as u32, 1)

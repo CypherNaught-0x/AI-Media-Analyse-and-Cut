@@ -15,6 +15,11 @@ edition = "2021"
 name = "ai_media_cutter_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Measurement only: compare the CoreML execution provider in the ignored
+# parakeet profiling test.
+profile-coreml = ["parakeet-rs/coreml"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

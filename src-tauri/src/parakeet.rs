@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use crate::local_asr::{
     build_transcript_segments, diarize, download_file_if_missing, emit_progress,
-    load_audio_16k_mono, model_root, resolve_sortformer_file, speaker_label_for_word,
-    WordWithSpeaker, HF_RESOLVE_BASE, SAMPLE_RATE,
+    load_audio_16k_mono, model_root, onnx_execution_config, resolve_sortformer_file,
+    speaker_label_for_word, WordWithSpeaker, HF_RESOLVE_BASE, SAMPLE_RATE,
 };
 use crate::run_control::run_blocking;
 use crate::video::TranscriptSegment;
@@ -173,12 +173,13 @@ fn word_boundaries_blocking(
         .with_context(|| format!("Failed to load audio '{}'", audio_file.display()))?;
 
     emit_progress(window, "Loading Parakeet TDT for split-point detection...")?;
-    let mut parakeet = ParakeetTDT::from_pretrained(parakeet_dir, None).with_context(|| {
-        format!(
-            "Failed to load Parakeet TDT model directory '{}'",
-            parakeet_dir.display()
-        )
-    })?;
+    let mut parakeet = ParakeetTDT::from_pretrained(parakeet_dir, Some(onnx_execution_config()))
+        .with_context(|| {
+            format!(
+                "Failed to load Parakeet TDT model directory '{}'",
+                parakeet_dir.display()
+            )
+        })?;
 
     let words =
         transcribe_words(window, &mut parakeet, &audio).context("Parakeet transcription failed")?;
@@ -225,12 +226,14 @@ pub async fn transcribe_with_parakeet(
         let diarization = diarize(&resolved_sortformer_file, audio.clone())?;
 
         emit_progress(&window, "Loading Parakeet TDT...")?;
-        let mut parakeet = ParakeetTDT::from_pretrained(parakeet_dir, None).with_context(|| {
-            format!(
-                "Failed to load Parakeet TDT model directory '{}'",
-                parakeet_dir.display()
-            )
-        })?;
+        let mut parakeet =
+            ParakeetTDT::from_pretrained(parakeet_dir, Some(onnx_execution_config()))
+                .with_context(|| {
+                    format!(
+                        "Failed to load Parakeet TDT model directory '{}'",
+                        parakeet_dir.display()
+                    )
+                })?;
 
         let words = transcribe_words(&window, &mut parakeet, &audio)
             .context("Parakeet transcription failed")?;
@@ -249,4 +252,96 @@ pub async fn transcribe_with_parakeet(
     };
 
     run_blocking(move || run().map_err(|error| error.to_string())).await
+}
+
+#[cfg(test)]
+mod profiling {
+    use super::*;
+    use parakeet_rs::sortformer::{DiarizationConfig, Sortformer};
+    use parakeet_rs::ExecutionConfig as ModelConfig;
+    #[cfg(feature = "profile-coreml")]
+    use parakeet_rs::ExecutionProvider;
+    use std::time::Instant;
+
+    fn models_dir() -> PathBuf {
+        std::env::var_os("PARAKEET_PROFILE_MODELS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                dirs_home()
+                    .join("Library/Application Support/itemis.ai-media-cutter/models/parakeet-rs")
+            })
+    }
+
+    fn dirs_home() -> PathBuf {
+        PathBuf::from(std::env::var("HOME").unwrap())
+    }
+
+    /// Times Sortformer and Parakeet TDT on the 74 s test recording under
+    /// different execution configs (see `onnx_execution_config`). Needs the
+    /// downloaded models; add `--features profile-coreml` to include CoreML:
+    /// `cargo test --release --lib profiling -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn profile_execution_configs() {
+        let audio_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../dev-resources/test-data/test_podcast.m4a");
+        let audio = load_audio_16k_mono(&audio_path).unwrap();
+        let seconds = audio.len() as f32 / SAMPLE_RATE as f32;
+        let dir = models_dir();
+
+        #[cfg_attr(not(feature = "profile-coreml"), allow(unused_mut))]
+        let mut configs: Vec<(String, ModelConfig)> = [4usize, 6, 8, 12]
+            .into_iter()
+            .map(|threads| {
+                (
+                    format!("cpu x{threads}"),
+                    ModelConfig::default().with_intra_threads(threads),
+                )
+            })
+            .collect();
+        #[cfg(feature = "profile-coreml")]
+        configs.push((
+            "coreml".into(),
+            ModelConfig::default().with_execution_provider(ExecutionProvider::CoreML),
+        ));
+
+        for (name, config) in configs {
+            let started = Instant::now();
+            let mut sortformer = Sortformer::with_config(
+                dir.join("diar_streaming_sortformer_4spk-v2.onnx"),
+                Some(config.clone()),
+                DiarizationConfig::callhome(),
+            )
+            .unwrap();
+            let loaded = started.elapsed();
+            sortformer
+                .diarize(audio.clone(), SAMPLE_RATE as u32, 1)
+                .unwrap();
+            let diarized = started.elapsed() - loaded;
+
+            let started = Instant::now();
+            let mut tdt =
+                ParakeetTDT::from_pretrained(dir.join(DEFAULT_TDT_DIR_NAME), Some(config)).unwrap();
+            let tdt_loaded = started.elapsed();
+            let result = tdt
+                .transcribe_samples(
+                    audio.clone(),
+                    SAMPLE_RATE as u32,
+                    1,
+                    Some(TimestampMode::Words),
+                )
+                .unwrap();
+            let transcribed = started.elapsed() - tdt_loaded;
+
+            println!(
+                "{name:>10}: sortformer load {:>5.2}s run {:>5.2}s | tdt load {:>5.2}s run {:>5.2}s ({:.1}x realtime, {} tokens)",
+                loaded.as_secs_f32(),
+                diarized.as_secs_f32(),
+                tdt_loaded.as_secs_f32(),
+                transcribed.as_secs_f32(),
+                seconds / transcribed.as_secs_f32(),
+                result.tokens.len()
+            );
+        }
+    }
 }
