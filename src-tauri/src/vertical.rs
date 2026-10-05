@@ -82,15 +82,26 @@ fn analyse_range(
     Ok(tracker.finish(MIN_TRACK_SECONDS))
 }
 
-/// Export `clips` as vertical videos. Blocks; run it on the blocking pool.
-pub(crate) fn export_vertical(
+/// The planned framing of a set of clips, ready to render (or preview).
+#[derive(Debug, Clone)]
+pub(crate) struct VerticalPlan {
+    pub source_size: (u32, u32),
+    pub fps: f64,
+    pub has_audio: bool,
+    /// Per clip: its pieces in order, in source pixels.
+    pub clips: Vec<Vec<VerticalRange>>,
+    pub bindings: Vec<Binding>,
+}
+
+/// Analyse and plan the framing of clips given as source ranges. Blocks.
+/// `on_progress` gets the analysed fraction (0-1).
+pub(crate) fn plan_vertical(
     input: &Path,
-    clips: &[VerticalClip],
+    clips: &[Vec<(f64, f64)>],
     turns: &[SpeechTurn],
-    quality: ExportQuality,
     run: Option<(u64, &RunControl)>,
-    on_progress: &mut Progress<'_>,
-) -> Result<Vec<Binding>, String> {
+    on_progress: &mut dyn FnMut(f64),
+) -> Result<VerticalPlan, String> {
     let media = probe_media(input)?;
     let video = media
         .video
@@ -112,7 +123,7 @@ pub(crate) fn export_vertical(
 
     let total_seconds: f64 = clips
         .iter()
-        .flat_map(|clip| &clip.ranges)
+        .flatten()
         .map(|(start, end)| end - start + 2.0 * ANALYSIS_MARGIN)
         .sum::<f64>()
         .max(1e-6);
@@ -124,17 +135,11 @@ pub(crate) fn export_vertical(
     let mut range_tracks: Vec<Vec<Vec<usize>>> = Vec::new();
     let mut analysed = 0.0;
     let mut next_shot = 0;
-    for clip in clips {
+    for ranges in clips {
         let mut per_range = Vec::new();
-        for &(start, end) in &clip.ranges {
+        for &(start, end) in ranges {
             let range = ((start - ANALYSIS_MARGIN).max(0.0), end + ANALYSIS_MARGIN);
-            let mut on_time = |time: f64| {
-                let fraction = (analysed + time) / total_seconds;
-                on_progress(
-                    ANALYSIS_SHARE * fraction.min(1.0),
-                    format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
-                );
-            };
+            let mut on_time = |time: f64| on_progress(((analysed + time) / total_seconds).min(1.0));
             let local = analyse_range(input, range, analysis_w, &mut detector, run, &mut on_time)?;
             analysed += range.1 - range.0;
             let shots = local.iter().map(|t| t.shot + 1).max().unwrap_or(0);
@@ -154,60 +159,102 @@ pub(crate) fn export_vertical(
     // 2. Who is who, over all clips together.
     let bindings = bind_speakers(&tracks, turns);
 
-    // 3. Camera path and render per clip.
+    // 3. Camera path per range.
     let settings = CameraSettings::default();
     let aspect = f64::from(OUTPUT_SIZE.0) / f64::from(OUTPUT_SIZE.1);
-    let render_total: f64 = clips
+    let planned = clips
         .iter()
-        .flat_map(|clip| &clip.ranges)
+        .zip(&range_tracks)
+        .map(|(ranges, per_range)| {
+            ranges
+                .iter()
+                .zip(per_range)
+                .flat_map(|(&(start, end), indices)| {
+                    let range_tracks: Vec<Track> =
+                        indices.iter().map(|&i| tracks[i].clone()).collect();
+                    plan_camera(
+                        (start, end),
+                        &range_tracks,
+                        &bindings,
+                        turns,
+                        &camera_frame,
+                        aspect,
+                        &settings,
+                    )
+                })
+                .map(|piece| VerticalRange {
+                    start: piece.start,
+                    end: piece.end,
+                    // Analysis pixels to source pixels.
+                    framing: match piece.framing {
+                        Framing::Fit => Framing::Fit,
+                        Framing::Follow(keys) => Framing::Follow(
+                            keys.into_iter()
+                                .map(|key| CropKey {
+                                    time: key.time,
+                                    center_x: key.center_x * scale,
+                                    center_y: key.center_y * scale,
+                                    height: key.height * scale,
+                                })
+                                .collect(),
+                        ),
+                    },
+                })
+                .collect()
+        })
+        .collect();
+
+    Ok(VerticalPlan {
+        source_size: (source_w, source_h),
+        fps,
+        has_audio: media.audio.is_some(),
+        clips: planned,
+        bindings,
+    })
+}
+
+/// Export `clips` as vertical videos. Blocks; run it on the blocking pool.
+pub(crate) fn export_vertical(
+    input: &Path,
+    clips: &[VerticalClip],
+    turns: &[SpeechTurn],
+    quality: ExportQuality,
+    run: Option<(u64, &RunControl)>,
+    on_progress: &mut Progress<'_>,
+) -> Result<VerticalPlan, String> {
+    let ranges: Vec<Vec<(f64, f64)>> = clips.iter().map(|clip| clip.ranges.clone()).collect();
+    let plan = plan_vertical(input, &ranges, turns, run, &mut |fraction| {
+        on_progress(
+            ANALYSIS_SHARE * fraction,
+            format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
+        );
+    })?;
+    let mut seats: Vec<(usize, usize, &str, f32)> = plan
+        .bindings
+        .iter()
+        .map(|b| (b.setup, b.seat, b.speaker.as_str(), b.affinity))
+        .collect();
+    seats.dedup_by(|a, b| (a.0, a.1) == (b.0, b.1));
+    for (setup, seat, speaker, affinity) in seats {
+        log::info!("vertical: setup {setup} seat {seat} = {speaker} (affinity {affinity:.2})");
+    }
+
+    let render_total: f64 = ranges
+        .iter()
+        .flatten()
         .map(|(start, end)| end - start)
         .sum::<f64>()
         .max(1e-6);
     let mut rendered = 0.0;
-    for (index, (clip, per_range)) in clips.iter().zip(&range_tracks).enumerate() {
-        let ranges: Vec<VerticalRange> = clip
-            .ranges
-            .iter()
-            .zip(per_range)
-            .flat_map(|(&(start, end), indices)| {
-                let range_tracks: Vec<Track> = indices.iter().map(|&i| tracks[i].clone()).collect();
-                plan_camera(
-                    (start, end),
-                    &range_tracks,
-                    &bindings,
-                    turns,
-                    &camera_frame,
-                    aspect,
-                    &settings,
-                )
-            })
-            .map(|piece| VerticalRange {
-                start: piece.start,
-                end: piece.end,
-                // Analysis pixels to source pixels.
-                framing: match piece.framing {
-                    Framing::Fit => Framing::Fit,
-                    Framing::Follow(keys) => Framing::Follow(
-                        keys.into_iter()
-                            .map(|key| CropKey {
-                                time: key.time,
-                                center_x: key.center_x * scale,
-                                center_y: key.center_y * scale,
-                                height: key.height * scale,
-                            })
-                            .collect(),
-                    ),
-                },
-            })
-            .collect();
+    for (index, (clip, pieces)) in clips.iter().zip(&plan.clips).enumerate() {
         let clip_seconds: f64 = clip.ranges.iter().map(|(s, e)| e - s).sum();
         render_vertical(
             &VerticalRender {
                 input,
-                ranges: &ranges,
-                source_size: (source_w, source_h),
-                fps,
-                has_audio: media.audio.is_some(),
+                ranges: pieces,
+                source_size: plan.source_size,
+                fps: plan.fps,
+                has_audio: plan.has_audio,
                 output_size: OUTPUT_SIZE,
                 output: &clip.output,
                 quality,
@@ -229,7 +276,7 @@ pub(crate) fn export_vertical(
         rendered += clip_seconds;
     }
     on_progress(1.0, "Vertical export finished".to_string());
-    Ok(bindings)
+    Ok(plan)
 }
 
 #[cfg(test)]
@@ -274,7 +321,7 @@ mod evaluation {
         let output = PathBuf::from(keep).join("vertical_export.mp4");
         let started = std::time::Instant::now();
         let mut last = String::new();
-        let bindings = export_vertical(
+        let plan = export_vertical(
             Path::new(&source),
             &[VerticalClip {
                 ranges: ranges.clone(),
@@ -286,7 +333,35 @@ mod evaluation {
             &mut |_, message| last = message,
         )
         .unwrap();
-        let mut seats: Vec<_> = bindings
+        for piece in &plan.clips[0] {
+            match &piece.framing {
+                Framing::Fit => println!("{:.1}-{:.1}: fit", piece.start, piece.end),
+                Framing::Follow(keys) => {
+                    let speeds: Vec<f64> = keys
+                        .windows(2)
+                        .filter(|w| w[1].time - w[0].time > 0.01)
+                        .map(|w| (w[1].center_x - w[0].center_x) / (w[1].time - w[0].time))
+                        .collect();
+                    let fastest = speeds.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                    println!(
+                        "{:.1}-{:.1}: follow, {} keys, fastest pan {fastest:.0} px/s",
+                        piece.start,
+                        piece.end,
+                        keys.len()
+                    );
+                    if std::env::var_os("SHORTS_PROFILE_KEYS").is_some() {
+                        for key in keys {
+                            println!(
+                                "    {:6.2} x {:7.1} y {:6.1} h {:5.0}",
+                                key.time, key.center_x, key.center_y, key.height
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let mut seats: Vec<_> = plan
+            .bindings
             .iter()
             .map(|b| (b.setup, b.seat, b.speaker.clone(), b.affinity, b.evidence))
             .collect();
