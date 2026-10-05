@@ -156,6 +156,26 @@ export function setupDemoMode() {
                 return 1;
             case 'select_clips':
                 return DEMO_CLIPS;
+            case 'plan_vertical_clips': {
+                // One followed framing per requested clip, slightly right of centre.
+                const clips = (args as { segments: unknown[] }).segments.map(() => [
+                    {
+                        start: 0,
+                        end: 1e9,
+                        fit: false,
+                        keys: [{ time: 0, centerX: 760, centerY: 330, height: 520 }],
+                    },
+                ]);
+                return {
+                    sourceWidth: 1280,
+                    sourceHeight: 720,
+                    outputWidth: 1080,
+                    outputHeight: 1920,
+                    clips,
+                };
+            }
+            case 'export_vertical_clips':
+                return null;
             case 'has_api_key':
                 return true;
             case 'list_models':

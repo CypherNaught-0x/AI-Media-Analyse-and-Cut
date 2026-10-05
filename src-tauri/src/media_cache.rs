@@ -39,7 +39,8 @@ pub(crate) fn existing_source_dir(root: &Path, source: &Path) -> Option<PathBuf>
     dir.is_dir().then_some(dir)
 }
 
-fn source_key(source: &Path) -> Result<String, String> {
+/// A short key for `source` that changes when the file does.
+pub(crate) fn source_key(source: &Path) -> Result<String, String> {
     let canonical = std::fs::canonicalize(source)
         .map_err(|error| format!("Failed to resolve '{}': {error}", source.display()))?;
     let metadata = std::fs::metadata(&canonical)

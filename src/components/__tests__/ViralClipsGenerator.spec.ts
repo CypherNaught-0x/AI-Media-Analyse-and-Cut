@@ -164,6 +164,58 @@ describe('ViralClipsGenerator', () => {
         });
     });
 
+    it('previews the planned 9:16 framing when vertical is on', async () => {
+        const [clip] = fromCandidates([candidate]);
+        vi.mocked(invoke).mockImplementation((command) => {
+            if (command === 'begin_run') return Promise.resolve(123);
+            if (command === 'plan_vertical_clips')
+                return Promise.resolve({
+                    sourceWidth: 1280,
+                    sourceHeight: 720,
+                    outputWidth: 1080,
+                    outputHeight: 1920,
+                    clips: [
+                        [
+                            {
+                                start: 10,
+                                end: 13,
+                                fit: false,
+                                keys: [{ time: 0, centerX: 640, centerY: 360, height: 480 }],
+                            },
+                        ],
+                    ],
+                });
+            return Promise.resolve(null);
+        });
+        const wrapper = mountWith({ clips: [clip], vertical: true });
+        const video = wrapper.get('[data-testid="clips-player"]').element as HTMLVideoElement;
+        video.play = () => Promise.resolve();
+
+        await wrapper.get(`[data-testid="clip-preview-${clip.id}"]`).trigger('click');
+        await flushPromises();
+
+        const call = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'plan_vertical_clips');
+        expect(call?.[1]).toMatchObject({
+            inputPath: '/tmp/source.mp4',
+            segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
+            turns: [{ start: 10, end: 13, speaker: 'Host' }],
+        });
+        // 9:16 frame; the 270x480 crop at (505, 120) fills it 1:1.
+        const frame = wrapper.get('[data-testid="clips-player-frame"]').element as HTMLElement;
+        expect(frame.style.width).toBe('270px');
+        expect(frame.style.height).toBe('480px');
+        expect(video.style.left).toBe('-505px');
+        expect(video.style.top).toBe('-120px');
+        expect(video.controls).toBe(false);
+
+        // Stopping returns to the normal player.
+        await wrapper.get(`[data-testid="clip-preview-${clip.id}"]`).trigger('click');
+        expect(frame.style.width).toBe('');
+        expect(video.controls).toBe(true);
+    });
+
     it('does not start while another job is running', async () => {
         const wrapper = mountWith({}, true);
         expect(wrapper.get('[data-testid="clips-generate"]').attributes('disabled')).toBeDefined();

@@ -48,6 +48,23 @@ impl Track {
         self.observations.last().map_or(0.0, |o| o.time)
     }
 
+    /// The part of the track inside `start..=end`, if any.
+    pub(crate) fn within(&self, start: f64, end: f64) -> Option<Track> {
+        let observations: Vec<Observation> = self
+            .observations
+            .iter()
+            .filter(|o| (start..=end).contains(&o.time))
+            .cloned()
+            .collect();
+        (!observations.is_empty()).then(|| Track {
+            id: self.id,
+            shot: self.shot,
+            observations,
+            mouth: Vec::new(),
+            eyes: Vec::new(),
+        })
+    }
+
     fn last(&self) -> &Observation {
         self.observations.last().expect("tracks are never empty")
     }
@@ -309,6 +326,20 @@ mod tests {
         assert_eq!(tracks[2].start(), 1.0);
         assert_eq!(tracks[0].observations[0].mouth_motion, None);
         assert_eq!(tracks[0].observations[1].mouth_motion, Some(0.0));
+    }
+
+    #[test]
+    fn a_track_can_be_cut_to_a_window() {
+        let mut tracker = Tracker::new(Vec::new(), 10.0);
+        for step in 0..10 {
+            let frame = grey_frame(f64::from(step) / 10.0, |_, _| 100);
+            tracker.push(&frame, &[face_at(10.0, 10.0, 40.0)]);
+        }
+        let track = &tracker.finish(0.0)[0];
+        let part = track.within(0.25, 0.55).unwrap();
+        let times: Vec<f64> = part.observations.iter().map(|o| o.time).collect();
+        assert_eq!(times, [0.3, 0.4, 0.5]);
+        assert!(track.within(2.0, 3.0).is_none());
     }
 
     #[test]

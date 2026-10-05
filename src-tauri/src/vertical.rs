@@ -26,12 +26,52 @@ const MAX_UPSCALE: f64 = 4.0;
 const ANALYSIS_FPS: f64 = 10.0;
 /// Faces are detected at up to this width.
 const ANALYSIS_WIDTH: u32 = 1280;
-/// Analysed beyond each range so tracks are established at its edges.
-const ANALYSIS_MARGIN: f64 = 0.5;
+/// Analysed beyond each range so tracks are established at its edges, and
+/// so a later export with padded or trimmed edges reuses the analysis.
+const ANALYSIS_MARGIN: f64 = 2.0;
+/// Analysed ranges kept in memory (a few seconds of work each).
+const CACHE_ENTRIES: usize = 64;
 /// Tracks shorter than this are detection noise.
 const MIN_TRACK_SECONDS: f64 = 0.5;
 /// Share of the progress bar for analysis; rendering takes the rest.
 const ANALYSIS_SHARE: f64 = 0.5;
+
+/// One analysed range: source key, range (seconds) and its tracks.
+type CacheEntry = (String, (f64, f64), Vec<Track>);
+
+/// Face analysis of source ranges, kept for the session so previewing and
+/// then exporting a clip (or re-exporting it) analyses it only once.
+#[derive(Default)]
+pub(crate) struct AnalysisCache {
+    /// Most recently used last: (source key, analysed range, tracks).
+    entries: std::sync::Mutex<Vec<CacheEntry>>,
+}
+
+impl AnalysisCache {
+    /// Tracks for `range` from an entry that covers it.
+    fn get(&self, source: &str, range: (f64, f64)) -> Option<Vec<Track>> {
+        let mut entries = self.entries.lock().expect("analysis cache poisoned");
+        let index = entries.iter().rposition(|(key, covered, _)| {
+            key == source && covered.0 <= range.0 + 1e-6 && range.1 <= covered.1 + 1e-6
+        })?;
+        let entry = entries.remove(index);
+        let tracks = entry
+            .2
+            .iter()
+            .filter_map(|track| track.within(range.0, range.1))
+            .collect();
+        entries.push(entry);
+        Some(tracks)
+    }
+
+    fn put(&self, source: String, range: (f64, f64), tracks: Vec<Track>) {
+        let mut entries = self.entries.lock().expect("analysis cache poisoned");
+        entries.push((source, range, tracks));
+        if entries.len() > CACHE_ENTRIES {
+            entries.remove(0);
+        }
+    }
+}
 
 pub(crate) struct VerticalClip {
     /// Source ranges (seconds), played in order.
@@ -93,12 +133,86 @@ pub(crate) struct VerticalPlan {
     pub bindings: Vec<Binding>,
 }
 
+/// A crop key for the live preview (source pixels; time relative to the
+/// piece start).
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewKey {
+    #[specta(type = specta_typescript::Number)]
+    pub time: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub center_x: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub center_y: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub height: f64,
+}
+
+/// A stretch of a clip with one framing: `fit` shows the whole picture,
+/// otherwise the crop follows `keys`.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewPiece {
+    #[specta(type = specta_typescript::Number)]
+    pub start: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub end: f64,
+    pub fit: bool,
+    pub keys: Vec<PreviewKey>,
+}
+
+/// The planned vertical framing of clips, as the frontend previews it.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VerticalPreview {
+    pub source_width: u32,
+    pub source_height: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    /// Per clip: its pieces in playback order.
+    pub clips: Vec<Vec<PreviewPiece>>,
+}
+
+impl From<&VerticalPlan> for VerticalPreview {
+    fn from(plan: &VerticalPlan) -> Self {
+        let piece = |range: &VerticalRange| PreviewPiece {
+            start: range.start,
+            end: range.end,
+            fit: matches!(range.framing, Framing::Fit),
+            keys: match &range.framing {
+                Framing::Fit => Vec::new(),
+                Framing::Follow(keys) => keys
+                    .iter()
+                    .map(|key| PreviewKey {
+                        time: key.time,
+                        center_x: key.center_x,
+                        center_y: key.center_y,
+                        height: key.height,
+                    })
+                    .collect(),
+            },
+        };
+        Self {
+            source_width: plan.source_size.0,
+            source_height: plan.source_size.1,
+            output_width: OUTPUT_SIZE.0,
+            output_height: OUTPUT_SIZE.1,
+            clips: plan
+                .clips
+                .iter()
+                .map(|pieces| pieces.iter().map(piece).collect())
+                .collect(),
+        }
+    }
+}
+
 /// Analyse and plan the framing of clips given as source ranges. Blocks.
 /// `on_progress` gets the analysed fraction (0-1).
 pub(crate) fn plan_vertical(
     input: &Path,
     clips: &[Vec<(f64, f64)>],
     turns: &[SpeechTurn],
+    cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut dyn FnMut(f64),
 ) -> Result<VerticalPlan, String> {
@@ -129,7 +243,8 @@ pub(crate) fn plan_vertical(
         .max(1e-6);
 
     // 1. Analyse every range, giving tracks globally unique ids and shots.
-    let mut detector = FaceDetector::new()?;
+    let source_key = crate::media_cache::source_key(input)?;
+    let mut detector = None;
     let mut tracks: Vec<Track> = Vec::new();
     // Per clip, per range: indices into `tracks`.
     let mut range_tracks: Vec<Vec<Vec<usize>>> = Vec::new();
@@ -139,9 +254,25 @@ pub(crate) fn plan_vertical(
         let mut per_range = Vec::new();
         for &(start, end) in ranges {
             let range = ((start - ANALYSIS_MARGIN).max(0.0), end + ANALYSIS_MARGIN);
-            let mut on_time = |time: f64| on_progress(((analysed + time) / total_seconds).min(1.0));
-            let local = analyse_range(input, range, analysis_w, &mut detector, run, &mut on_time)?;
+            let local = match cache.and_then(|cache| cache.get(&source_key, range)) {
+                Some(tracks) => tracks,
+                None => {
+                    if detector.is_none() {
+                        detector = Some(FaceDetector::new()?);
+                    }
+                    let detector = detector.as_mut().expect("just created");
+                    let mut on_time =
+                        |time: f64| on_progress(((analysed + time) / total_seconds).min(1.0));
+                    let tracks =
+                        analyse_range(input, range, analysis_w, detector, run, &mut on_time)?;
+                    if let Some(cache) = cache {
+                        cache.put(source_key.clone(), range, tracks.clone());
+                    }
+                    tracks
+                }
+            };
             analysed += range.1 - range.0;
+            on_progress((analysed / total_seconds).min(1.0));
             let shots = local.iter().map(|t| t.shot + 1).max().unwrap_or(0);
             let mut indices = Vec::new();
             for mut track in local {
@@ -219,11 +350,12 @@ pub(crate) fn export_vertical(
     clips: &[VerticalClip],
     turns: &[SpeechTurn],
     quality: ExportQuality,
+    cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut Progress<'_>,
 ) -> Result<VerticalPlan, String> {
     let ranges: Vec<Vec<(f64, f64)>> = clips.iter().map(|clip| clip.ranges.clone()).collect();
-    let plan = plan_vertical(input, &ranges, turns, run, &mut |fraction| {
+    let plan = plan_vertical(input, &ranges, turns, cache, run, &mut |fraction| {
         on_progress(
             ANALYSIS_SHARE * fraction,
             format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
@@ -280,6 +412,63 @@ pub(crate) fn export_vertical(
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::face_tracks::Observation;
+    use crate::faces::Face;
+
+    fn track(times: &[f64]) -> Track {
+        let face = Face {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            score: 0.9,
+            landmarks: [(0.0, 0.0); 5],
+        };
+        Track::for_tests(
+            0,
+            0,
+            times
+                .iter()
+                .map(|&time| Observation {
+                    time,
+                    face,
+                    mouth_motion: None,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn the_cache_answers_ranges_inside_an_analysed_one() {
+        let cache = AnalysisCache::default();
+        cache.put(
+            "a".into(),
+            (10.0, 20.0),
+            vec![track(&[10.0, 12.0, 15.0, 19.0])],
+        );
+
+        let inside = cache.get("a", (11.0, 16.0)).unwrap();
+        let times: Vec<f64> = inside[0].observations.iter().map(|o| o.time).collect();
+        assert_eq!(times, [12.0, 15.0]);
+        // Not covered, or another source: analyse again.
+        assert!(cache.get("a", (9.0, 16.0)).is_none());
+        assert!(cache.get("b", (11.0, 16.0)).is_none());
+    }
+
+    #[test]
+    fn the_cache_forgets_the_least_recently_used() {
+        let cache = AnalysisCache::default();
+        for i in 0..=CACHE_ENTRIES {
+            cache.put("a".into(), (i as f64, i as f64 + 1.0), Vec::new());
+        }
+        assert!(cache.get("a", (0.0, 1.0)).is_none());
+        assert!(cache.get("a", (1.0, 2.0)).is_some());
+    }
+}
+
+#[cfg(test)]
 mod evaluation {
     use super::*;
 
@@ -329,6 +518,7 @@ mod evaluation {
             }],
             &turns,
             ExportQuality::Balanced,
+            None,
             None,
             &mut |_, message| last = message,
         )

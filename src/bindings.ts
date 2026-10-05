@@ -58,6 +58,11 @@ export const commands = {
 	 *  (shorts phase S2). `turns` say who speaks when; faces are bound to them.
 	 */
 	exportVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[], outputDir: string, quality: ExportQuality) => __TAURI_INVOKE<null>("export_vertical_clips", { runId, inputPath, segments, turns, outputDir, quality }),
+	/**
+	 *  Plan the vertical framing of clips without rendering, for the live 9:16
+	 *  preview. The analysis is cached, so a following export reuses it.
+	 */
+	planVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[]) => __TAURI_INVOKE<VerticalPreview>("plan_vertical_clips", { runId, inputPath, segments, turns }),
 	readFileAsBase64: (path: string) => __TAURI_INVOKE<string>("read_file_as_base64", { path }),
 	openFolder: (path: string) => __TAURI_INVOKE<null>("open_folder", { path }),
 	writeTextFile: (path: string, content: string) => __TAURI_INVOKE<null>("write_text_file", { path, content }),
@@ -281,6 +286,28 @@ export type PodcastSegment_Serialize = {
 	transition_note?: string | null,
 };
 
+/**
+ *  A crop key for the live preview (source pixels; time relative to the
+ *  piece start).
+ */
+export type PreviewKey = {
+	time: number,
+	centerX: number,
+	centerY: number,
+	height: number,
+};
+
+/**
+ *  A stretch of a clip with one framing: `fit` shows the whole picture,
+ *  otherwise the crop follows `keys`.
+ */
+export type PreviewPiece = {
+	start: number,
+	end: number,
+	fit: boolean,
+	keys: PreviewKey[],
+};
+
 export type ProcessedAudio = {
 	path: string,
 	silence_intervals: SilenceInterval[],
@@ -411,5 +438,15 @@ export type TranscriptWord_Serialize = {
 	end: string,
 	text: string,
 	speaker?: string | null,
+};
+
+/**  The planned vertical framing of clips, as the frontend previews it. */
+export type VerticalPreview = {
+	sourceWidth: number,
+	sourceHeight: number,
+	outputWidth: number,
+	outputHeight: number,
+	/**  Per clip: its pieces in playback order. */
+	clips: PreviewPiece[][],
 };
 
