@@ -56,6 +56,41 @@ const AUTOSAVE_DEBOUNCE_MS = 750;
 const router = useRouter();
 const { settings } = useSettings();
 
+type WorkspaceSettings = TranscriptWorkspaceState['settingsSnapshot'];
+const WORKSPACE_SETTING_KEYS = [
+    'glossary',
+    'transcriptionBackend',
+    'localEngine',
+    'parakeetModelPath',
+    'sortformerModelPath',
+] as const satisfies readonly (keyof WorkspaceSettings)[];
+
+function defaultWorkspaceSettings(): WorkspaceSettings {
+    return {
+        glossary: settings.value.glossary ?? '',
+        transcriptionBackend: settings.value.transcriptionBackend ?? 'llm',
+        localEngine: settings.value.localEngine ?? 'parakeet',
+        parakeetModelPath: settings.value.parakeetModelPath ?? '',
+        sortformerModelPath: settings.value.sortformerModelPath ?? '',
+    };
+}
+
+// The open project's analysis choices. They start from the app defaults in
+// Settings and are restored from a session or sidecar, but loading a file never
+// writes back into the defaults.
+const workspaceSettings = ref<WorkspaceSettings>(defaultWorkspaceSettings());
+
+// Changing a default in Settings is an explicit choice, so it also applies to
+// the open project.
+for (const key of WORKSPACE_SETTING_KEYS) {
+    watch(
+        () => settings.value[key],
+        (value) => {
+            (workspaceSettings.value as Record<typeof key, unknown>)[key] = value;
+        }
+    );
+}
+
 const status = ref("Initializing...");
 const isProcessing = ref(false);
 const isCancelling = ref(false);
@@ -123,7 +158,7 @@ const parakeetCacheKey = ref<string>("");
 function currentCrisperSignature(): string {
     // Self-contained rather than reusing the computed below, so this stays safe
     // to call from anywhere during setup.
-    const { transcriptionBackend, localEngine } = settings.value;
+    const { transcriptionBackend, localEngine } = workspaceSettings.value;
     if (!usesLocalEngine(transcriptionBackend) || localEngine !== 'crisper') return '';
     return JSON.stringify({
         model: settings.value.crisperModel,
@@ -142,37 +177,37 @@ function currentParakeetCacheKey(): string {
         // The raw local transcript depends on the engine and its options, not
         // on which LLM stage runs afterwards — so switching between local and
         // the hybrids reuses the cache instead of re-transcribing.
-        localEngine: settings.value.localEngine,
-        parakeetModelPath: settings.value.parakeetModelPath,
-        sortformerModelPath: settings.value.sortformerModelPath,
+        localEngine: workspaceSettings.value.localEngine,
+        parakeetModelPath: workspaceSettings.value.parakeetModelPath,
+        sortformerModelPath: workspaceSettings.value.sortformerModelPath,
         crisperSignature: currentCrisperSignature(),
     });
 }
 
-const isLlmOnlyBackend = computed(() => settings.value.transcriptionBackend === 'llm');
+const isLlmOnlyBackend = computed(() => workspaceSettings.value.transcriptionBackend === 'llm');
 const hasApiKey = computed(() => settings.value.apiKey.length > 0);
-const localEngineLabel = computed(() => LOCAL_ENGINE_LABELS[settings.value.localEngine]);
+const localEngineLabel = computed(() => LOCAL_ENGINE_LABELS[workspaceSettings.value.localEngine]);
 
 const hasBackendConfiguration = computed(() => {
     // Local engines need no configuration up front: Parakeet auto-downloads its
     // models and CrisperWhisper reports a fixable error when its Python
     // environment is missing. Only the LLM stages need a key.
-    return usesRemoteModel(settings.value.transcriptionBackend) ? hasApiKey.value : true;
+    return usesRemoteModel(workspaceSettings.value.transcriptionBackend) ? hasApiKey.value : true;
 });
 
 /** Short description of the local engine and its notable settings. */
 const localEngineDisplay = computed(() => {
-    if (settings.value.localEngine === 'crisper') {
+    if (workspaceSettings.value.localEngine === 'crisper') {
         const language = settings.value.crisperLanguage === 'de' ? 'DE' : 'EN';
         return `CrisperWhisper ${settings.value.crisperModel} (${settings.value.crisperMode}, ${language})`;
     }
     const usesCustomPaths =
-        settings.value.parakeetModelPath.trim() || settings.value.sortformerModelPath.trim();
+        workspaceSettings.value.parakeetModelPath.trim() || workspaceSettings.value.sortformerModelPath.trim();
     return usesCustomPaths ? 'Parakeet-RS (local)' : 'Parakeet-RS (auto-download)';
 });
 
 const currentModelDisplay = computed(() => {
-    const backend = settings.value.transcriptionBackend;
+    const backend = workspaceSettings.value.transcriptionBackend;
 
     if (backend === 'llm') {
         return hasApiKey.value ? settings.value.model : 'No API Key configured';
@@ -187,7 +222,7 @@ const currentModelDisplay = computed(() => {
 });
 
 const currentEngineLabel = computed(() => {
-    return settings.value.transcriptionBackend === 'llm' ? 'Current Model' : 'Current Pipeline';
+    return workspaceSettings.value.transcriptionBackend === 'llm' ? 'Current Model' : 'Current Pipeline';
 });
 const hasTranscript = computed(() => segments.value.length > 0);
 const hasMediaFile = computed(() => inputPath.value.length > 0 && inputPathExists.value);
@@ -218,13 +253,13 @@ async function refreshExtractedAudioPath() {
     }
 }
 const settingsChanged = computed(() => {
-    return settings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
-           settings.value.localEngine !== lastAnalyzedSettings.value.localEngine ||
-           settings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
-           settings.value.sortformerModelPath !== lastAnalyzedSettings.value.sortformerModelPath ||
+    return workspaceSettings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
+           workspaceSettings.value.localEngine !== lastAnalyzedSettings.value.localEngine ||
+           workspaceSettings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
+           workspaceSettings.value.sortformerModelPath !== lastAnalyzedSettings.value.sortformerModelPath ||
            currentCrisperSignature() !== lastAnalyzedSettings.value.crisperSignature ||
            context.value !== lastAnalyzedSettings.value.context ||
-           settings.value.glossary !== lastAnalyzedSettings.value.glossary ||
+           workspaceSettings.value.glossary !== lastAnalyzedSettings.value.glossary ||
            speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
            removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords ||
            trimSilence.value !== lastAnalyzedSettings.value.trimSilence;
@@ -259,11 +294,11 @@ const transcriptWorkspaceState = computed<TranscriptWorkspaceState>(() => ({
     rawParakeetSegments: rawParakeetSegments.value,
     parakeetCacheKey: parakeetCacheKey.value,
     settingsSnapshot: {
-        glossary: settings.value.glossary,
-        transcriptionBackend: settings.value.transcriptionBackend,
-        localEngine: settings.value.localEngine,
-        parakeetModelPath: settings.value.parakeetModelPath,
-        sortformerModelPath: settings.value.sortformerModelPath,
+        glossary: workspaceSettings.value.glossary,
+        transcriptionBackend: workspaceSettings.value.transcriptionBackend,
+        localEngine: workspaceSettings.value.localEngine,
+        parakeetModelPath: workspaceSettings.value.parakeetModelPath,
+        sortformerModelPath: workspaceSettings.value.sortformerModelPath,
     },
 }));
 
@@ -383,6 +418,7 @@ function resetTranscriptWorkspaceState() {
     lastAnalyzedSettings.value = createDefaultLastAnalyzedSettings();
     rawParakeetSegments.value = [];
     parakeetCacheKey.value = "";
+    workspaceSettings.value = defaultWorkspaceSettings();
 }
 
 function resetDerivedWorkspaceState() {
@@ -405,10 +441,7 @@ function applyTranscriptWorkspace(state: TranscriptWorkspaceState) {
     lastAnalyzedSettings.value = state.lastAnalyzedSettings;
     rawParakeetSegments.value = state.rawParakeetSegments ?? [];
     parakeetCacheKey.value = state.parakeetCacheKey ?? "";
-    settings.value.glossary = state.settingsSnapshot.glossary;
-    settings.value.transcriptionBackend = state.settingsSnapshot.transcriptionBackend;
-    settings.value.parakeetModelPath = state.settingsSnapshot.parakeetModelPath;
-    settings.value.sortformerModelPath = state.settingsSnapshot.sortformerModelPath;
+    workspaceSettings.value = { ...defaultWorkspaceSettings(), ...state.settingsSnapshot };
 }
 
 function applyClipWorkspace(state: ClipWorkspaceState) {
@@ -580,7 +613,7 @@ async function loadTranscript() {
             context.value = parsed.context;
         }
         if (parsed.glossary !== undefined) {
-            settings.value.glossary = parsed.glossary;
+            workspaceSettings.value.glossary = parsed.glossary;
         }
         if (parsed.speakerCount !== undefined) {
             speakerCount.value = parsed.speakerCount;
@@ -608,14 +641,14 @@ async function loadTranscript() {
         } else {
             lastAnalyzedSettings.value = {
                 context: context.value,
-                glossary: settings.value.glossary,
+                glossary: workspaceSettings.value.glossary,
                 speakerCount: speakerCount.value,
                 removeFillerWords: removeFillerWords.value,
                 trimSilence: trimSilence.value,
-                transcriptionBackend: settings.value.transcriptionBackend ?? 'llm',
-                localEngine: settings.value.localEngine ?? 'parakeet',
-                parakeetModelPath: settings.value.parakeetModelPath ?? '',
-                sortformerModelPath: settings.value.sortformerModelPath ?? '',
+                transcriptionBackend: workspaceSettings.value.transcriptionBackend ?? 'llm',
+                localEngine: workspaceSettings.value.localEngine ?? 'parakeet',
+                parakeetModelPath: workspaceSettings.value.parakeetModelPath ?? '',
+                sortformerModelPath: workspaceSettings.value.sortformerModelPath ?? '',
                 crisperSignature: currentCrisperSignature(),
             };
         }
@@ -626,13 +659,16 @@ async function loadTranscript() {
             parakeetCacheKey.value = parsed.parakeetCacheKey;
         }
         if (parsed.transcriptionBackend !== undefined) {
-            settings.value.transcriptionBackend = parsed.transcriptionBackend;
+            workspaceSettings.value.transcriptionBackend = parsed.transcriptionBackend;
+        }
+        if (parsed.localEngine !== undefined) {
+            workspaceSettings.value.localEngine = parsed.localEngine;
         }
         if (parsed.parakeetModelPath !== undefined) {
-            settings.value.parakeetModelPath = parsed.parakeetModelPath;
+            workspaceSettings.value.parakeetModelPath = parsed.parakeetModelPath;
         }
         if (parsed.sortformerModelPath !== undefined) {
-            settings.value.sortformerModelPath = parsed.sortformerModelPath;
+            workspaceSettings.value.sortformerModelPath = parsed.sortformerModelPath;
         }
 
         status.value = "Loaded existing transcript and settings.";
@@ -851,7 +887,7 @@ async function requestLlmTranscriptForChunk(
         model: settings.value.model,
         enforceJsonSchema: settings.value.enforceJsonSchema,
         context: context.value,
-        glossary: settings.value.glossary,
+        glossary: workspaceSettings.value.glossary,
         speakerCount: speakerCount.value,
         removeFillerWords: removeFillerWords.value,
         audioUri: uri,
@@ -915,7 +951,7 @@ async function transcribeChunkWithResplit(
             runId,
             path: chunkPath,
             maxChunkSeconds: halfMax,
-            parakeetModelPath: settings.value.parakeetModelPath,
+            parakeetModelPath: workspaceSettings.value.parakeetModelPath,
         });
         assertActiveRun(runId);
 
@@ -957,7 +993,7 @@ async function analyzeWithLlmTranscript(
         runId,
         path: analysisAudioPath,
         maxChunkSeconds,
-        parakeetModelPath: settings.value.parakeetModelPath,
+        parakeetModelPath: workspaceSettings.value.parakeetModelPath,
     });
     assertActiveRun(runId);
 
@@ -1005,7 +1041,7 @@ async function transcribeWithLocalEngine(
         return rawParakeetSegments.value;
     }
 
-    const segments = settings.value.localEngine === 'crisper'
+    const segments = workspaceSettings.value.localEngine === 'crisper'
         ? await invoke<TranscriptSegment[]>("transcribe_with_crisper", {
             audioPath: analysisAudioPath,
             options: {
@@ -1022,13 +1058,13 @@ async function transcribeWithLocalEngine(
                 removeFillers: removeFillerWords.value,
                 removeVocalEvents: settings.value.crisperRemoveVocalEvents,
                 diarize: settings.value.crisperDiarize,
-                sortformerModelPath: settings.value.sortformerModelPath,
+                sortformerModelPath: workspaceSettings.value.sortformerModelPath,
             },
         })
         : await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
             audioPath: analysisAudioPath,
-            parakeetModelPath: settings.value.parakeetModelPath,
-            sortformerModelPath: settings.value.sortformerModelPath,
+            parakeetModelPath: workspaceSettings.value.parakeetModelPath,
+            sortformerModelPath: workspaceSettings.value.sortformerModelPath,
         });
 
     assertActiveRun(runId);
@@ -1054,7 +1090,7 @@ async function processFile() {
     }
 
     if (!hasBackendConfiguration.value) {
-        status.value = settings.value.transcriptionBackend === 'llm'
+        status.value = workspaceSettings.value.transcriptionBackend === 'llm'
             ? "Please provide an API key."
             : "Please provide an API key for the hybrid AI stage.";
         return;
@@ -1134,9 +1170,9 @@ async function processFile() {
         const estimatedTime = estimateTime('analysis', audioInfo.duration);
         const pipelineLabel = isLlmOnlyBackend.value
             ? 'Analyzing with AI'
-            : settings.value.transcriptionBackend === 'hybrid'
+            : workspaceSettings.value.transcriptionBackend === 'hybrid'
                 ? `Running hybrid transcription (${localEngineLabel.value} + AI cleanup)`
-                : settings.value.transcriptionBackend === 'hybrid-merge'
+                : workspaceSettings.value.transcriptionBackend === 'hybrid-merge'
                     ? `Running merged hybrid transcription (${localEngineLabel.value} + AI)`
                     : `Transcribing with ${localEngineLabel.value}`;
         status.value = `${pipelineLabel}... (Est. ${estimatedTime.toFixed(0)}s)`;
@@ -1170,7 +1206,7 @@ async function processFile() {
                     return;
                 }
 
-                if (settings.value.transcriptionBackend === 'hybrid') {
+                if (workspaceSettings.value.transcriptionBackend === 'hybrid') {
                     status.value = "Cleaning transcript with AI...";
                     try {
                         nextSegments = await invoke<TranscriptSegment[]>("cleanup_local_transcript", {
@@ -1180,7 +1216,7 @@ async function processFile() {
                             model: settings.value.model,
                             transcript: localSegments,
                             context: context.value,
-                            glossary: settings.value.glossary,
+                            glossary: workspaceSettings.value.glossary,
                             removeFillerWords: removeFillerWords.value,
                         });
                         assertActiveRun(runId);
@@ -1189,7 +1225,7 @@ async function processFile() {
                         nextSegments = localSegments;
                         hybridCleanupUsedFallback = true;
                     }
-                } else if (settings.value.transcriptionBackend === 'hybrid-merge') {
+                } else if (workspaceSettings.value.transcriptionBackend === 'hybrid-merge') {
                     status.value = "Querying remote transcript for merge...";
                     let referenceTranscript: TranscriptSegment[] = [];
                     try {
@@ -1238,7 +1274,7 @@ async function processFile() {
         translations.value = {};
         currentLanguage.value = "Original";
         const foundSuffix = `Found ${segments.value.length} segments.`;
-        const backend = settings.value.transcriptionBackend;
+        const backend = workspaceSettings.value.transcriptionBackend;
         status.value = backend === 'llm'
             ? `Analysis complete. ${foundSuffix}`
             : backend === 'local'
@@ -1249,14 +1285,14 @@ async function processFile() {
 
         lastAnalyzedSettings.value = {
             context: context.value,
-            glossary: settings.value.glossary,
+            glossary: workspaceSettings.value.glossary,
             speakerCount: speakerCount.value,
             removeFillerWords: removeFillerWords.value,
             trimSilence: trimSilence.value,
-            transcriptionBackend: settings.value.transcriptionBackend,
-            localEngine: settings.value.localEngine,
-            parakeetModelPath: settings.value.parakeetModelPath,
-            sortformerModelPath: settings.value.sortformerModelPath,
+            transcriptionBackend: workspaceSettings.value.transcriptionBackend,
+            localEngine: workspaceSettings.value.localEngine,
+            parakeetModelPath: workspaceSettings.value.parakeetModelPath,
+            sortformerModelPath: workspaceSettings.value.sortformerModelPath,
             crisperSignature: currentCrisperSignature(),
         };
 
@@ -1404,18 +1440,18 @@ function updateProcessing(processing: boolean) {
                 :hasBackendConfiguration="hasBackendConfiguration"
                 :hasTranscript="hasTranscript"
                 :settingsChanged="settingsChanged"
-                :transcriptionBackend="settings.transcriptionBackend"
-                :localEngine="settings.localEngine"
+                :transcriptionBackend="workspaceSettings.transcriptionBackend"
+                :localEngine="workspaceSettings.localEngine"
                 :context="context"
-                :glossary="settings.glossary"
+                :glossary="workspaceSettings.glossary"
                 :speakerCount="speakerCount"
                 :removeFillerWords="removeFillerWords"
                 :trimSilence="trimSilence"
                 @update:inputPath="inputPath = $event"
-                @update:transcriptionBackend="settings.transcriptionBackend = $event"
-                @update:localEngine="settings.localEngine = $event"
+                @update:transcriptionBackend="workspaceSettings.transcriptionBackend = $event"
+                @update:localEngine="workspaceSettings.localEngine = $event"
                 @update:context="context = $event"
-                @update:glossary="settings.glossary = $event"
+                @update:glossary="workspaceSettings.glossary = $event"
                 @update:speakerCount="speakerCount = $event"
                 @update:removeFillerWords="removeFillerWords = $event"
                 @update:trimSilence="trimSilence = $event"

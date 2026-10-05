@@ -32,22 +32,24 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   ask: vi.fn(),
 }));
 
-// Mock useSettings
+// Mock useSettings: one shared instance (like the real module-level ref), so
+// tests can assert on the app-wide defaults.
+const defaultMockSettings = () => ({
+  apiKey: 'test-api-key',
+  baseUrl: 'https://test.url',
+  model: 'test-model',
+  enforceJsonSchema: true,
+  glossary: '',
+  preClipPadding: 0,
+  postClipPadding: 0,
+  transcriptionBackend: 'llm',
+  localEngine: 'parakeet',
+  parakeetModelPath: '',
+  sortformerModelPath: '',
+});
+const mockSettings = ref<Record<string, unknown>>(defaultMockSettings());
 vi.mock('../../composables/useSettings', () => ({
-  useSettings: () => ({
-    settings: ref({
-      apiKey: 'test-api-key',
-      baseUrl: 'https://test.url',
-      model: 'test-model',
-      enforceJsonSchema: true,
-      glossary: '',
-      preClipPadding: 0,
-      postClipPadding: 0,
-      transcriptionBackend: 'llm',
-      parakeetModelPath: '',
-      sortformerModelPath: '',
-    }),
-  }),
+  useSettings: () => ({ settings: mockSettings }),
 }));
 
 // Mock Editor component to avoid testing it again
@@ -157,6 +159,7 @@ function buildSession(inputPath = '/tmp/source.mp4'): EditSessionV1 {
 describe('Home.vue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSettings.value = defaultMockSettings();
     const storage = new Map<string, string>();
     Object.defineProperty(globalThis, 'localStorage', {
       value: {
@@ -236,6 +239,50 @@ describe('Home.vue', () => {
     expect(wrapper.find('.mock-podcast-generator').exists()).toBe(true);
     expect(wrapper.find('.mock-clip-generator').exists()).toBe(false);
     expect(wrapper.find('.mock-clip-list').exists()).toBe(false);
+  });
+
+  it('restores project settings from a session without changing the app defaults', async () => {
+    const session = buildSession();
+    session.transcriptWorkspace.settingsSnapshot = {
+      glossary: 'Rust, Tauri',
+      transcriptionBackend: 'hybrid',
+      localEngine: 'crisper',
+      parakeetModelPath: '/models/parakeet',
+      sortformerModelPath: '',
+    };
+    localStorage.setItem('home-edit-session-v1', JSON.stringify(session));
+
+    const wrapper = mount(Home, {
+      global: {
+        plugins: [router],
+      },
+    });
+    await flushPromises();
+
+    const vm = wrapper.vm as unknown as { workspaceSettings: Record<string, unknown> };
+    expect(vm.workspaceSettings).toMatchObject({
+      glossary: 'Rust, Tauri',
+      transcriptionBackend: 'hybrid',
+      localEngine: 'crisper',
+      parakeetModelPath: '/models/parakeet',
+    });
+    expect(mockSettings.value).toMatchObject(defaultMockSettings());
+  });
+
+  it('applies a default changed in Settings to the open project', async () => {
+    localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession()));
+    const wrapper = mount(Home, {
+      global: {
+        plugins: [router],
+      },
+    });
+    await flushPromises();
+
+    mockSettings.value.transcriptionBackend = 'local';
+    await flushPromises();
+
+    const vm = wrapper.vm as unknown as { workspaceSettings: Record<string, unknown> };
+    expect(vm.workspaceSettings.transcriptionBackend).toBe('local');
   });
 
   it('loads a session file from disk', async () => {
