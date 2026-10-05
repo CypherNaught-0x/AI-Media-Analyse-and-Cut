@@ -4,12 +4,12 @@ import TranscriptWorkspacePanel from '../TranscriptWorkspacePanel.vue';
 import type { TranscriptSegment } from '../../types';
 
 vi.mock('@tauri-apps/api/core', () => ({
-  convertFileSrc: vi.fn((path: string) => path),
+    convertFileSrc: vi.fn((path: string) => path),
 }));
 
 vi.mock('../Editor.vue', () => ({
-  default: {
-    template: `
+    default: {
+        template: `
       <div
         class="mock-editor"
         :data-segment-count="String(segments.length)"
@@ -21,247 +21,284 @@ vi.mock('../Editor.vue', () => ({
         :data-video-available="String(videoAvailable)"
       ></div>
     `,
-    props: ['segments', 'speakerVisibility', 'showOnlyReviewSegments', 'reviewThreshold', 'blacklistMatchesBySegment', 'audioAvailable', 'previewIndex', 'videoAvailable', 'videoPreviewIndex', 'getPlayhead'],
-  },
+        props: [
+            'segments',
+            'speakerVisibility',
+            'showOnlyReviewSegments',
+            'reviewThreshold',
+            'blacklistMatchesBySegment',
+            'audioAvailable',
+            'previewIndex',
+            'videoAvailable',
+            'videoPreviewIndex',
+            'getPlayhead',
+        ],
+    },
 }));
 
 vi.mock('../SubtitleExport.vue', () => ({
-  default: {
-    template: '<div class="mock-subtitle-export"></div>',
-  },
+    default: {
+        template: '<div class="mock-subtitle-export"></div>',
+    },
 }));
 
 describe('TranscriptWorkspacePanel', () => {
-  const segments: TranscriptSegment[] = [
-    { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
-  ];
-
-  it('emits translation target updates and translate requests', async () => {
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        displaySegments: segments,
-        originalSegments: segments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host'],
-        isProcessing: false,
-      },
-    });
-
-    const buttons = wrapper.findAll('button');
-    await buttons[0].trigger('click');
-    const germanOption = wrapper.findAll('button').find((button) => button.text().includes('German'));
-    expect(germanOption).toBeDefined();
-    await germanOption!.trigger('click');
-
-    expect(wrapper.emitted('update:targetLanguage')?.[0]).toEqual(['German']);
-    await wrapper.setProps({ targetLanguage: 'German' });
-
-    const translateButton = wrapper.findAll('button').find((button) => button.attributes('title') === 'Translate');
-    await translateButton!.trigger('click');
-    expect(wrapper.emitted('translate')).toBeTruthy();
-  });
-
-  it('passes review filter state through to the editor', async () => {
-    const reviewSegments: TranscriptSegment[] = [
-      { start: '00:00', end: '00:05', speaker: 'Host', text: 'Aligned', mergeStatus: 'matched', similarityScore: 0.95 },
-      { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Needs review', mergeStatus: 'conflict', similarityScore: 0.42 },
+    const segments: TranscriptSegment[] = [
+        { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
     ];
 
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        displaySegments: reviewSegments,
-        originalSegments: reviewSegments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host', 'Guest'],
-        isProcessing: false,
-      },
+    it('emits translation target updates and translate requests', async () => {
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                displaySegments: segments,
+                originalSegments: segments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host'],
+                isProcessing: false,
+            },
+        });
+
+        const buttons = wrapper.findAll('button');
+        await buttons[0].trigger('click');
+        const germanOption = wrapper
+            .findAll('button')
+            .find((button) => button.text().includes('German'));
+        expect(germanOption).toBeDefined();
+        await germanOption!.trigger('click');
+
+        expect(wrapper.emitted('update:targetLanguage')?.[0]).toEqual(['German']);
+        await wrapper.setProps({ targetLanguage: 'German' });
+
+        const translateButton = wrapper
+            .findAll('button')
+            .find((button) => button.attributes('title') === 'Translate');
+        await translateButton!.trigger('click');
+        expect(wrapper.emitted('translate')).toBeTruthy();
     });
 
-    const toggle = wrapper.get('[data-testid="review-filter-toggle"]');
-    await toggle.setValue(true);
+    it('passes review filter state through to the editor', async () => {
+        const reviewSegments: TranscriptSegment[] = [
+            {
+                start: '00:00',
+                end: '00:05',
+                speaker: 'Host',
+                text: 'Aligned',
+                mergeStatus: 'matched',
+                similarityScore: 0.95,
+            },
+            {
+                start: '00:05',
+                end: '00:10',
+                speaker: 'Guest',
+                text: 'Needs review',
+                mergeStatus: 'conflict',
+                similarityScore: 0.42,
+            },
+        ];
 
-    const threshold = wrapper.get('[data-testid="review-filter-threshold"]');
-    await threshold.setValue('70');
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                displaySegments: reviewSegments,
+                originalSegments: reviewSegments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host', 'Guest'],
+                isProcessing: false,
+            },
+        });
 
-    const editor = wrapper.get('.mock-editor');
-    expect(editor.attributes('data-show-only-review-segments')).toBe('true');
-    expect(editor.attributes('data-review-threshold')).toBe('0.7');
-  });
+        const toggle = wrapper.get('[data-testid="review-filter-toggle"]');
+        await toggle.setValue(true);
 
-  it('shows blacklist warnings and passes segment matches to the editor', () => {
-    const warningSegments: TranscriptSegment[] = [
-      {
-        start: '00:00',
-        end: '00:04',
-        speaker: 'Host',
-        text: 'Du Arsch',
-        words: [
-          { start: '00:00', end: '00:01', text: 'Du' },
-          { start: '00:01', end: '00:02', text: 'Arsch' },
-        ],
-      },
-    ];
+        const threshold = wrapper.get('[data-testid="review-filter-threshold"]');
+        await threshold.setValue('70');
 
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        displaySegments: warningSegments,
-        originalSegments: warningSegments,
-        translations: { German: warningSegments },
-        currentLanguage: 'German',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host'],
-        isProcessing: false,
-      },
+        const editor = wrapper.get('.mock-editor');
+        expect(editor.attributes('data-show-only-review-segments')).toBe('true');
+        expect(editor.attributes('data-review-threshold')).toBe('0.7');
     });
 
-    expect(wrapper.get('[data-testid="blacklist-warnings"]').text()).toContain('Blacklist Warnings');
-    expect(wrapper.text()).toContain('Arsch');
-    expect(wrapper.get('.mock-editor').attributes('data-blacklist-match-count')).toBe('1');
-  });
+    it('shows blacklist warnings and passes segment matches to the editor', () => {
+        const warningSegments: TranscriptSegment[] = [
+            {
+                start: '00:00',
+                end: '00:04',
+                speaker: 'Host',
+                text: 'Du Arsch',
+                words: [
+                    { start: '00:00', end: '00:01', text: 'Du' },
+                    { start: '00:01', end: '00:02', text: 'Arsch' },
+                ],
+            },
+        ];
 
-  it('toggles individual speaker visibility for transcript segments', async () => {
-    const multiSpeakerSegments: TranscriptSegment[] = [
-      { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
-      { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Hi there' },
-    ];
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                displaySegments: warningSegments,
+                originalSegments: warningSegments,
+                translations: { German: warningSegments },
+                currentLanguage: 'German',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host'],
+                isProcessing: false,
+            },
+        });
 
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        displaySegments: multiSpeakerSegments,
-        originalSegments: multiSpeakerSegments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host', 'Guest'],
-        isProcessing: false,
-      },
+        expect(wrapper.get('[data-testid="blacklist-warnings"]').text()).toContain(
+            'Blacklist Warnings',
+        );
+        expect(wrapper.text()).toContain('Arsch');
+        expect(wrapper.get('.mock-editor').attributes('data-blacklist-match-count')).toBe('1');
     });
 
-    const hostToggle = wrapper.get('[data-testid="speaker-visibility-toggle-Host"]');
-    expect(hostToggle.classes()).toContain('z-10');
+    it('toggles individual speaker visibility for transcript segments', async () => {
+        const multiSpeakerSegments: TranscriptSegment[] = [
+            { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
+            { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Hi there' },
+        ];
 
-    await hostToggle.trigger('click');
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                displaySegments: multiSpeakerSegments,
+                originalSegments: multiSpeakerSegments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host', 'Guest'],
+                isProcessing: false,
+            },
+        });
 
-    const editor = wrapper.get('.mock-editor');
-    expect(editor.attributes('data-speaker-visibility')).toBe(JSON.stringify({ Host: false, Guest: true }));
-    expect(wrapper.text()).toContain('1 of 2 Segments');
+        const hostToggle = wrapper.get('[data-testid="speaker-visibility-toggle-Host"]');
+        expect(hostToggle.classes()).toContain('z-10');
 
-    await hostToggle.trigger('click');
+        await hostToggle.trigger('click');
 
-    expect(editor.attributes('data-speaker-visibility')).toBe(JSON.stringify({ Host: true, Guest: true }));
-    expect(wrapper.text()).toContain('2 Segments');
-  });
+        const editor = wrapper.get('.mock-editor');
+        expect(editor.attributes('data-speaker-visibility')).toBe(
+            JSON.stringify({ Host: false, Guest: true }),
+        );
+        expect(wrapper.text()).toContain('1 of 2 Segments');
 
-  it('plays the seekable preview audio (not the source) and enables segment previews', () => {
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        // The preview scrubber plays the transcoded, seekable AAC/m4a preview —
-        // not the source file (whose audio codec the webview may not decode) and
-        // not the Opus/Ogg analysis audio (which WKWebView can't reliably seek).
-        extractedAudioPath: '/tmp/audio_preview.m4a',
-        displaySegments: segments,
-        originalSegments: segments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host'],
-        isProcessing: false,
-      },
+        await hostToggle.trigger('click');
+
+        expect(editor.attributes('data-speaker-visibility')).toBe(
+            JSON.stringify({ Host: true, Guest: true }),
+        );
+        expect(wrapper.text()).toContain('2 Segments');
     });
 
-    const audio = wrapper.get('[data-testid="extracted-audio"]');
-    expect(audio.attributes('src')).toBe('/tmp/audio_preview.m4a');
-    expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('true');
-    // Video playback buttons are gated on the source media being present.
-    expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('true');
-  });
+    it('plays the seekable preview audio (not the source) and enables segment previews', () => {
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                // The preview scrubber plays the transcoded, seekable AAC/m4a preview —
+                // not the source file (whose audio codec the webview may not decode) and
+                // not the Opus/Ogg analysis audio (which WKWebView can't reliably seek).
+                extractedAudioPath: '/tmp/audio_preview.m4a',
+                displaySegments: segments,
+                originalSegments: segments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host'],
+                isProcessing: false,
+            },
+        });
 
-  it('disables segment video playback when the source media file is missing', () => {
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: false,
-        displaySegments: segments,
-        originalSegments: segments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host'],
-        isProcessing: false,
-      },
+        const audio = wrapper.get('[data-testid="extracted-audio"]');
+        expect(audio.attributes('src')).toBe('/tmp/audio_preview.m4a');
+        expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('true');
+        // Video playback buttons are gated on the source media being present.
+        expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('true');
     });
 
-    expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('false');
-  });
+    it('disables segment video playback when the source media file is missing', () => {
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: false,
+                displaySegments: segments,
+                originalSegments: segments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host'],
+                isProcessing: false,
+            },
+        });
 
-  it('hides the audio player and disables audio previews without a preview stream', () => {
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        displaySegments: segments,
-        originalSegments: segments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host'],
-        isProcessing: false,
-      },
+        expect(wrapper.get('.mock-editor').attributes('data-video-available')).toBe('false');
     });
 
-    expect(wrapper.find('[data-testid="extracted-audio"]').exists()).toBe(false);
-    expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('false');
-  });
+    it('hides the audio player and disables audio previews without a preview stream', () => {
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                displaySegments: segments,
+                originalSegments: segments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host'],
+                isProcessing: false,
+            },
+        });
 
-  it('shift-click solos a speaker in the transcript', async () => {
-    const multiSpeakerSegments: TranscriptSegment[] = [
-      { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
-      { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Hi there' },
-      { start: '00:10', end: '00:15', speaker: 'Narrator', text: 'Closing note' },
-    ];
-
-    const wrapper = mount(TranscriptWorkspacePanel, {
-      props: {
-        inputPath: '/tmp/audio.mp3',
-        hasMediaFile: true,
-        displaySegments: multiSpeakerSegments,
-        originalSegments: multiSpeakerSegments,
-        translations: {},
-        currentLanguage: 'Original',
-        targetLanguage: '',
-        isTranslating: false,
-        uniqueSpeakers: ['Host', 'Guest', 'Narrator'],
-        isProcessing: false,
-      },
+        expect(wrapper.find('[data-testid="extracted-audio"]').exists()).toBe(false);
+        expect(wrapper.get('.mock-editor').attributes('data-audio-available')).toBe('false');
     });
 
-    await wrapper.get('[data-testid="speaker-visibility-toggle-Guest"]').trigger('click', { shiftKey: true });
+    it('shift-click solos a speaker in the transcript', async () => {
+        const multiSpeakerSegments: TranscriptSegment[] = [
+            { start: '00:00', end: '00:05', speaker: 'Host', text: 'Hello world' },
+            { start: '00:05', end: '00:10', speaker: 'Guest', text: 'Hi there' },
+            { start: '00:10', end: '00:15', speaker: 'Narrator', text: 'Closing note' },
+        ];
 
-    const editor = wrapper.get('.mock-editor');
-    expect(editor.attributes('data-speaker-visibility')).toBe(
-      JSON.stringify({ Host: false, Guest: true, Narrator: false })
-    );
-    expect(wrapper.text()).toContain('1 of 3 Segments');
-  });
+        const wrapper = mount(TranscriptWorkspacePanel, {
+            props: {
+                inputPath: '/tmp/audio.mp3',
+                hasMediaFile: true,
+                displaySegments: multiSpeakerSegments,
+                originalSegments: multiSpeakerSegments,
+                translations: {},
+                currentLanguage: 'Original',
+                targetLanguage: '',
+                isTranslating: false,
+                uniqueSpeakers: ['Host', 'Guest', 'Narrator'],
+                isProcessing: false,
+            },
+        });
+
+        await wrapper
+            .get('[data-testid="speaker-visibility-toggle-Guest"]')
+            .trigger('click', { shiftKey: true });
+
+        const editor = wrapper.get('.mock-editor');
+        expect(editor.attributes('data-speaker-visibility')).toBe(
+            JSON.stringify({ Host: false, Guest: true, Narrator: false }),
+        );
+        expect(wrapper.text()).toContain('1 of 3 Segments');
+    });
 });

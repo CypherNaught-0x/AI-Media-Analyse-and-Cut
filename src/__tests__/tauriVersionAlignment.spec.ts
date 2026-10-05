@@ -6,19 +6,19 @@ import { findTauriVersionMismatches } from '../../scripts/check-tauri-versions.j
 const REPO_ROOT = resolve(__dirname, '..', '..');
 
 describe('Tauri package version alignment', () => {
-  it('keeps Rust and NPM Tauri packages on matching major-minor versions', () => {
-    const cargoLock = readFileSync(resolve(REPO_ROOT, 'src-tauri', 'Cargo.lock'), 'utf8');
-    const pnpmLock = readFileSync(resolve(REPO_ROOT, 'pnpm-lock.yaml'), 'utf8');
+    it('keeps Rust and NPM Tauri packages on matching major-minor versions', () => {
+        const cargoLock = readFileSync(resolve(REPO_ROOT, 'src-tauri', 'Cargo.lock'), 'utf8');
+        const pnpmLock = readFileSync(resolve(REPO_ROOT, 'pnpm-lock.yaml'), 'utf8');
 
-    expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([]);
-  });
+        expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([]);
+    });
 
-  it('flags the tauri crate and @tauri-apps/api mismatch that broke builds', () => {
-    const cargoLock = `[[package]]
+    it('flags the tauri crate and @tauri-apps/api mismatch that broke builds', () => {
+        const cargoLock = `[[package]]
 name = "tauri"
 version = "2.11.1"
 `;
-    const pnpmLock = `importers:
+        const pnpmLock = `importers:
 
   .:
     dependencies:
@@ -27,13 +27,13 @@ version = "2.11.1"
         version: 2.10.1
 `;
 
-    expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([
-      'tauri (2.11.1) != @tauri-apps/api (2.10.1)',
-    ]);
-  });
+        expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([
+            'tauri (2.11.1) != @tauri-apps/api (2.10.1)',
+        ]);
+    });
 
-  it('flags Rust Tauri runtime drift that can break tauri internals', () => {
-    const cargoLock = `[[package]]
+    it('flags Rust Tauri runtime drift that can break tauri internals', () => {
+        const cargoLock = `[[package]]
 name = "tauri"
 version = "2.10.3"
 
@@ -45,7 +45,7 @@ version = "2.11.1"
 name = "tauri-runtime-wry"
 version = "2.11.1"
 `;
-    const pnpmLock = `importers:
+        const pnpmLock = `importers:
 
   .:
     dependencies:
@@ -54,9 +54,9 @@ version = "2.11.1"
         version: 2.10.1
 `;
 
-    expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([
-      'tauri (2.10.3) != tauri-runtime (2.11.1)',
-      'tauri (2.10.3) != tauri-runtime-wry (2.11.1)',
-    ]);
-  });
+        expect(findTauriVersionMismatches(cargoLock, pnpmLock)).toEqual([
+            'tauri (2.10.3) != tauri-runtime (2.11.1)',
+            'tauri (2.10.3) != tauri-runtime-wry (2.11.1)',
+        ]);
+    });
 });

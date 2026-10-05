@@ -2,43 +2,47 @@ import { describe, it, expect } from 'vitest';
 import { appendFileNameSuffix, exportFolderOf } from '../filePath';
 
 describe('appendFileNameSuffix', () => {
-  it('inserts the suffix before the file extension', () => {
-    expect(appendFileNameSuffix('/videos/talk.mp4', '_cut')).toBe('/videos/talk_cut.mp4');
-  });
+    it('inserts the suffix before the file extension', () => {
+        expect(appendFileNameSuffix('/videos/talk.mp4', '_cut')).toBe('/videos/talk_cut.mp4');
+    });
 
-  it('does not overwrite the source path', () => {
-    const input = '/videos/talk.mp4';
-    expect(appendFileNameSuffix(input, '_cut')).not.toBe(input);
-  });
+    it('does not overwrite the source path', () => {
+        const input = '/videos/talk.mp4';
+        expect(appendFileNameSuffix(input, '_cut')).not.toBe(input);
+    });
 
-  it('handles multi-character extensions', () => {
-    expect(appendFileNameSuffix('/a/b/clip.webm', '_cut')).toBe('/a/b/clip_cut.webm');
-  });
+    it('handles multi-character extensions', () => {
+        expect(appendFileNameSuffix('/a/b/clip.webm', '_cut')).toBe('/a/b/clip_cut.webm');
+    });
 
-  it('ignores dots in parent directory names', () => {
-    expect(appendFileNameSuffix('/my.folder/video.mov', '_cut')).toBe('/my.folder/video_cut.mov');
-  });
+    it('ignores dots in parent directory names', () => {
+        expect(appendFileNameSuffix('/my.folder/video.mov', '_cut')).toBe(
+            '/my.folder/video_cut.mov',
+        );
+    });
 
-  it('handles Windows-style backslash paths', () => {
-    expect(appendFileNameSuffix('C:\\Users\\me\\video.mkv', '_cut')).toBe('C:\\Users\\me\\video_cut.mkv');
-  });
+    it('handles Windows-style backslash paths', () => {
+        expect(appendFileNameSuffix('C:\\Users\\me\\video.mkv', '_cut')).toBe(
+            'C:\\Users\\me\\video_cut.mkv',
+        );
+    });
 
-  it('appends the suffix when there is no extension', () => {
-    expect(appendFileNameSuffix('/videos/talk', '_cut')).toBe('/videos/talk_cut');
-  });
+    it('appends the suffix when there is no extension', () => {
+        expect(appendFileNameSuffix('/videos/talk', '_cut')).toBe('/videos/talk_cut');
+    });
 });
 
 describe('exportFolderOf', () => {
-  it('returns the parent folder of an exported file', () => {
-    expect(exportFolderOf('/videos/talk_podcast.m4a')).toBe('/videos');
-    expect(exportFolderOf('C:\\videos\\talk_podcast.m4a')).toBe('C:\\videos');
-  });
+    it('returns the parent folder of an exported file', () => {
+        expect(exportFolderOf('/videos/talk_podcast.m4a')).toBe('/videos');
+        expect(exportFolderOf('C:\\videos\\talk_podcast.m4a')).toBe('C:\\videos');
+    });
 
-  it('returns an export directory itself', () => {
-    expect(exportFolderOf('/videos/talk_podcast_clips')).toBe('/videos/talk_podcast_clips');
-  });
+    it('returns an export directory itself', () => {
+        expect(exportFolderOf('/videos/talk_podcast_clips')).toBe('/videos/talk_podcast_clips');
+    });
 
-  it('is not fooled by a dot in a parent directory', () => {
-    expect(exportFolderOf('/v1.2/talk_clips')).toBe('/v1.2/talk_clips');
-  });
+    it('is not fooled by a dot in a parent directory', () => {
+        expect(exportFolderOf('/v1.2/talk_clips')).toBe('/v1.2/talk_clips');
+    });
 });

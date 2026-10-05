@@ -2,21 +2,22 @@ import type { TranscriptSegment } from '../types';
 import { parseTime } from '../composables/useTimeFormat';
 
 function sameStructure(original: TranscriptSegment[], translation: TranscriptSegment[]): boolean {
-  return (
-    original.length === translation.length &&
-    original.every(
-      (segment, index) =>
-        segment.start === translation[index].start && segment.end === translation[index].end,
-    )
-  );
+    return (
+        original.length === translation.length &&
+        original.every(
+            (segment, index) =>
+                segment.start === translation[index].start &&
+                segment.end === translation[index].end,
+        )
+    );
 }
 
 function safeParse(time: string): number {
-  try {
-    return parseTime(time);
-  } catch {
-    return Number.NaN;
-  }
+    try {
+        return parseTime(time);
+    } catch {
+        return Number.NaN;
+    }
 }
 
 /**
@@ -31,34 +32,37 @@ function safeParse(time: string): number {
  * original, so the cut and the preview stay authoritative.
  */
 export function realignTranslation(
-  original: TranscriptSegment[],
-  translation: TranscriptSegment[],
+    original: TranscriptSegment[],
+    translation: TranscriptSegment[],
 ): TranscriptSegment[] {
-  if (sameStructure(original, translation)) {
-    return translation;
-  }
+    if (sameStructure(original, translation)) {
+        return translation;
+    }
 
-  const translated = translation
-    .map((segment) => ({
-      midpoint: (safeParse(segment.start) + safeParse(segment.end)) / 2,
-      text: segment.text,
-    }))
-    .filter((segment) => Number.isFinite(segment.midpoint));
+    const translated = translation
+        .map((segment) => ({
+            midpoint: (safeParse(segment.start) + safeParse(segment.end)) / 2,
+            text: segment.text,
+        }))
+        .filter((segment) => Number.isFinite(segment.midpoint));
 
-  return original.map((segment, index) => {
-    const start = safeParse(segment.start);
-    const end = safeParse(segment.end);
-    const isLast = index === original.length - 1;
-    const texts = translated
-      .filter(({ midpoint }) => midpoint >= start && (midpoint < end || (isLast && midpoint <= end)))
-      .map(({ text }) => text.trim())
-      .filter(Boolean);
+    return original.map((segment, index) => {
+        const start = safeParse(segment.start);
+        const end = safeParse(segment.end);
+        const isLast = index === original.length - 1;
+        const texts = translated
+            .filter(
+                ({ midpoint }) =>
+                    midpoint >= start && (midpoint < end || (isLast && midpoint <= end)),
+            )
+            .map(({ text }) => text.trim())
+            .filter(Boolean);
 
-    return {
-      start: segment.start,
-      end: segment.end,
-      speaker: segment.speaker,
-      text: texts.length > 0 ? texts.join(' ') : segment.text,
-    };
-  });
+        return {
+            start: segment.start,
+            end: segment.end,
+            speaker: segment.speaker,
+            text: texts.length > 0 ? texts.join(' ') : segment.text,
+        };
+    });
 }

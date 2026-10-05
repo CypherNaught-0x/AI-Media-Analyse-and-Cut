@@ -20,24 +20,24 @@ import { adjustTimestamp } from '../composables/useTimeFormat';
  * safe to call.
  */
 export function adjustWordWithOffsets(
-  word: TranscriptWord,
-  offsets: SegmentOffset[],
+    word: TranscriptWord,
+    offsets: SegmentOffset[],
 ): TranscriptWord {
-  return {
-    ...word,
-    start: adjustTimestamp(word.start, offsets),
-    end: adjustTimestamp(word.end, offsets),
-  };
+    return {
+        ...word,
+        start: adjustTimestamp(word.start, offsets),
+        end: adjustTimestamp(word.end, offsets),
+    };
 }
 
 export function adjustSegmentsWithOffsets(
-  segments: TranscriptSegment[],
-  offsets: SegmentOffset[],
+    segments: TranscriptSegment[],
+    offsets: SegmentOffset[],
 ): TranscriptSegment[] {
-  return segments.map((segment) => ({
-    ...segment,
-    start: adjustTimestamp(segment.start, offsets),
-    end: adjustTimestamp(segment.end, offsets),
-    words: segment.words?.map((word) => adjustWordWithOffsets(word, offsets)),
-  }));
+    return segments.map((segment) => ({
+        ...segment,
+        start: adjustTimestamp(segment.start, offsets),
+        end: adjustTimestamp(segment.end, offsets),
+        words: segment.words?.map((word) => adjustWordWithOffsets(word, offsets)),
+    }));
 }

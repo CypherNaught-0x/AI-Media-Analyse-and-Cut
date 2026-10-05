@@ -8,17 +8,17 @@ export default { name: 'Home' };
 </script>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
-import ViralClipsGenerator from "../components/ViralClipsGenerator.vue";
-import PodcastGenerator from "../components/PodcastGenerator.vue";
-import ErrorOverlay from "../components/ErrorOverlay.vue";
-import HomeSourcePanel from "../components/HomeSourcePanel.vue";
-import TranscriptWorkspacePanel from "../components/TranscriptWorkspacePanel.vue";
-import WorkspaceTabs from "../components/WorkspaceTabs.vue";
+import ViralClipsGenerator from '../components/ViralClipsGenerator.vue';
+import PodcastGenerator from '../components/PodcastGenerator.vue';
+import ErrorOverlay from '../components/ErrorOverlay.vue';
+import HomeSourcePanel from '../components/HomeSourcePanel.vue';
+import TranscriptWorkspacePanel from '../components/TranscriptWorkspacePanel.vue';
+import WorkspaceTabs from '../components/WorkspaceTabs.vue';
 import type {
     AudioChunk,
     AudioInfo,
@@ -30,26 +30,26 @@ import type {
     SilenceInterval,
     TranscriptSegment,
     TranscriptWorkspaceState,
-    ViralClipsWorkspaceState
-} from "../types";
-import { LOCAL_ENGINE_LABELS, usesLocalEngine, usesRemoteModel } from "../types";
-import StatusBar from "../components/StatusBar.vue";
-import { useSettings } from "../composables/useSettings";
-import { useHomeSessionPersistence } from "../composables/useHomeSessionPersistence";
-import { adjustTimestamp, formatTime, parseTime } from "../composables/useTimeFormat";
-import { beginRun, isRunCancelled } from "../composables/useRunCancellation";
-import { parseTranscriptResponse } from "../utils/transcriptParsing";
-import { realignTranslation } from "../utils/translationAlignment";
-import { buildTranscriptSidecar, parseTranscriptSidecar } from "../utils/transcriptSidecar";
+    ViralClipsWorkspaceState,
+} from '../types';
+import { LOCAL_ENGINE_LABELS, usesLocalEngine, usesRemoteModel } from '../types';
+import StatusBar from '../components/StatusBar.vue';
+import { useSettings } from '../composables/useSettings';
+import { useHomeSessionPersistence } from '../composables/useHomeSessionPersistence';
+import { adjustTimestamp, formatTime, parseTime } from '../composables/useTimeFormat';
+import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
+import { parseTranscriptResponse } from '../utils/transcriptParsing';
+import { realignTranslation } from '../utils/translationAlignment';
+import { buildTranscriptSidecar, parseTranscriptSidecar } from '../utils/transcriptSidecar';
 import {
     createDefaultClipWorkspaceState,
     createDefaultLastAnalyzedSettings,
     createDefaultPodcastWorkspaceState,
     createDefaultViralClipsWorkspaceState,
-} from "../utils/editSession";
+} from '../utils/editSession';
 
-import { adjustSegmentsWithOffsets } from "../utils/transcriptOffsets";
-import { appendFileNameSuffix } from "../utils/filePath";
+import { adjustSegmentsWithOffsets } from '../utils/transcriptOffsets';
+import { appendFileNameSuffix } from '../utils/filePath';
 
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
@@ -102,11 +102,11 @@ for (const key of WORKSPACE_SETTING_KEYS) {
         () => settings.value[key],
         (value) => {
             (workspaceSettings.value as Record<typeof key, unknown>)[key] = value;
-        }
+        },
     );
 }
 
-const status = ref("Initializing...");
+const status = ref('Initializing...');
 const isProcessing = ref(false);
 const isCancelling = ref(false);
 const cancelGeneration = ref(0);
@@ -115,27 +115,29 @@ const activeRunId = ref<number | null>(null);
 // Error overlay state
 const showErrorOverlay = ref(false);
 const errorDetails = ref({
-    message: "",
-    rawResponse: "",
-    parseError: ""
+    message: '',
+    rawResponse: '',
+    parseError: '',
 });
 const progressPercentage = ref<number | null>(null);
 const progressEtaSeconds = ref<number | null>(null);
-const executionHistory = ref<{type: string, inputSize: number, duration: number, timestamp: number}[]>([]);
-const inputPath = ref("");
+const executionHistory = ref<
+    { type: string; inputSize: number; duration: number; timestamp: number }[]
+>([]);
+const inputPath = ref('');
 const inputPathExists = ref(false);
-const extractedAudioPath = ref("");
-const activeTab = ref("source");
+const extractedAudioPath = ref('');
+const activeTab = ref('source');
 const segments = ref<TranscriptSegment[]>([]);
 const translations = ref<Record<string, TranscriptSegment[]>>({});
-const currentLanguage = ref("Original");
-const targetLanguage = ref("");
+const currentLanguage = ref('Original');
+const targetLanguage = ref('');
 const isTranslating = ref(false);
 const removeFillerWords = ref(false);
 const trimSilence = ref(true);
 
 const speakerCount = ref<number | null>(null);
-const context = ref("");
+const context = ref('');
 const clipCount = ref(createDefaultClipWorkspaceState().count);
 const clipMinDuration = ref(createDefaultClipWorkspaceState().minDuration);
 const clipMaxDuration = ref(createDefaultClipWorkspaceState().maxDuration);
@@ -163,7 +165,7 @@ const lastAnalyzedSettings = ref<LastAnalyzedSettings>(createDefaultLastAnalyzed
 // engine ran — but they are part of the saved session schema, so renaming them
 // would need a migration for no user-visible gain.
 const rawParakeetSegments = ref<TranscriptSegment[]>([]);
-const parakeetCacheKey = ref<string>("");
+const parakeetCacheKey = ref<string>('');
 
 /**
  * The CrisperWhisper options that change the transcript itself. Kept as one
@@ -217,7 +219,8 @@ const localEngineDisplay = computed(() => {
         return `CrisperWhisper ${settings.value.crisperModel} (${settings.value.crisperMode}, ${language})`;
     }
     const usesCustomPaths =
-        workspaceSettings.value.parakeetModelPath.trim() || workspaceSettings.value.sortformerModelPath.trim();
+        workspaceSettings.value.parakeetModelPath.trim() ||
+        workspaceSettings.value.sortformerModelPath.trim();
     return usesCustomPaths ? 'Parakeet-RS (local)' : 'Parakeet-RS (auto-download)';
 });
 
@@ -237,47 +240,54 @@ const currentModelDisplay = computed(() => {
 });
 
 const currentEngineLabel = computed(() => {
-    return workspaceSettings.value.transcriptionBackend === 'llm' ? 'Current Model' : 'Current Pipeline';
+    return workspaceSettings.value.transcriptionBackend === 'llm'
+        ? 'Current Model'
+        : 'Current Pipeline';
 });
 const hasTranscript = computed(() => segments.value.length > 0);
 const hasMediaFile = computed(() => inputPath.value.length > 0 && inputPathExists.value);
 
 const workspaceTabs = computed(() => [
-    { id: "source", label: "Source & Analysis", disabled: false },
-    { id: "transcript", label: "Transcript", disabled: !hasTranscript.value },
-    { id: "clips", label: "Viral Clips", disabled: !hasTranscript.value },
-    { id: "podcast", label: "Podcast", disabled: !hasTranscript.value },
+    { id: 'source', label: 'Source & Analysis', disabled: false },
+    { id: 'transcript', label: 'Transcript', disabled: !hasTranscript.value },
+    { id: 'clips', label: 'Viral Clips', disabled: !hasTranscript.value },
+    { id: 'podcast', label: 'Podcast', disabled: !hasTranscript.value },
 ]);
 
 async function refreshExtractedAudioPath() {
     const input = inputPath.value;
     if (!input) {
-        extractedAudioPath.value = "";
+        extractedAudioPath.value = '';
         return;
     }
     // The seekable preview audio is written next to the source as
     // "<name>_preview.m4a" (see prepare_preview_audio). Reuse it if a previous
     // run already produced it; otherwise it is created during analysis.
-    const candidate = input.replace(/\.[^/.]+$/, "") + "_preview.m4a";
+    const candidate = input.replace(/\.[^/.]+$/, '') + '_preview.m4a';
     try {
-        const exists = await invoke<boolean>("path_exists", { path: candidate });
-        extractedAudioPath.value = exists ? candidate : "";
+        const exists = await invoke<boolean>('path_exists', { path: candidate });
+        extractedAudioPath.value = exists ? candidate : '';
     } catch (error) {
-        console.error("Failed to check preview audio path:", error);
-        extractedAudioPath.value = "";
+        console.error('Failed to check preview audio path:', error);
+        extractedAudioPath.value = '';
     }
 }
 const settingsChanged = computed(() => {
-    return workspaceSettings.value.transcriptionBackend !== lastAnalyzedSettings.value.transcriptionBackend ||
-           workspaceSettings.value.localEngine !== lastAnalyzedSettings.value.localEngine ||
-           workspaceSettings.value.parakeetModelPath !== lastAnalyzedSettings.value.parakeetModelPath ||
-           workspaceSettings.value.sortformerModelPath !== lastAnalyzedSettings.value.sortformerModelPath ||
-           currentCrisperSignature() !== lastAnalyzedSettings.value.crisperSignature ||
-           context.value !== lastAnalyzedSettings.value.context ||
-           workspaceSettings.value.glossary !== lastAnalyzedSettings.value.glossary ||
-           speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
-           removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords ||
-           trimSilence.value !== lastAnalyzedSettings.value.trimSilence;
+    return (
+        workspaceSettings.value.transcriptionBackend !==
+            lastAnalyzedSettings.value.transcriptionBackend ||
+        workspaceSettings.value.localEngine !== lastAnalyzedSettings.value.localEngine ||
+        workspaceSettings.value.parakeetModelPath !==
+            lastAnalyzedSettings.value.parakeetModelPath ||
+        workspaceSettings.value.sortformerModelPath !==
+            lastAnalyzedSettings.value.sortformerModelPath ||
+        currentCrisperSignature() !== lastAnalyzedSettings.value.crisperSignature ||
+        context.value !== lastAnalyzedSettings.value.context ||
+        workspaceSettings.value.glossary !== lastAnalyzedSettings.value.glossary ||
+        speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
+        removeFillerWords.value !== lastAnalyzedSettings.value.removeFillerWords ||
+        trimSilence.value !== lastAnalyzedSettings.value.trimSilence
+    );
 });
 
 const clipWorkspaceState = computed<ClipWorkspaceState>(() => ({
@@ -346,11 +356,11 @@ const uniqueSpeakers = computed(() => {
 
 const displaySegments = computed({
     get: () => {
-        if (currentLanguage.value === "Original") return segments.value;
+        if (currentLanguage.value === 'Original') return segments.value;
         return translations.value[currentLanguage.value] || segments.value;
     },
     set: (newSegments) => {
-        if (currentLanguage.value === "Original") {
+        if (currentLanguage.value === 'Original') {
             segments.value = newSegments;
             // Splits, merges and deletes shift indexes; refit every translation
             // onto the new structure by time so they stay aligned.
@@ -358,7 +368,7 @@ const displaySegments = computed({
                 Object.entries(translations.value).map(([lang, translated]) => [
                     lang,
                     realignTranslation(newSegments, translated),
-                ])
+                ]),
             );
         } else {
             // The translated view only edits wording (structure is locked in the
@@ -370,7 +380,7 @@ const displaySegments = computed({
                 speaker: segments.value[index]?.speaker ?? segment.speaker,
             }));
         }
-    }
+    },
 });
 
 async function updateInputPathExists(path: string) {
@@ -423,16 +433,16 @@ function resetClipWorkspaceState() {
 function resetTranscriptWorkspaceState() {
     segments.value = [];
     translations.value = {};
-    currentLanguage.value = "Original";
-    targetLanguage.value = "";
-    context.value = "";
+    currentLanguage.value = 'Original';
+    targetLanguage.value = '';
+    context.value = '';
     speakerCount.value = null;
     removeFillerWords.value = false;
     trimSilence.value = true;
     speakerOrder.value = [];
     lastAnalyzedSettings.value = createDefaultLastAnalyzedSettings();
     rawParakeetSegments.value = [];
-    parakeetCacheKey.value = "";
+    parakeetCacheKey.value = '';
     workspaceSettings.value = defaultWorkspaceSettings();
 }
 
@@ -455,7 +465,7 @@ function applyTranscriptWorkspace(state: TranscriptWorkspaceState) {
     speakerOrder.value = state.speakerOrder;
     lastAnalyzedSettings.value = state.lastAnalyzedSettings;
     rawParakeetSegments.value = state.rawParakeetSegments ?? [];
-    parakeetCacheKey.value = state.parakeetCacheKey ?? "";
+    parakeetCacheKey.value = state.parakeetCacheKey ?? '';
     workspaceSettings.value = { ...defaultWorkspaceSettings(), ...state.settingsSnapshot };
 }
 
@@ -500,7 +510,7 @@ onMounted(async () => {
         try {
             executionHistory.value = JSON.parse(history);
         } catch (e) {
-            console.error("Failed to parse execution history", e);
+            console.error('Failed to parse execution history', e);
         }
     }
     await sessionPersistence.restoreAutosavedSession();
@@ -512,40 +522,39 @@ onMounted(async () => {
         unlistenProgress = await listen<ProgressPayload>('progress', (event) => {
             const payload = event.payload;
             if (typeof payload === 'number') {
-                 status.value = `Processing... ${payload.toFixed(1)}s`;
-                 progressEtaSeconds.value = null;
+                status.value = `Processing... ${payload.toFixed(1)}s`;
+                progressEtaSeconds.value = null;
             } else if (typeof payload === 'object') {
-                 if (payload.percentage !== undefined) {
-                     if (progressInterval) {
-                         clearInterval(progressInterval);
-                         progressInterval = null;
-                     }
-                     progressPercentage.value = payload.percentage;
-                     progressEtaSeconds.value = typeof payload.etaSeconds === 'number'
-                        ? payload.etaSeconds
-                        : null;
-                     let statusMsg = `Processing... ${payload.percentage.toFixed(1)}%`;
+                if (payload.percentage !== undefined) {
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                        progressInterval = null;
+                    }
+                    progressPercentage.value = payload.percentage;
+                    progressEtaSeconds.value =
+                        typeof payload.etaSeconds === 'number' ? payload.etaSeconds : null;
+                    let statusMsg = `Processing... ${payload.percentage.toFixed(1)}%`;
 
-                     if (payload.current_clip && payload.total_clips) {
-                         statusMsg = `Exporting clip ${payload.current_clip}/${payload.total_clips} (${payload.percentage.toFixed(1)}%)`;
-                     }
+                    if (payload.current_clip && payload.total_clips) {
+                        statusMsg = `Exporting clip ${payload.current_clip}/${payload.total_clips} (${payload.percentage.toFixed(1)}%)`;
+                    }
 
-                     status.value = statusMsg;
-                 }
-                 if (payload.message) {
-                     status.value = payload.message;
-                 }
+                    status.value = statusMsg;
+                }
+                if (payload.message) {
+                    status.value = payload.message;
+                }
             }
         });
     } catch (e) {
-        console.error("Failed to register progress listener:", e);
+        console.error('Failed to register progress listener:', e);
     }
 
     // FFmpeg only needs to be initialized once per app session; skip the work on
     // subsequent remounts to avoid redundant re-initialization side effects.
     if (!ffmpegInitialized) {
         try {
-            const res = await invoke<string>("init_ffmpeg");
+            const res = await invoke<string>('init_ffmpeg');
             status.value = res;
             ffmpegInitialized = true;
         } catch (e) {
@@ -562,38 +571,46 @@ onUnmounted(() => {
     sessionPersistence.dispose();
 });
 
-watch(inputPath, async (newPath, oldPath) => {
-    await sessionPersistence.handleInputPathChange(newPath, oldPath);
-}, { flush: 'sync' });
+watch(
+    inputPath,
+    async (newPath, oldPath) => {
+        await sessionPersistence.handleInputPathChange(newPath, oldPath);
+    },
+    { flush: 'sync' },
+);
 
-watch(segments, () => {
-    syncSpeakerOrder();
-}, { deep: true });
+watch(
+    segments,
+    () => {
+        syncSpeakerOrder();
+    },
+    { deep: true },
+);
 
-watch(inputPath, () => {
-    void refreshExtractedAudioPath();
-}, { immediate: true });
+watch(
+    inputPath,
+    () => {
+        void refreshExtractedAudioPath();
+    },
+    { immediate: true },
+);
 
 watch(hasTranscript, (ready, wasReady) => {
     // Move into the transcript flow as soon as it becomes available, and fall
     // back to the source tab when the transcript (and its dependent tabs) clear.
     if (ready && !wasReady) {
-        activeTab.value = "transcript";
-    } else if (!ready && activeTab.value !== "source") {
-        activeTab.value = "source";
+        activeTab.value = 'transcript';
+    } else if (!ready && activeTab.value !== 'source') {
+        activeTab.value = 'source';
     }
 });
 
 watch(
-    [
-        clipWorkspaceState,
-        viralClipsState,
-        podcastWorkspaceState,
-    ],
+    [clipWorkspaceState, viralClipsState, podcastWorkspaceState],
     () => {
         sessionPersistence.scheduleAutosave();
     },
-    { deep: true }
+    { deep: true },
 );
 
 watch(
@@ -602,22 +619,27 @@ watch(
         sessionPersistence.scheduleAutosave();
         sessionPersistence.scheduleTranscriptSave();
     },
-    { deep: true }
+    { deep: true },
 );
 
 async function loadTranscript() {
     if (!inputPath.value) return;
-    const transcriptPath = inputPath.value + ".transcript.json";
+    const transcriptPath = inputPath.value + '.transcript.json';
     try {
-        const content = await invoke<string>("read_text_file", { path: transcriptPath });
+        const content = await invoke<string>('read_text_file', { path: transcriptPath });
         const parsed = parseTranscriptSidecar(content, createDefaultLastAnalyzedSettings());
         if (!parsed) {
             return;
         }
 
-        if (parsed.segments && !parsed.context && !parsed.glossary && parsed.currentLanguage === undefined) {
+        if (
+            parsed.segments &&
+            !parsed.context &&
+            !parsed.glossary &&
+            parsed.currentLanguage === undefined
+        ) {
             segments.value = parsed.segments;
-            status.value = "Loaded existing transcript.";
+            status.value = 'Loaded existing transcript.';
             return;
         }
 
@@ -686,10 +708,10 @@ async function loadTranscript() {
             workspaceSettings.value.sortformerModelPath = parsed.sortformerModelPath;
         }
 
-        status.value = "Loaded existing transcript and settings.";
+        status.value = 'Loaded existing transcript and settings.';
     } catch (e) {
         // Ignore error if file doesn't exist
-        console.log("No existing transcript found or error loading it.");
+        console.log('No existing transcript found or error loading it.');
     }
 }
 
@@ -698,21 +720,25 @@ async function saveTranscript() {
     // An empty transcript is never worth persisting, and writing one would
     // destroy the existing sidecar (e.g. after a failed load or a reset).
     if (segments.value.length === 0) return;
-    const transcriptPath = inputPath.value + ".transcript.json";
+    const transcriptPath = inputPath.value + '.transcript.json';
     try {
-        await invoke("write_text_file", { 
-            path: transcriptPath, 
-            content: JSON.stringify(buildTranscriptSidecar(transcriptWorkspaceState.value), null, 2) 
+        await invoke('write_text_file', {
+            path: transcriptPath,
+            content: JSON.stringify(
+                buildTranscriptSidecar(transcriptWorkspaceState.value),
+                null,
+                2,
+            ),
         });
-        console.log("Transcript saved.");
+        console.log('Transcript saved.');
     } catch (e) {
-        console.error("Failed to save transcript:", e);
+        console.error('Failed to save transcript:', e);
     }
 }
 
 function assertActiveRun(runId: number) {
     if (activeRunId.value !== runId) {
-        throw new Error("Run cancelled.");
+        throw new Error('Run cancelled.');
     }
 }
 
@@ -727,11 +753,11 @@ async function cancelCurrentRun() {
     stopSimulatedProgress();
     progressPercentage.value = null;
     progressEtaSeconds.value = null;
-    status.value = "Cancelling run...";
+    status.value = 'Cancelling run...';
 
     try {
-        await invoke("cancel_current_run");
-        status.value = "Run cancelled.";
+        await invoke('cancel_current_run');
+        status.value = 'Run cancelled.';
     } catch (error) {
         status.value = `Failed to cancel run: ${error}`;
     } finally {
@@ -742,7 +768,7 @@ async function cancelCurrentRun() {
 
 async function translateTranscript() {
     if (isProcessing.value || !targetLanguage.value || segments.value.length === 0) return;
-    
+
     const lang = targetLanguage.value.trim();
     if (translations.value[lang]) {
         currentLanguage.value = lang;
@@ -757,14 +783,14 @@ async function translateTranscript() {
     status.value = `Translating to ${lang}...`;
 
     try {
-        const response = await invoke<string>("translate_transcript", {
+        const response = await invoke<string>('translate_transcript', {
             runId,
             transcript: segments.value,
             targetLanguage: lang,
             context: context.value,
             apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
-            model: settings.value.model
+            model: settings.value.model,
         });
         assertActiveRun(runId);
 
@@ -776,26 +802,23 @@ async function translateTranscript() {
                 currentLanguage.value = lang;
                 status.value = `Translation to ${lang} complete.`;
             } catch (e) {
-                console.error("JSON Parse Error", e);
+                console.error('JSON Parse Error', e);
                 showError(
-                    "Failed to parse translation from AI response.",
+                    'Failed to parse translation from AI response.',
                     response,
-                    e instanceof Error ? e.message : String(e)
+                    e instanceof Error ? e.message : String(e),
                 );
             }
         } else {
             console.error(response);
-            showError(
-                "Failed to find JSON in translation response.",
-                response
-            );
+            showError('Failed to find JSON in translation response.', response);
         }
     } catch (e) {
         if (isRunCancelled(e)) {
-            status.value = "Run cancelled.";
+            status.value = 'Run cancelled.';
             return;
         }
-        console.error("Translation failed:", e);
+        console.error('Translation failed:', e);
         status.value = `Translation failed: ${e}`;
     } finally {
         if (activeRunId.value === runId) {
@@ -807,7 +830,7 @@ async function translateTranscript() {
     }
 }
 
-function showError(message: string, rawResponse: string, parseError: string = "") {
+function showError(message: string, rawResponse: string, parseError: string = '') {
     errorDetails.value = { message, rawResponse, parseError };
     showErrorOverlay.value = true;
     status.value = message;
@@ -824,7 +847,7 @@ function startSimulatedProgress(estimatedSeconds: number) {
     progressPercentage.value = 0;
     progressEtaSeconds.value = estimatedSeconds;
     const startTime = Date.now();
-    
+
     progressInterval = window.setInterval(() => {
         const elapsed = (Date.now() - startTime) / 1000;
         const p = (elapsed / estimatedSeconds) * 100;
@@ -847,16 +870,19 @@ function estimateTime(type: 'analysis' | 'generation', inputSize: number): numbe
     const DEFAULT_ESTIMATE = 30;
     // Only learn from entries with a positive inputSize; a zero/negative size
     // would make duration/inputSize produce Infinity/NaN and poison the rate.
-    const relevant = executionHistory.value.filter(h => h.type === type && h.inputSize > 0);
+    const relevant = executionHistory.value.filter((h) => h.type === type && h.inputSize > 0);
 
     let estimate: number;
     if (relevant.length === 0) {
         // Default estimates
-        if (type === 'analysis') estimate = inputSize * 0.1; // e.g. 10% of audio duration
-        else if (type === 'generation') estimate = inputSize * 0.005; // e.g. 5ms per char
+        if (type === 'analysis')
+            estimate = inputSize * 0.1; // e.g. 10% of audio duration
+        else if (type === 'generation')
+            estimate = inputSize * 0.005; // e.g. 5ms per char
         else estimate = DEFAULT_ESTIMATE;
     } else {
-        const rate = relevant.reduce((acc, h) => acc + (h.duration / h.inputSize), 0) / relevant.length;
+        const rate =
+            relevant.reduce((acc, h) => acc + h.duration / h.inputSize, 0) / relevant.length;
         estimate = inputSize * rate;
     }
 
@@ -883,19 +909,19 @@ async function requestLlmTranscriptForChunk(
     let audioBase64: string | null = null;
 
     if (isGoogleApi) {
-        uri = await invoke<string | null>("upload_file", {
+        uri = await invoke<string | null>('upload_file', {
             runId,
             apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
-            path: chunkAudioPath
+            path: chunkAudioPath,
         });
         assertActiveRun(runId);
     } else {
-        audioBase64 = await invoke<string>("read_file_as_base64", { path: chunkAudioPath });
+        audioBase64 = await invoke<string>('read_file_as_base64', { path: chunkAudioPath });
         assertActiveRun(runId);
     }
 
-    const response = await invoke<string>("analyze_audio", {
+    const response = await invoke<string>('analyze_audio', {
         runId,
         apiKey: settings.value.apiKey,
         baseUrl: settings.value.baseUrl,
@@ -906,7 +932,7 @@ async function requestLlmTranscriptForChunk(
         speakerCount: speakerCount.value,
         removeFillerWords: removeFillerWords.value,
         audioUri: uri,
-        audioBase64: audioBase64
+        audioBase64: audioBase64,
     });
     assertActiveRun(runId);
     return response;
@@ -923,7 +949,9 @@ const MAX_RESPLIT_DEPTH = 4;
 function isResplittableError(error: unknown): boolean {
     if (isRunCancelled(error)) return false;
     const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-    return /\b50[234]\b|gateway timeout|timed out|timeout|deadline exceeded|failed to (parse|find) (transcript|json)|json/.test(message);
+    return /\b50[234]\b|gateway timeout|timed out|timeout|deadline exceeded|failed to (parse|find) (transcript|json)|json/.test(
+        message,
+    );
 }
 
 // Builds the timestamp mapper for a chunk: shift chunk-relative timestamps by
@@ -934,7 +962,8 @@ function buildChunkAdjuster(
     silenceAdjuster?: (timestamp: string) => string,
 ): (timestamp: string) => string {
     return (timestamp: string) => {
-        const shifted = baseOffset === 0 ? timestamp : formatTime(parseTime(timestamp) + baseOffset);
+        const shifted =
+            baseOffset === 0 ? timestamp : formatTime(parseTime(timestamp) + baseOffset);
         return silenceAdjuster ? silenceAdjuster(shifted) : shifted;
     };
 }
@@ -956,13 +985,19 @@ async function transcribeChunkWithResplit(
         return parseTranscriptResponse(response, buildChunkAdjuster(baseOffset, silenceAdjuster));
     } catch (error) {
         const halfMax = chunkMaxSeconds / 2;
-        if (depth >= MAX_RESPLIT_DEPTH || halfMax < MIN_RESPLIT_SECONDS || !isResplittableError(error)) {
+        if (
+            depth >= MAX_RESPLIT_DEPTH ||
+            halfMax < MIN_RESPLIT_SECONDS ||
+            !isResplittableError(error)
+        ) {
             throw error;
         }
 
-        console.warn(`Chunk ${label} failed (${error}); re-splitting into smaller parts and retrying.`);
+        console.warn(
+            `Chunk ${label} failed (${error}); re-splitting into smaller parts and retrying.`,
+        );
         status.value = `Part ${label} timed out; splitting it into smaller parts and retrying...`;
-        const subChunks = await invoke<AudioChunk[]>("split_audio_for_analysis", {
+        const subChunks = await invoke<AudioChunk[]>('split_audio_for_analysis', {
             runId,
             path: chunkPath,
             maxChunkSeconds: halfMax,
@@ -979,15 +1014,17 @@ async function transcribeChunkWithResplit(
         const resplitSegments: TranscriptSegment[] = [];
         for (let index = 0; index < subChunks.length; index++) {
             const subChunk = subChunks[index];
-            resplitSegments.push(...await transcribeChunkWithResplit(
-                runId,
-                subChunk.path,
-                baseOffset + subChunk.start_offset,
-                halfMax,
-                silenceAdjuster,
-                depth + 1,
-                `${label}.${index + 1}`,
-            ));
+            resplitSegments.push(
+                ...(await transcribeChunkWithResplit(
+                    runId,
+                    subChunk.path,
+                    baseOffset + subChunk.start_offset,
+                    halfMax,
+                    silenceAdjuster,
+                    depth + 1,
+                    `${label}.${index + 1}`,
+                )),
+            );
         }
         return resplitSegments;
     }
@@ -1003,8 +1040,8 @@ async function analyzeWithLlmTranscript(
     // provider's request timeout. Short audio yields a single chunk pointing at
     // the original file (no extra work).
     const maxChunkSeconds = (settings.value.maxAnalysisChunkMinutes ?? 30) * 60;
-    status.value = "Planning audio chunks...";
-    const chunks = await invoke<AudioChunk[]>("split_audio_for_analysis", {
+    status.value = 'Planning audio chunks...';
+    const chunks = await invoke<AudioChunk[]>('split_audio_for_analysis', {
         runId,
         path: analysisAudioPath,
         maxChunkSeconds,
@@ -1013,9 +1050,10 @@ async function analyzeWithLlmTranscript(
     assertActiveRun(runId);
 
     // Maps a silence-trimmed timestamp back onto the original timeline.
-    const silenceAdjuster = adjustTimestamps && processedOffsets
-        ? (timestamp: string) => adjustTimestamp(timestamp, processedOffsets)
-        : undefined;
+    const silenceAdjuster =
+        adjustTimestamps && processedOffsets
+            ? (timestamp: string) => adjustTimestamp(timestamp, processedOffsets)
+            : undefined;
 
     const allSegments: TranscriptSegment[] = [];
     for (let index = 0; index < chunks.length; index++) {
@@ -1024,15 +1062,17 @@ async function analyzeWithLlmTranscript(
             status.value = `Analyzing with AI (part ${index + 1}/${chunks.length})...`;
         }
 
-        allSegments.push(...await transcribeChunkWithResplit(
-            runId,
-            chunk.path,
-            chunk.start_offset,
-            maxChunkSeconds,
-            silenceAdjuster,
-            0,
-            `${index + 1}`,
-        ));
+        allSegments.push(
+            ...(await transcribeChunkWithResplit(
+                runId,
+                chunk.path,
+                chunk.start_offset,
+                maxChunkSeconds,
+                silenceAdjuster,
+                0,
+                `${index + 1}`,
+            )),
+        );
     }
 
     return allSegments;
@@ -1056,31 +1096,32 @@ async function transcribeWithLocalEngine(
         return rawParakeetSegments.value;
     }
 
-    const segments = workspaceSettings.value.localEngine === 'crisper'
-        ? await invoke<TranscriptSegment[]>("transcribe_with_crisper", {
-            audioPath: analysisAudioPath,
-            options: {
-                pythonPath: settings.value.crisperPythonPath,
-                model: settings.value.crisperModel,
-                language: settings.value.crisperLanguage,
-                mode: settings.value.crisperMode,
-                backend: settings.value.crisperBackend,
-                device: settings.value.crisperDevice,
-                computeType: settings.value.crisperComputeType,
-                // The editor cuts on word timings, so they are always requested
-                // (the model adds no measurable overhead for them).
-                wordTimestamps: true,
-                removeFillers: removeFillerWords.value,
-                removeVocalEvents: settings.value.crisperRemoveVocalEvents,
-                diarize: settings.value.crisperDiarize,
-                sortformerModelPath: workspaceSettings.value.sortformerModelPath,
-            },
-        })
-        : await invoke<TranscriptSegment[]>("transcribe_with_parakeet", {
-            audioPath: analysisAudioPath,
-            parakeetModelPath: workspaceSettings.value.parakeetModelPath,
-            sortformerModelPath: workspaceSettings.value.sortformerModelPath,
-        });
+    const segments =
+        workspaceSettings.value.localEngine === 'crisper'
+            ? await invoke<TranscriptSegment[]>('transcribe_with_crisper', {
+                  audioPath: analysisAudioPath,
+                  options: {
+                      pythonPath: settings.value.crisperPythonPath,
+                      model: settings.value.crisperModel,
+                      language: settings.value.crisperLanguage,
+                      mode: settings.value.crisperMode,
+                      backend: settings.value.crisperBackend,
+                      device: settings.value.crisperDevice,
+                      computeType: settings.value.crisperComputeType,
+                      // The editor cuts on word timings, so they are always requested
+                      // (the model adds no measurable overhead for them).
+                      wordTimestamps: true,
+                      removeFillers: removeFillerWords.value,
+                      removeVocalEvents: settings.value.crisperRemoveVocalEvents,
+                      diarize: settings.value.crisperDiarize,
+                      sortformerModelPath: workspaceSettings.value.sortformerModelPath,
+                  },
+              })
+            : await invoke<TranscriptSegment[]>('transcribe_with_parakeet', {
+                  audioPath: analysisAudioPath,
+                  parakeetModelPath: workspaceSettings.value.parakeetModelPath,
+                  sortformerModelPath: workspaceSettings.value.sortformerModelPath,
+              });
 
     assertActiveRun(runId);
     // Cache the raw, pre-offset output so changing only LLM-side inputs (or
@@ -1095,19 +1136,20 @@ async function processFile() {
     // second job while one is in flight.
     if (isProcessing.value) return;
     if (!inputPath.value) {
-        status.value = "Please provide a media file.";
+        status.value = 'Please provide a media file.';
         return;
     }
 
     if (!hasMediaFile.value) {
-        status.value = "Selected media file could not be found. Choose a valid file to continue.";
+        status.value = 'Selected media file could not be found. Choose a valid file to continue.';
         return;
     }
 
     if (!hasBackendConfiguration.value) {
-        status.value = workspaceSettings.value.transcriptionBackend === 'llm'
-            ? "Please provide an API key."
-            : "Please provide an API key for the hybrid AI stage.";
+        status.value =
+            workspaceSettings.value.transcriptionBackend === 'llm'
+                ? 'Please provide an API key.'
+                : 'Please provide an API key for the hybrid AI stage.';
         return;
     }
 
@@ -1117,7 +1159,7 @@ async function processFile() {
     isProcessing.value = true;
     progressPercentage.value = null;
     progressEtaSeconds.value = null;
-    status.value = "Preparing audio...";
+    status.value = 'Preparing audio...';
     // Keep the current transcript until the new one arrives: clearing it here
     // would let autosave persist an empty transcript over the sidecar, losing it
     // for good if this run fails or is cancelled.
@@ -1126,7 +1168,7 @@ async function processFile() {
     try {
         const failStage = (stage: string, error: unknown) => {
             if (isRunCancelled(error)) {
-                throw new Error("Run cancelled.");
+                throw new Error('Run cancelled.');
             }
             const details = error instanceof Error ? error.message : String(error);
             const message = `${stage} failed.`;
@@ -1137,10 +1179,13 @@ async function processFile() {
 
         let audioInfo: AudioInfo;
         try {
-            audioInfo = await invoke<AudioInfo>("prepare_audio_for_ai", { runId, inputPath: inputPath.value });
+            audioInfo = await invoke<AudioInfo>('prepare_audio_for_ai', {
+                runId,
+                inputPath: inputPath.value,
+            });
             assertActiveRun(runId);
         } catch (error) {
-            failStage("Audio preparation", error);
+            failStage('Audio preparation', error);
             return;
         }
         status.value = `Audio prepared: ${audioInfo.path} (${(audioInfo.size / 1024 / 1024).toFixed(2)} MB)`;
@@ -1149,25 +1194,28 @@ async function processFile() {
         // stream for the in-app audio scrubber. Failure here is non-fatal: it only
         // disables the audio preview, not the transcription itself.
         try {
-            const previewPath = await invoke<string>("prepare_preview_audio", {
+            const previewPath = await invoke<string>('prepare_preview_audio', {
                 runId,
                 sourcePath: audioInfo.path,
             });
             extractedAudioPath.value = previewPath;
             await grantMediaAccess(previewPath);
         } catch (error) {
-            console.warn("Preview audio preparation failed; audio scrubber disabled.", error);
-            extractedAudioPath.value = "";
+            console.warn('Preview audio preparation failed; audio scrubber disabled.', error);
+            extractedAudioPath.value = '';
         }
 
         let processedAudio: ProcessedAudio;
         if (trimSilence.value) {
-            status.value = "Removing silence...";
+            status.value = 'Removing silence...';
             try {
-                processedAudio = await invoke<ProcessedAudio>("remove_silence", { runId, path: audioInfo.path });
+                processedAudio = await invoke<ProcessedAudio>('remove_silence', {
+                    runId,
+                    path: audioInfo.path,
+                });
                 assertActiveRun(runId);
             } catch (error) {
-                failStage("Silence removal", error);
+                failStage('Silence removal', error);
                 return;
             }
             console.log(`Found ${processedAudio.silence_intervals.length} silence intervals.`);
@@ -1175,10 +1223,10 @@ async function processFile() {
             processedAudio = {
                 path: audioInfo.path,
                 silence_intervals: [],
-                offsets: [{ min_time: 0.0, offset: 0.0 }]
+                offsets: [{ min_time: 0.0, offset: 0.0 }],
             };
         }
-        
+
         // Use processed audio for upload/analysis
         const analysisAudioPath = processedAudio.path;
 
@@ -1186,10 +1234,10 @@ async function processFile() {
         const pipelineLabel = isLlmOnlyBackend.value
             ? 'Analyzing with AI'
             : workspaceSettings.value.transcriptionBackend === 'hybrid'
-                ? `Running hybrid transcription (${localEngineLabel.value} + AI cleanup)`
-                : workspaceSettings.value.transcriptionBackend === 'hybrid-merge'
-                    ? `Running merged hybrid transcription (${localEngineLabel.value} + AI)`
-                    : `Transcribing with ${localEngineLabel.value}`;
+              ? `Running hybrid transcription (${localEngineLabel.value} + AI cleanup)`
+              : workspaceSettings.value.transcriptionBackend === 'hybrid-merge'
+                ? `Running merged hybrid transcription (${localEngineLabel.value} + AI)`
+                : `Transcribing with ${localEngineLabel.value}`;
         status.value = `${pipelineLabel}... (Est. ${estimatedTime.toFixed(0)}s)`;
         const startTime = Date.now();
         let hybridCleanupUsedFallback = false;
@@ -1206,7 +1254,7 @@ async function processFile() {
                         processedAudio.offsets,
                     );
                 } catch (error) {
-                    failStage("AI analysis request", error);
+                    failStage('AI analysis request', error);
                     return;
                 }
             } else {
@@ -1222,45 +1270,63 @@ async function processFile() {
                 }
 
                 if (workspaceSettings.value.transcriptionBackend === 'hybrid') {
-                    status.value = "Cleaning transcript with AI...";
+                    status.value = 'Cleaning transcript with AI...';
                     try {
-                        nextSegments = await invoke<TranscriptSegment[]>("cleanup_local_transcript", {
-                            runId,
-                            apiKey: settings.value.apiKey,
-                            baseUrl: settings.value.baseUrl,
-                            model: settings.value.model,
-                            transcript: localSegments,
-                            context: context.value,
-                            glossary: workspaceSettings.value.glossary,
-                            removeFillerWords: removeFillerWords.value,
-                        });
+                        nextSegments = await invoke<TranscriptSegment[]>(
+                            'cleanup_local_transcript',
+                            {
+                                runId,
+                                apiKey: settings.value.apiKey,
+                                baseUrl: settings.value.baseUrl,
+                                model: settings.value.model,
+                                transcript: localSegments,
+                                context: context.value,
+                                glossary: workspaceSettings.value.glossary,
+                                removeFillerWords: removeFillerWords.value,
+                            },
+                        );
                         assertActiveRun(runId);
                     } catch (error) {
-                        console.warn(`Hybrid cleanup failed, using the ${localEngineLabel.value} transcript`, error);
+                        console.warn(
+                            `Hybrid cleanup failed, using the ${localEngineLabel.value} transcript`,
+                            error,
+                        );
                         nextSegments = localSegments;
                         hybridCleanupUsedFallback = true;
                     }
                 } else if (workspaceSettings.value.transcriptionBackend === 'hybrid-merge') {
-                    status.value = "Querying remote transcript for merge...";
+                    status.value = 'Querying remote transcript for merge...';
                     let referenceTranscript: TranscriptSegment[] = [];
                     try {
-                        referenceTranscript = await analyzeWithLlmTranscript(runId, analysisAudioPath);
+                        referenceTranscript = await analyzeWithLlmTranscript(
+                            runId,
+                            analysisAudioPath,
+                        );
                     } catch (error) {
-                        console.warn(`Merged hybrid remote transcript failed, using the ${localEngineLabel.value} transcript`, error);
+                        console.warn(
+                            `Merged hybrid remote transcript failed, using the ${localEngineLabel.value} transcript`,
+                            error,
+                        );
                         hybridCleanupUsedFallback = true;
                     }
 
                     if (referenceTranscript.length > 0) {
                         status.value = `Merging ${localEngineLabel.value} and remote transcripts...`;
                         try {
-                            nextSegments = await invoke<TranscriptSegment[]>("merge_transcript_hypotheses", {
-                                runId,
-                                primaryTranscript: localSegments,
-                                referenceTranscript,
-                            });
+                            nextSegments = await invoke<TranscriptSegment[]>(
+                                'merge_transcript_hypotheses',
+                                {
+                                    runId,
+                                    primaryTranscript: localSegments,
+                                    referenceTranscript,
+                                },
+                            );
                             assertActiveRun(runId);
                         } catch (error) {
-                            console.warn(`Merged hybrid reconciliation failed, using the ${localEngineLabel.value} transcript`, error);
+                            console.warn(
+                                `Merged hybrid reconciliation failed, using the ${localEngineLabel.value} transcript`,
+                                error,
+                            );
                             nextSegments = localSegments;
                             hybridCleanupUsedFallback = true;
                         }
@@ -1287,14 +1353,15 @@ async function processFile() {
         segments.value = nextSegments;
         // Translations are index-aligned to the transcript they were made from.
         translations.value = {};
-        currentLanguage.value = "Original";
+        currentLanguage.value = 'Original';
         const foundSuffix = `Found ${segments.value.length} segments.`;
         const backend = workspaceSettings.value.transcriptionBackend;
-        status.value = backend === 'llm'
-            ? `Analysis complete. ${foundSuffix}`
-            : backend === 'local'
-                ? `${localEngineLabel.value} transcription complete. ${foundSuffix}`
-                : hybridCleanupUsedFallback
+        status.value =
+            backend === 'llm'
+                ? `Analysis complete. ${foundSuffix}`
+                : backend === 'local'
+                  ? `${localEngineLabel.value} transcription complete. ${foundSuffix}`
+                  : hybridCleanupUsedFallback
                     ? `${backend === 'hybrid' ? 'Hybrid cleanup' : 'Hybrid merge'} failed, using the ${localEngineLabel.value} transcript. ${foundSuffix}`
                     : `${backend === 'hybrid' ? 'Hybrid transcription' : 'Hybrid merge'} complete. ${foundSuffix}`;
 
@@ -1313,18 +1380,14 @@ async function processFile() {
 
         await saveTranscript();
         assertActiveRun(runId);
-
     } catch (e) {
         if (isRunCancelled(e)) {
-            status.value = "Run cancelled.";
+            status.value = 'Run cancelled.';
             return;
         }
         const message = e instanceof Error ? e.message : String(e);
         if (!showErrorOverlay.value) {
-            showError(
-                "Analysis failed before transcription completed.",
-                message
-            );
+            showError('Analysis failed before transcription completed.', message);
         }
         status.value = message;
     } finally {
@@ -1341,34 +1404,34 @@ async function processFile() {
 async function cutVideo() {
     if (isProcessing.value || segments.value.length === 0) return;
     if (!hasMediaFile.value) {
-        status.value = "Select a valid media file before exporting video.";
+        status.value = 'Select a valid media file before exporting video.';
         return;
     }
 
     const runId = await beginRun();
     activeRunId.value = runId;
     isCancelling.value = false;
-    status.value = "Cutting media...";
+    status.value = 'Cutting media...';
     isProcessing.value = true;
     progressPercentage.value = null;
     progressEtaSeconds.value = null;
 
     try {
-        const cutSegments = segments.value.map(s => ({ start: s.start, end: s.end }));
-        const outputPath = appendFileNameSuffix(inputPath.value, "_cut");
+        const cutSegments = segments.value.map((s) => ({ start: s.start, end: s.end }));
+        const outputPath = appendFileNameSuffix(inputPath.value, '_cut');
 
-        await invoke("cut_video", {
+        await invoke('cut_video', {
             runId,
             inputPath: inputPath.value,
             segments: cutSegments,
-            outputPath
+            outputPath,
         });
         assertActiveRun(runId);
 
         status.value = `Media cut successfully to ${outputPath}`;
     } catch (e) {
         if (isRunCancelled(e)) {
-            status.value = "Run cancelled.";
+            status.value = 'Run cancelled.';
             return;
         }
         status.value = `Error cutting media: ${e}`;
@@ -1391,13 +1454,13 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
     }
 
     const exists = uniqueSpeakers.value.includes(trimmedNewName);
-    
+
     if (exists) {
         const confirmed = await ask(
             `Speaker "${trimmedNewName}" already exists.\n\nMerging "${oldName}" into "${trimmedNewName}" is irreversible.\n\nDo you want to continue?`,
-            { title: 'Merge Speakers?', kind: 'warning' }
+            { title: 'Merge Speakers?', kind: 'warning' },
         );
-        
+
         if (!confirmed) {
             inputElement.value = oldName;
             return;
@@ -1405,7 +1468,7 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
     }
 
     // Update segments
-    segments.value = segments.value.map(seg => {
+    segments.value = segments.value.map((seg) => {
         if (seg.speaker === oldName) {
             return { ...seg, speaker: trimmedNewName };
         }
@@ -1419,7 +1482,7 @@ async function renameSpeaker(oldName: string, newName: string, inputElement: HTM
             speaker === oldName ? trimmedNewName : speaker,
         );
     }
-    
+
     await saveTranscript();
 }
 
@@ -1437,7 +1500,9 @@ function updateProcessing(processing: boolean) {
 </script>
 
 <template>
-    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 pb-24 font-sans selection:bg-blue-500/30">
+    <div
+        class="min-h-screen bg-gray-900 text-gray-200 p-8 pb-24 font-sans selection:bg-blue-500/30"
+    >
         <div class="mx-auto w-full max-w-[1400px]">
             <WorkspaceTabs
                 :tabs="workspaceTabs"
@@ -1446,103 +1511,104 @@ function updateProcessing(processing: boolean) {
             />
 
             <div v-show="activeTab === 'source'">
-            <HomeSourcePanel
-                :currentEngineLabel="currentEngineLabel"
-                :currentModelDisplay="currentModelDisplay"
-                :inputPath="inputPath"
-                :hasMediaFile="hasMediaFile"
-                :isProcessing="isProcessing"
-                :hasBackendConfiguration="hasBackendConfiguration"
-                :hasTranscript="hasTranscript"
-                :settingsChanged="settingsChanged"
-                :transcriptionBackend="workspaceSettings.transcriptionBackend"
-                :localEngine="workspaceSettings.localEngine"
-                :context="context"
-                :glossary="workspaceSettings.glossary"
-                :speakerCount="speakerCount"
-                :removeFillerWords="removeFillerWords"
-                :trimSilence="trimSilence"
-                @update:inputPath="inputPath = $event"
-                @update:transcriptionBackend="workspaceSettings.transcriptionBackend = $event"
-                @update:localEngine="workspaceSettings.localEngine = $event"
-                @update:context="context = $event"
-                @update:glossary="workspaceSettings.glossary = $event"
-                @update:speakerCount="speakerCount = $event"
-                @update:removeFillerWords="removeFillerWords = $event"
-                @update:trimSilence="trimSilence = $event"
-                @invalid-selection="updateStatus"
-                @save-session="sessionPersistence.handleSaveSession"
-                @load-session="sessionPersistence.handleLoadSession"
-                @open-settings="goToSettings"
-                @process="processFile"
-            />
+                <HomeSourcePanel
+                    :currentEngineLabel="currentEngineLabel"
+                    :currentModelDisplay="currentModelDisplay"
+                    :inputPath="inputPath"
+                    :hasMediaFile="hasMediaFile"
+                    :isProcessing="isProcessing"
+                    :hasBackendConfiguration="hasBackendConfiguration"
+                    :hasTranscript="hasTranscript"
+                    :settingsChanged="settingsChanged"
+                    :transcriptionBackend="workspaceSettings.transcriptionBackend"
+                    :localEngine="workspaceSettings.localEngine"
+                    :context="context"
+                    :glossary="workspaceSettings.glossary"
+                    :speakerCount="speakerCount"
+                    :removeFillerWords="removeFillerWords"
+                    :trimSilence="trimSilence"
+                    @update:inputPath="inputPath = $event"
+                    @update:transcriptionBackend="workspaceSettings.transcriptionBackend = $event"
+                    @update:localEngine="workspaceSettings.localEngine = $event"
+                    @update:context="context = $event"
+                    @update:glossary="workspaceSettings.glossary = $event"
+                    @update:speakerCount="speakerCount = $event"
+                    @update:removeFillerWords="removeFillerWords = $event"
+                    @update:trimSilence="trimSilence = $event"
+                    @invalid-selection="updateStatus"
+                    @save-session="sessionPersistence.handleSaveSession"
+                    @load-session="sessionPersistence.handleLoadSession"
+                    @open-settings="goToSettings"
+                    @process="processFile"
+                />
             </div>
 
             <!-- Editor Section -->
             <div v-show="activeTab === 'transcript'">
-            <transition name="fade">
-                <TranscriptWorkspacePanel
-                    v-if="hasTranscript"
-                    :inputPath="inputPath"
-                    :hasMediaFile="hasMediaFile"
-                    :extractedAudioPath="extractedAudioPath"
-                    :displaySegments="displaySegments"
-                    :originalSegments="segments"
-                    :translations="translations"
-                    :currentLanguage="currentLanguage"
-                    :targetLanguage="targetLanguage"
-                    :isTranslating="isTranslating"
-                    :uniqueSpeakers="uniqueSpeakers"
-                    :isProcessing="isProcessing"
-                    @update:currentLanguage="currentLanguage = $event"
-                    @update:targetLanguage="targetLanguage = $event"
-                    @translate="translateTranscript"
-                    @export-video="cutVideo"
-                    @rename-speaker="renameSpeaker($event.oldName, $event.newName, $event.inputElement)"
-                    @update:segments="displaySegments = $event"
-                />
-            </transition>
+                <transition name="fade">
+                    <TranscriptWorkspacePanel
+                        v-if="hasTranscript"
+                        :inputPath="inputPath"
+                        :hasMediaFile="hasMediaFile"
+                        :extractedAudioPath="extractedAudioPath"
+                        :displaySegments="displaySegments"
+                        :originalSegments="segments"
+                        :translations="translations"
+                        :currentLanguage="currentLanguage"
+                        :targetLanguage="targetLanguage"
+                        :isTranslating="isTranslating"
+                        :uniqueSpeakers="uniqueSpeakers"
+                        :isProcessing="isProcessing"
+                        @update:currentLanguage="currentLanguage = $event"
+                        @update:targetLanguage="targetLanguage = $event"
+                        @translate="translateTranscript"
+                        @export-video="cutVideo"
+                        @rename-speaker="
+                            renameSpeaker($event.oldName, $event.newName, $event.inputElement)
+                        "
+                        @update:segments="displaySegments = $event"
+                    />
+                </transition>
             </div>
 
             <!-- Viral Clips Generator -->
             <div v-show="activeTab === 'clips'">
-            <transition name="fade">
-                <ViralClipsGenerator
-                    v-if="hasTranscript"
-                    :segments="segments"
-                    :inputPath="inputPath"
-                    :hasMediaFile="hasMediaFile"
-                    :busy="isProcessing"
-                    :state="viralClipsState"
-                    :cancelGeneration="cancelGeneration"
-                    class="mb-8"
-                    @update:status="updateStatus"
-                    @update:processing="updateProcessing"
-                    @update:state="viralClipsState = $event"
-                />
-            </transition>
+                <transition name="fade">
+                    <ViralClipsGenerator
+                        v-if="hasTranscript"
+                        :segments="segments"
+                        :inputPath="inputPath"
+                        :hasMediaFile="hasMediaFile"
+                        :busy="isProcessing"
+                        :state="viralClipsState"
+                        :cancelGeneration="cancelGeneration"
+                        class="mb-8"
+                        @update:status="updateStatus"
+                        @update:processing="updateProcessing"
+                        @update:state="viralClipsState = $event"
+                    />
+                </transition>
             </div>
 
             <!-- Podcast Generator -->
             <div v-show="activeTab === 'podcast'">
-            <transition name="fade">
-                <PodcastGenerator
-                    v-if="hasTranscript"
-                    :segments="segments"
-                    :inputPath="inputPath"
-                    :hasMediaFile="hasMediaFile"
-                    :busy="isProcessing"
-                    :context="context"
-                    :state="podcastWorkspaceState"
-                    :cancelGeneration="cancelGeneration"
-                    class="mb-20"
-                    @update:status="updateStatus"
-                    @update:processing="updateProcessing"
-                    @update:state="podcastWorkspaceState = $event"
-                />
-            </transition>
+                <transition name="fade">
+                    <PodcastGenerator
+                        v-if="hasTranscript"
+                        :segments="segments"
+                        :inputPath="inputPath"
+                        :hasMediaFile="hasMediaFile"
+                        :busy="isProcessing"
+                        :context="context"
+                        :state="podcastWorkspaceState"
+                        :cancelGeneration="cancelGeneration"
+                        class="mb-20"
+                        @update:status="updateStatus"
+                        @update:processing="updateProcessing"
+                        @update:state="podcastWorkspaceState = $event"
+                    />
+                </transition>
             </div>
-
         </div>
     </div>
 
@@ -1568,7 +1634,9 @@ function updateProcessing(processing: boolean) {
 <style scoped>
 .fade-enter-active,
 .fade-leave-active {
-    transition: opacity 0.5s ease, transform 0.5s ease;
+    transition:
+        opacity 0.5s ease,
+        transform 0.5s ease;
 }
 
 .fade-enter-from,
