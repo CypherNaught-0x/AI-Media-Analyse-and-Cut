@@ -557,7 +557,7 @@ mod tests {
         // We assume ffmpeg is in PATH for tests
 
         let status = Command::new("ffmpeg")
-            .args(&[
+            .args([
                 "-y",
                 "-f",
                 "lavfi",
