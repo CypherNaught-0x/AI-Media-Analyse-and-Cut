@@ -1,9 +1,8 @@
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
-use crate::format_path_io_error;
+use crate::media_probe::probe_media;
 use crate::run_control::{run_blocking, RunControl};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
-use ffmpeg_sidecar::paths::ffmpeg_path;
 use log::{debug, info};
 use regex::Regex;
 use serde::Serialize;
@@ -378,34 +377,9 @@ pub(crate) async fn probe_duration(path: &str) -> Result<f64, String> {
 }
 
 fn probe_duration_blocking(path: &str) -> Result<f64, String> {
-    use std::process::Command;
-
-    // Try using ffmpeg -i path
-    // We assume ffmpeg is in PATH (which it should be if init_ffmpeg was called or if installed globally)
-    // In tests, we saw it works.
-    let output = Command::new(ffmpeg_path())
-        .arg("-i")
-        .arg(path)
-        .output()
-        .map_err(|e| {
-            format_path_io_error("run ffmpeg for duration probing", &PathBuf::from(path), &e)
-        })?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let re_duration = Regex::new(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})").unwrap();
-
-    if let Some(caps) = re_duration.captures(&stderr) {
-        let hours: f64 = caps[1].parse().unwrap_or(0.0);
-        let minutes: f64 = caps[2].parse().unwrap_or(0.0);
-        let seconds: f64 = caps[3].parse().unwrap_or(0.0);
-        return Ok(hours * 3600.0 + minutes * 60.0 + seconds);
-    }
-
-    Err(format!(
-        "Failed to parse duration from ffmpeg output. Stderr: {}",
-        stderr
-    ))
+    probe_media(std::path::Path::new(path))?
+        .duration_seconds
+        .ok_or_else(|| format!("ffmpeg reported no duration for '{path}'"))
 }
 
 #[cfg(test)]
