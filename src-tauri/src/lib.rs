@@ -773,39 +773,6 @@ async fn read_file_as_base64(app: tauri::AppHandle, path: String) -> Result<Stri
 
 #[tauri::command]
 #[specta::specta]
-// Parameters mirror the IPC payload the frontend sends.
-#[allow(clippy::too_many_arguments)]
-async fn generate_clips(
-    run_id: u64,
-    llm: LlmConfig,
-    transcript: String,
-    count: u32,
-    min_duration: u32,
-    max_duration: u32,
-    topic: Option<String>,
-    splicing: bool,
-    run_control: State<'_, RunControl>,
-) -> Result<String, AppError> {
-    run_control.ensure_active(run_id)?;
-    let client = GeminiClient::new(secrets::api_key().require()?, llm.base_url, llm.model);
-    run_control
-        .run_cancellable(
-            run_id,
-            client.generate_clips(
-                &transcript,
-                count,
-                min_duration,
-                max_duration,
-                topic,
-                splicing,
-            ),
-        )
-        .await
-        .map_err(AppError::from)
-}
-
-#[tauri::command]
-#[specta::specta]
 async fn open_folder(path: String) -> Result<(), AppError> {
     path_guard::require_directory(Path::new(&path))?;
     #[cfg(target_os = "windows")]
@@ -1118,7 +1085,6 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             cut_video,
             export_clips,
             read_file_as_base64,
-            generate_clips,
             open_folder,
             write_text_file,
             read_text_file,

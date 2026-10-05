@@ -4,7 +4,7 @@
 import { mockConvertFileSrc, mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { createDefaultEditSession, createDefaultLastAnalyzedSettings } from '../utils/editSession';
 import { SESSION_STORAGE_KEY } from '../composables/useHomeSessionPersistence';
-import type { TranscriptSegment } from '../types';
+import type { ClipCandidate, TranscriptSegment } from '../types';
 
 const DEMO_MEDIA_PATH = '/Users/demo/Videos/ai-deep-dive.mp4';
 
@@ -68,6 +68,35 @@ const DEMO_SEGMENTS: TranscriptSegment[] = [
     ['00:56', '01:01', 'Speaker 1', "Let's walk through how that works under the hood."],
 ].map(([start, end, speaker, text]) => ({ start, end, speaker, text }));
 
+const DEMO_CLIPS: ClipCandidate[] = [
+    {
+        title: 'Edit video by editing text',
+        hookLine: 'Delete a sentence from the transcript and the cut happens automatically.',
+        reason: 'One clear, surprising idea with a concrete payoff.',
+        ranges: [{ start: 27, end: 50, role: 'body', firstSegment: 6, lastSegment: 9 }],
+        ratings: { hook: 9, standalone: 8, emotion: 6, info: 8, loopContinuity: 0 },
+        signals: { speakerChanges: 3, laughs: 0, wordsPerSecond: 2.6 },
+        score: 86.5,
+        duration: 23,
+        looped: false,
+    },
+    {
+        title: 'The boring part disappears',
+        hookLine: 'Which means the boring part of editing basically disappears.',
+        reason: 'Opens on the conclusion; the last line leads straight back into it.',
+        ranges: [
+            { start: 45, end: 50, role: 'loop_opener', firstSegment: 9, lastSegment: 9 },
+            { start: 15, end: 27, role: 'body', firstSegment: 4, lastSegment: 5 },
+            { start: 39, end: 45, role: 'closing', firstSegment: 8, lastSegment: 8 },
+        ],
+        ratings: { hook: 8, standalone: 7, emotion: 6, info: 7, loopContinuity: 9 },
+        signals: { speakerChanges: 3, laughs: 0, wordsPerSecond: 2.4 },
+        score: 80.2,
+        duration: 23,
+        looped: true,
+    },
+];
+
 type Scenario = 'home' | 'transcript';
 
 function currentScenario(): Scenario {
@@ -123,6 +152,10 @@ export function setupDemoMode() {
                 return statusMessage;
             case 'path_exists':
                 return true;
+            case 'begin_run':
+                return 1;
+            case 'select_clips':
+                return DEMO_CLIPS;
             case 'has_api_key':
                 return true;
             case 'list_models':

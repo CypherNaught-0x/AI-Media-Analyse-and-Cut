@@ -16,7 +16,7 @@
 *   **Advanced Editor**: Multi-select segments (Shift+Click) to merge or delete multiple parts at once.
 *   **Real-time Preview**: Built-in video player that simulates the final cut by skipping deleted segments during playback.
 *   **Transcript Blacklist Warnings**: Flag word-level matches from language-specific blacklist files directly in the transcript review UI.
-*   **Viral Clips Generator**: AI analyzes your content to extract short, engaging clips suitable for TikTok, Shorts, or Reels. Includes "Smart Splicing" to combine non-contiguous relevant segments.
+*   **Viral Clips**: AI picks the moments that work as standalone shorts (TikTok, Shorts, Reels), ranked by a score built from hook, standalone, emotion and info ratings plus transcript signals. Clips always start and end on transcript segment boundaries. Options: "Smart Splicing" (combine separate moments, e.g. a cold-open hook) and **Looped shorts** (open on the resolution, end on a line that leads back into it, so the replay feels continuous). Preview and trim each clip word by word, then export the ones you pick.
 *   **Multi-Language Translation**: Translate transcripts into 15+ languages (Spanish, French, German, Japanese, etc.) while preserving original timestamps.
 *   **Export Options**: Export subtitles (SRT, VTT, TXT) or the cut video file directly.
 *   **Context-Aware**: Provide context and glossaries to the AI to improve transcription accuracy for technical terms or specific names.
@@ -178,10 +178,13 @@ green on a machine that has never set one up.
     *   Click the Translate button.
     *   Switch between "Original" and translated versions to verify.
 
-6.  **Generate Clips**: 
-    *   Scroll down to the "Viral Clips Generator".
-    *   Set your desired count and duration.
-    *   Click **Generate Clips** to have the AI find the most engaging moments.
+6.  **Find Clips**:
+    *   Open the **Viral Clips** tab, set the count and duration range, and optionally a topic.
+    *   Optionally enable **Smart splicing**, **Looped shorts** or **Trim edge silence**.
+    *   Click **Find Clips**. Long recordings are analysed in overlapping parts and the best
+        non-overlapping clips are kept.
+    *   Each card shows the score, the hook line and the ranges. **Preview** plays the clip,
+        **Start/End ◀ ▶** trims by one word, and **Include** chooses what **Export selected** exports.
 
 7.  **Export**:
     *   Click **Export Video** to render the final edited video based on your transcript.

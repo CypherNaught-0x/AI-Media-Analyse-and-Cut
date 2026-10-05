@@ -153,6 +153,7 @@ function buildSession(inputPath = '/tmp/source.mp4'): EditSessionV1 {
             maxDuration: 120,
             topic: 'viral',
             allowSplicing: false,
+            looped: false,
             clips: [],
             lastExportPath: '',
             trimBoundarySilence: false,

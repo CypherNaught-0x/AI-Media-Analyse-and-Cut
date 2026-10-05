@@ -1,6 +1,11 @@
+import type { ClipRatings, ClipRole, ClipSignals } from '../bindings';
 // IPC payloads generated from the Rust commands (src/bindings.ts) are the
 // source of truth for the shapes the backend sends and accepts.
 export type {
+    ClipCandidate,
+    ClipRatings,
+    ClipRole,
+    ClipSignals,
     AudioChunk,
     AudioInfo,
     CrisperEnvironmentStatus,
@@ -233,13 +238,40 @@ export interface ClipWorkspaceState {
     selectedClipIndices: number[];
 }
 
+/** One source range of a short, in seconds on the source timeline. */
+export interface ShortClipRange {
+    start: number;
+    end: number;
+    role: ClipRole;
+}
+
+/** A short-form clip candidate as the Clips tab shows and edits it. */
+export interface ShortClip {
+    /** Stable key for rendering and selection. */
+    id: string;
+    title: string;
+    hookLine: string;
+    reason: string;
+    /** In playback order. */
+    ranges: ShortClipRange[];
+    /** 0-100; null for clips saved before clips were scored. */
+    score: number | null;
+    ratings: ClipRatings | null;
+    signals: ClipSignals | null;
+    looped: boolean;
+    /** Included in "Export selected". */
+    selected: boolean;
+}
+
 export interface ViralClipsWorkspaceState {
     count: number;
     minDuration: number;
     maxDuration: number;
     topic: string;
     allowSplicing: boolean;
-    clips: Clip[];
+    /** Ask for looped shorts (opener = resolution, closing leads back to it). */
+    looped: boolean;
+    clips: ShortClip[];
     lastExportPath: string;
     trimBoundarySilence: boolean;
 }
