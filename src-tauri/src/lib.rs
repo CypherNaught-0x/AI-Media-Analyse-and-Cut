@@ -321,6 +321,7 @@ async fn prepare_preview_audio(
 
 pub mod chunking;
 pub mod crisper;
+pub(crate) mod encoders;
 pub(crate) mod ffmpeg;
 pub mod gemini;
 mod local_asr;

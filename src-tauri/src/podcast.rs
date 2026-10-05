@@ -291,14 +291,14 @@ where
         let end_secs = parse_time(&segment.end) + end_padding;
         let cb = on_progress.clone();
         let mut command = FfmpegCommand::new();
+        // Seek on the input so ffmpeg jumps to the clip instead of decoding
+        // the source from the start.
         command
+            .args(["-y", "-ss", &format!("{start_secs:.6}")])
             .input(input_path.to_str().unwrap())
             .args([
-                "-y",
-                "-ss",
-                &start_secs.to_string(),
-                "-to",
-                &end_secs.to_string(),
+                "-t",
+                &format!("{:.6}", (end_secs - start_secs).max(0.0)),
                 "-vn",
                 "-c:a",
                 "aac",
@@ -329,6 +329,52 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs real ffmpeg (on PATH, like the other export tests).
+    #[test]
+    fn podcast_clips_cover_the_padded_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("talk.m4a");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"])
+            .args(["-i", "sine=frequency=440:duration=10", "-c:a", "aac"])
+            .arg(&source)
+            .status()
+            .expect("ffmpeg must be on PATH for this test");
+        assert!(status.success());
+
+        let segment = |start: &str, end: &str| PodcastSegment {
+            start: start.to_string(),
+            end: end.to_string(),
+            text: "text".to_string(),
+            speaker: "Host".to_string(),
+            segment_type: PodcastSegmentType::Content,
+            include_reason: None,
+            transition_note: None,
+        };
+        let out_dir = dir.path().join("clips");
+        let control = RunControl::default();
+        let run_id = control.begin_run();
+        export_podcast_clips(
+            &source,
+            &[segment("00:02", "00:04"), segment("00:07", "00:08")],
+            0.5,
+            0.5,
+            &out_dir,
+            run_id,
+            &control,
+            |_| {},
+        )
+        .unwrap();
+
+        for (file, expected) in [("podcast_clip_001.m4a", 3.0), ("podcast_clip_002.m4a", 2.0)] {
+            let duration = crate::media_probe::probe_media(&out_dir.join(file))
+                .unwrap()
+                .duration_seconds
+                .unwrap();
+            assert!((duration - expected).abs() < 0.1, "{file}: {duration}");
+        }
+    }
 
     #[test]
     fn test_calculate_segments_duration() {
