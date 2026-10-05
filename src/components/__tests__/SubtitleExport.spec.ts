@@ -8,311 +8,321 @@ import type { TranscriptSegment } from '../../types';
 
 // Mock Tauri API
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: vi.fn(),
+    invoke: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
-  save: vi.fn(),
+    save: vi.fn(),
 }));
 
 describe('SubtitleExport', () => {
-  const mockSegments: TranscriptSegment[] = [
-    { start: '0:00', end: '0:05', text: 'Hello world', speaker: 'Speaker 1' },
-    { start: '0:05', end: '0:10', text: 'A'.repeat(200), speaker: 'Speaker 2' },
-  ];
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(invoke).mockResolvedValue(undefined);
-  });
-
-  it('should render export buttons', () => {
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-      },
-    });
-
-    expect(wrapper.find('button').exists()).toBe(true);
-    expect(wrapper.text()).toContain('SRT');
-    expect(wrapper.text()).toContain('VTT');
-    expect(wrapper.text()).toContain('TXT');
-    expect(wrapper.text()).toContain('Validate');
-  });
-
-  it('should show validation panel when validate button is clicked', async () => {
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-      },
-    });
-
-    // Validation panel should be hidden initially
-    expect(wrapper.find('.mt-2').exists()).toBe(false);
-
-    // Click validate button
-    // Find the Validate button specifically
-    const buttons = wrapper.findAll('button');
-    const validateBtn = buttons.find(b => b.text() === 'Validate');
-    expect(validateBtn).toBeDefined();
-    await validateBtn?.trigger('click');
-
-    // Panel should be visible
-    await nextTick();
-    expect(wrapper.find('.mt-2').exists()).toBe(true);
-    expect(wrapper.text()).toContain('Validation Results');
-  });
-
-  it('should display validation errors when present', async () => {
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-      },
-    });
-
-    const buttons = wrapper.findAll('button');
-    const validateBtn = buttons.find(b => b.text() === 'Validate');
-    await validateBtn?.trigger('click');
-    await nextTick();
-
-    // Should show validation info
-    expect(wrapper.text()).toContain('Validation Results');
-  });
-
-  it('should show success message when no validation errors', async () => {
-    const validSegments: TranscriptSegment[] = [
-      { start: '0:00', end: '0:05', text: 'Valid text', speaker: 'Speaker 1' },
+    const mockSegments: TranscriptSegment[] = [
+        { start: '0:00', end: '0:05', text: 'Hello world', speaker: 'Speaker 1' },
+        { start: '0:05', end: '0:10', text: 'A'.repeat(200), speaker: 'Speaker 2' },
     ];
 
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: validSegments,
-        inputPath: '/test/video.mp4',
-      },
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.mocked(invoke).mockResolvedValue(undefined);
     });
 
-    const buttons = wrapper.findAll('button');
-    const validateBtn = buttons.find(b => b.text() === 'Validate');
-    await validateBtn?.trigger('click');
-    await nextTick();
+    it('should render export buttons', () => {
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    expect(wrapper.text()).toContain('Validation Results');
-    expect(wrapper.text()).toContain('All subtitles meet comfortable display requirements');
-  });
-
-  it('should show warning style on validate button when warnings exist', async () => {
-    const segmentsWithWarnings: TranscriptSegment[] = [
-      { start: '0:00', end: '0:00', text: 'Quick', speaker: 'Speaker 1' }, // Short duration
-    ];
-
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: segmentsWithWarnings,
-        inputPath: '/test/video.mp4',
-      },
+        expect(wrapper.find('button').exists()).toBe(true);
+        expect(wrapper.text()).toContain('SRT');
+        expect(wrapper.text()).toContain('VTT');
+        expect(wrapper.text()).toContain('TXT');
+        expect(wrapper.text()).toContain('Validate');
     });
 
-    const buttons = wrapper.findAll('button');
-    const validateBtn = buttons.find(b => b.text() === 'Validate');
-    await validateBtn?.trigger('click');
-    await nextTick();
+    it('should show validation panel when validate button is clicked', async () => {
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    // Button should have warning classes
-    expect(validateBtn?.classes()).toContain('bg-yellow-500/20');
-  });
+        // Validation panel should be hidden initially
+        expect(wrapper.find('.mt-2').exists()).toBe(false);
 
-  it('should show error style on validate button when errors exist', async () => {
-    const segmentsWithErrors: TranscriptSegment[] = [
-      { start: '0:00', end: '0:05', text: '', speaker: 'Speaker 1' }, // Empty text
-    ];
+        // Click validate button
+        // Find the Validate button specifically
+        const buttons = wrapper.findAll('button');
+        const validateBtn = buttons.find((b) => b.text() === 'Validate');
+        expect(validateBtn).toBeDefined();
+        await validateBtn?.trigger('click');
 
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: segmentsWithErrors,
-        inputPath: '/test/video.mp4',
-      },
+        // Panel should be visible
+        await nextTick();
+        expect(wrapper.find('.mt-2').exists()).toBe(true);
+        expect(wrapper.text()).toContain('Validation Results');
     });
 
-    const buttons = wrapper.findAll('button');
-    const validateBtn = buttons.find(b => b.text() === 'Validate');
-    await validateBtn?.trigger('click');
-    await nextTick();
+    it('should display validation errors when present', async () => {
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    // Button should have error classes
-    expect(validateBtn?.classes()).toContain('bg-red-500/20');
-  });
+        const buttons = wrapper.findAll('button');
+        const validateBtn = buttons.find((b) => b.text() === 'Validate');
+        await validateBtn?.trigger('click');
+        await nextTick();
 
-  it('should call processSubtitlesForDisplay when exporting', async () => {
-    const processSpy = vi.spyOn(subtitleValidation, 'processSubtitlesForDisplay').mockReturnValue({
-      segments: mockSegments,
-      errors: [],
+        // Should show validation info
+        expect(wrapper.text()).toContain('Validation Results');
     });
 
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-      },
+    it('should show success message when no validation errors', async () => {
+        const validSegments: TranscriptSegment[] = [
+            { start: '0:00', end: '0:05', text: 'Valid text', speaker: 'Speaker 1' },
+        ];
+
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: validSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
+
+        const buttons = wrapper.findAll('button');
+        const validateBtn = buttons.find((b) => b.text() === 'Validate');
+        await validateBtn?.trigger('click');
+        await nextTick();
+
+        expect(wrapper.text()).toContain('Validation Results');
+        expect(wrapper.text()).toContain('All subtitles meet comfortable display requirements');
     });
 
-    // Click SRT export button
-    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
-    await srtButton?.trigger('click');
+    it('should show warning style on validate button when warnings exist', async () => {
+        const segmentsWithWarnings: TranscriptSegment[] = [
+            { start: '0:00', end: '0:00', text: 'Quick', speaker: 'Speaker 1' }, // Short duration
+        ];
 
-    expect(processSpy).toHaveBeenCalled();
-    expect(processSpy).toHaveBeenCalledWith(
-      mockSegments,
-      expect.objectContaining({
-        maxCharsPerLine: 42,
-        maxLines: 2,
-      })
-    );
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: segmentsWithWarnings,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    processSpy.mockRestore();
-  });
+        const buttons = wrapper.findAll('button');
+        const validateBtn = buttons.find((b) => b.text() === 'Validate');
+        await validateBtn?.trigger('click');
+        await nextTick();
 
-  it('should normalize post-hour timestamps when exporting legacy subtitle data', async () => {
-    const legacySegments: TranscriptSegment[] = [
-      {
-        start: '59:57.920',
-        end: '60:03.520',
-        text: 'Legacy first line',
-        speaker: 'Speaker 1',
-      },
-      {
-        start: '60:58.800',
-        end: '61:06.720',
-        text: 'Legacy second line',
-        speaker: 'Speaker 1',
-      },
-    ];
-    const processSpy = vi.spyOn(subtitleValidation, 'processSubtitlesForDisplay').mockReturnValue({
-      segments: legacySegments,
-      errors: [],
+        // Button should have warning classes
+        expect(validateBtn?.classes()).toContain('bg-yellow-500/20');
     });
 
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: legacySegments,
-        inputPath: '/test/video.mp4',
-      },
+    it('should show error style on validate button when errors exist', async () => {
+        const segmentsWithErrors: TranscriptSegment[] = [
+            { start: '0:00', end: '0:05', text: '', speaker: 'Speaker 1' }, // Empty text
+        ];
+
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: segmentsWithErrors,
+                inputPath: '/test/video.mp4',
+            },
+        });
+
+        const buttons = wrapper.findAll('button');
+        const validateBtn = buttons.find((b) => b.text() === 'Validate');
+        await validateBtn?.trigger('click');
+        await nextTick();
+
+        // Button should have error classes
+        expect(validateBtn?.classes()).toContain('bg-red-500/20');
     });
 
-    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
-    await srtButton?.trigger('click');
+    it('should call processSubtitlesForDisplay when exporting', async () => {
+        const processSpy = vi
+            .spyOn(subtitleValidation, 'processSubtitlesForDisplay')
+            .mockReturnValue({
+                segments: mockSegments,
+                errors: [],
+            });
 
-    const writeCall = vi.mocked(invoke).mock.calls.find(([command]) => command === 'write_text_file');
-    expect(writeCall).toBeDefined();
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    const payload = writeCall?.[1] as { content: string };
-    expect(payload.content).toContain('00:59:57,920 --> 01:00:03,520');
-    expect(payload.content).toContain('01:00:58,800 --> 01:01:06,720');
-    expect(payload.content).not.toContain('00:60:');
-    expect(payload.content).not.toContain('00:61:');
+        // Click SRT export button
+        const srtButton = wrapper.findAll('button').find((b) => b.text() === 'SRT');
+        await srtButton?.trigger('click');
 
-    processSpy.mockRestore();
-  });
+        expect(processSpy).toHaveBeenCalled();
+        expect(processSpy).toHaveBeenCalledWith(
+            mockSegments,
+            expect.objectContaining({
+                maxCharsPerLine: 42,
+                maxLines: 2,
+            }),
+        );
 
-  it('should export cut-timeline subtitles that start at zero, next to the cut video', async () => {
-    // Regression: with a silent intro the source timeline starts at 03:17.449,
-    // which runs that far late against the `_cut` export.
-    const introSegments: TranscriptSegment[] = [
-      { start: '03:17.449', end: '03:21.289', text: 'First line', speaker: 'Speaker 1' },
-      { start: '03:21.289', end: '03:29.049', text: 'Second line', speaker: 'Speaker 1' },
-    ];
-
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: introSegments,
-        cutSegments: introSegments,
-        inputPath: '/test/video.mp4',
-      },
+        processSpy.mockRestore();
     });
 
-    await wrapper.find('[data-testid="subtitle-timeline"]').setValue('cut');
-    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
-    await srtButton?.trigger('click');
+    it('should normalize post-hour timestamps when exporting legacy subtitle data', async () => {
+        const legacySegments: TranscriptSegment[] = [
+            {
+                start: '59:57.920',
+                end: '60:03.520',
+                text: 'Legacy first line',
+                speaker: 'Speaker 1',
+            },
+            {
+                start: '60:58.800',
+                end: '61:06.720',
+                text: 'Legacy second line',
+                speaker: 'Speaker 1',
+            },
+        ];
+        const processSpy = vi
+            .spyOn(subtitleValidation, 'processSubtitlesForDisplay')
+            .mockReturnValue({
+                segments: legacySegments,
+                errors: [],
+            });
 
-    const writeCall = vi.mocked(invoke).mock.calls.find(([command]) => command === 'write_text_file');
-    const payload = writeCall?.[1] as { path: string; content: string };
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: legacySegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    expect(payload.path).toBe('/test/video_cut.srt');
-    expect(payload.content).toContain('00:00:00,000 --> 00:00:03,840');
-    expect(payload.content).toContain('00:00:03,840 --> 00:00:11,600');
-    expect(payload.content).not.toContain('00:03:17,449');
-  });
+        const srtButton = wrapper.findAll('button').find((b) => b.text() === 'SRT');
+        await srtButton?.trigger('click');
 
-  it('should keep source-timeline timestamps and file name by default', async () => {
-    const introSegments: TranscriptSegment[] = [
-      { start: '03:17.449', end: '03:21.289', text: 'First line', speaker: 'Speaker 1' },
-    ];
+        const writeCall = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'write_text_file');
+        expect(writeCall).toBeDefined();
 
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: introSegments,
-        cutSegments: introSegments,
-        inputPath: '/test/video.mp4',
-      },
+        const payload = writeCall?.[1] as { content: string };
+        expect(payload.content).toContain('00:59:57,920 --> 01:00:03,520');
+        expect(payload.content).toContain('01:00:58,800 --> 01:01:06,720');
+        expect(payload.content).not.toContain('00:60:');
+        expect(payload.content).not.toContain('00:61:');
+
+        processSpy.mockRestore();
     });
 
-    const srtButton = wrapper.findAll('button').find(b => b.text() === 'SRT');
-    await srtButton?.trigger('click');
+    it('should export cut-timeline subtitles that start at zero, next to the cut video', async () => {
+        // Regression: with a silent intro the source timeline starts at 03:17.449,
+        // which runs that far late against the `_cut` export.
+        const introSegments: TranscriptSegment[] = [
+            { start: '03:17.449', end: '03:21.289', text: 'First line', speaker: 'Speaker 1' },
+            { start: '03:21.289', end: '03:29.049', text: 'Second line', speaker: 'Speaker 1' },
+        ];
 
-    const writeCall = vi.mocked(invoke).mock.calls.find(([command]) => command === 'write_text_file');
-    const payload = writeCall?.[1] as { path: string; content: string };
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: introSegments,
+                cutSegments: introSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    expect(payload.path).toBe('/test/video.srt');
-    expect(payload.content).toContain('00:03:17,449 --> 00:03:21,289');
-  });
+        await wrapper.find('[data-testid="subtitle-timeline"]').setValue('cut');
+        const srtButton = wrapper.findAll('button').find((b) => b.text() === 'SRT');
+        await srtButton?.trigger('click');
 
-  it('should close validation panel when close button is clicked', async () => {
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-      },
+        const writeCall = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'write_text_file');
+        const payload = writeCall?.[1] as { path: string; content: string };
+
+        expect(payload.path).toBe('/test/video_cut.srt');
+        expect(payload.content).toContain('00:00:00,000 --> 00:00:03,840');
+        expect(payload.content).toContain('00:00:03,840 --> 00:00:11,600');
+        expect(payload.content).not.toContain('00:03:17,449');
     });
 
-    // Open panel
-    const buttons = wrapper.findAll('button');
-    const validateBtn = buttons.find(b => b.text() === 'Validate');
-    await validateBtn?.trigger('click');
-    await nextTick();
+    it('should keep source-timeline timestamps and file name by default', async () => {
+        const introSegments: TranscriptSegment[] = [
+            { start: '03:17.449', end: '03:21.289', text: 'First line', speaker: 'Speaker 1' },
+        ];
 
-    expect(wrapper.find('.mt-2').exists()).toBe(true);
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: introSegments,
+                cutSegments: introSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-    // Find and click close button
-    const closeBtn = wrapper.find('button.text-gray-500');
-    await closeBtn.trigger('click');
-    await nextTick();
+        const srtButton = wrapper.findAll('button').find((b) => b.text() === 'SRT');
+        await srtButton?.trigger('click');
 
-    // Panel should be hidden
-    expect(wrapper.find('.mt-2').exists()).toBe(false);
-  });
+        const writeCall = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'write_text_file');
+        const payload = writeCall?.[1] as { path: string; content: string };
 
-  it('should pass language prop correctly', () => {
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-        language: 'Spanish',
-      },
+        expect(payload.path).toBe('/test/video.srt');
+        expect(payload.content).toContain('00:03:17,449 --> 00:03:21,289');
     });
 
-    expect(wrapper.vm.language).toBe('Spanish');
-  });
+    it('should close validation panel when close button is clicked', async () => {
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
 
-  it('should not show validation panel initially', () => {
-    const wrapper = mount(SubtitleExport, {
-      props: {
-        segments: mockSegments,
-        inputPath: '/test/video.mp4',
-      },
+        // Open panel
+        const buttons = wrapper.findAll('button');
+        const validateBtn = buttons.find((b) => b.text() === 'Validate');
+        await validateBtn?.trigger('click');
+        await nextTick();
+
+        expect(wrapper.find('.mt-2').exists()).toBe(true);
+
+        // Find and click close button
+        const closeBtn = wrapper.find('button.text-gray-500');
+        await closeBtn.trigger('click');
+        await nextTick();
+
+        // Panel should be hidden
+        expect(wrapper.find('.mt-2').exists()).toBe(false);
     });
 
-    expect(wrapper.find('.mt-2').exists()).toBe(false);
-  });
+    it('should pass language prop correctly', () => {
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+                language: 'Spanish',
+            },
+        });
+
+        expect(wrapper.vm.language).toBe('Spanish');
+    });
+
+    it('should not show validation panel initially', () => {
+        const wrapper = mount(SubtitleExport, {
+            props: {
+                segments: mockSegments,
+                inputPath: '/test/video.mp4',
+            },
+        });
+
+        expect(wrapper.find('.mt-2').exists()).toBe(false);
+    });
 });

@@ -19,12 +19,12 @@ import type { TranscriptSegment } from '../types';
  * exported subtitle file can match the cut media instead of the source.
  */
 export interface CutTimelineRange {
-  /** Where the kept range starts on the source timeline, in seconds. */
-  sourceStart: number;
-  /** Where the kept range ends on the source timeline, in seconds. */
-  sourceEnd: number;
-  /** Where the kept range starts in the cut export, in seconds. */
-  cutStart: number;
+    /** Where the kept range starts on the source timeline, in seconds. */
+    sourceStart: number;
+    /** Where the kept range ends on the source timeline, in seconds. */
+    sourceEnd: number;
+    /** Where the kept range starts in the cut export, in seconds. */
+    cutStart: number;
 }
 
 /**
@@ -32,18 +32,18 @@ export interface CutTimelineRange {
  * order, which for a transcript is ascending time).
  */
 export function buildCutTimeline(cutSegments: TranscriptSegment[]): CutTimelineRange[] {
-  const ranges: CutTimelineRange[] = [];
-  let cutStart = 0;
+    const ranges: CutTimelineRange[] = [];
+    let cutStart = 0;
 
-  for (const segment of cutSegments) {
-    const sourceStart = parseTime(segment.start);
-    const sourceEnd = Math.max(sourceStart, parseTime(segment.end));
+    for (const segment of cutSegments) {
+        const sourceStart = parseTime(segment.start);
+        const sourceEnd = Math.max(sourceStart, parseTime(segment.end));
 
-    ranges.push({ sourceStart, sourceEnd, cutStart });
-    cutStart += sourceEnd - sourceStart;
-  }
+        ranges.push({ sourceStart, sourceEnd, cutStart });
+        cutStart += sourceEnd - sourceStart;
+    }
 
-  return ranges;
+    return ranges;
 }
 
 /**
@@ -52,22 +52,22 @@ export function buildCutTimeline(cutSegments: TranscriptSegment[]): CutTimelineR
  * instant as the previous range's end), so the mapping stays monotonic.
  */
 export function mapSourceTimeToCut(seconds: number, ranges: CutTimelineRange[]): number {
-  if (ranges.length === 0) {
-    return seconds;
-  }
-
-  let cutEnd = 0;
-  for (const range of ranges) {
-    if (seconds < range.sourceStart) {
-      return range.cutStart;
+    if (ranges.length === 0) {
+        return seconds;
     }
-    if (seconds <= range.sourceEnd) {
-      return range.cutStart + (seconds - range.sourceStart);
-    }
-    cutEnd = range.cutStart + (range.sourceEnd - range.sourceStart);
-  }
 
-  return cutEnd;
+    let cutEnd = 0;
+    for (const range of ranges) {
+        if (seconds < range.sourceStart) {
+            return range.cutStart;
+        }
+        if (seconds <= range.sourceEnd) {
+            return range.cutStart + (seconds - range.sourceStart);
+        }
+        cutEnd = range.cutStart + (range.sourceEnd - range.sourceStart);
+    }
+
+    return cutEnd;
 }
 
 /**
@@ -75,25 +75,28 @@ export function mapSourceTimeToCut(seconds: number, ranges: CutTimelineRange[]):
  * `cutSegments` — the exact segment list `cut_video` receives.
  */
 export function remapSegmentsToCutTimeline(
-  segments: TranscriptSegment[],
-  cutSegments: TranscriptSegment[],
+    segments: TranscriptSegment[],
+    cutSegments: TranscriptSegment[],
 ): TranscriptSegment[] {
-  const ranges = buildCutTimeline(cutSegments);
+    const ranges = buildCutTimeline(cutSegments);
 
-  return segments.map((segment) => {
-    const start = mapSourceTimeToCut(parseTime(segment.start), ranges);
-    const end = Math.max(start, mapSourceTimeToCut(parseTime(segment.end), ranges));
+    return segments.map((segment) => {
+        const start = mapSourceTimeToCut(parseTime(segment.start), ranges);
+        const end = Math.max(start, mapSourceTimeToCut(parseTime(segment.end), ranges));
 
-    return {
-      ...segment,
-      start: formatTime(start),
-      end: formatTime(end),
-      words: segment.words?.map((word) => {
-        const wordStart = mapSourceTimeToCut(parseTime(word.start), ranges);
-        const wordEnd = Math.max(wordStart, mapSourceTimeToCut(parseTime(word.end), ranges));
+        return {
+            ...segment,
+            start: formatTime(start),
+            end: formatTime(end),
+            words: segment.words?.map((word) => {
+                const wordStart = mapSourceTimeToCut(parseTime(word.start), ranges);
+                const wordEnd = Math.max(
+                    wordStart,
+                    mapSourceTimeToCut(parseTime(word.end), ranges),
+                );
 
-        return { ...word, start: formatTime(wordStart), end: formatTime(wordEnd) };
-      }),
-    };
-  });
+                return { ...word, start: formatTime(wordStart), end: formatTime(wordEnd) };
+            }),
+        };
+    });
 }

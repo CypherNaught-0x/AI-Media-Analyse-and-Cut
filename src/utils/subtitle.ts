@@ -34,18 +34,28 @@ export function formatSubtitleTimeRange(
     };
 }
 
-export function generateSubtitleContent(segments: TranscriptSegment[], format: 'srt' | 'vtt' | 'txt'): string {
+export function generateSubtitleContent(
+    segments: TranscriptSegment[],
+    format: 'srt' | 'vtt' | 'txt',
+): string {
     if (format === 'srt') {
-        return segments.map((s, i) => {
-            const { start, end } = formatSubtitleTimeRange(s.start, s.end, ',');
-            return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${s.text}\n`;
-        }).join('\n');
+        return segments
+            .map((s, i) => {
+                const { start, end } = formatSubtitleTimeRange(s.start, s.end, ',');
+                return `${i + 1}\n${start} --> ${end}\n${s.speaker}: ${s.text}\n`;
+            })
+            .join('\n');
     } else if (format === 'vtt') {
-        return "WEBVTT\n\n" + segments.map((s) => {
-            const { start, end } = formatSubtitleTimeRange(s.start, s.end, '.');
-            return `${start} --> ${end}\n<v ${s.speaker}>${s.text}`;
-        }).join('\n\n');
+        return (
+            'WEBVTT\n\n' +
+            segments
+                .map((s) => {
+                    const { start, end } = formatSubtitleTimeRange(s.start, s.end, '.');
+                    return `${start} --> ${end}\n<v ${s.speaker}>${s.text}`;
+                })
+                .join('\n\n')
+        );
     } else {
-        return segments.map(s => `[${s.start} - ${s.end}] ${s.speaker}: ${s.text}`).join('\n');
+        return segments.map((s) => `[${s.start} - ${s.end}] ${s.speaker}: ${s.text}`).join('\n');
     }
 }

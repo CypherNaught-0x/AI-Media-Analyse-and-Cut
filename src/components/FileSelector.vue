@@ -24,12 +24,12 @@ const MEDIA_EXTENSIONS = [
 const SUPPORTED_MEDIA_EXTENSIONS = new Set(MEDIA_EXTENSIONS);
 
 defineProps<{
-  modelValue: string;
+    modelValue: string;
 }>();
 
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: string): void;
-  (e: 'invalid-selection', message: string): void;
+    (e: 'update:modelValue', value: string): void;
+    (e: 'invalid-selection', message: string): void;
 }>();
 
 const dropZoneRef = ref<HTMLElement | null>(null);
@@ -103,17 +103,19 @@ async function selectFile() {
     try {
         const selected = await open({
             multiple: false,
-            filters: [{
-                name: 'Media',
-                extensions: MEDIA_EXTENSIONS
-            }]
+            filters: [
+                {
+                    name: 'Media',
+                    extensions: MEDIA_EXTENSIONS,
+                },
+            ],
         });
 
         if (selected && typeof selected === 'string') {
             selectPath(selected);
         }
     } catch (e) {
-        console.error("Failed to open dialog:", e);
+        console.error('Failed to open dialog:', e);
     }
 }
 
@@ -128,12 +130,14 @@ onMounted(async () => {
 
             if (payload.type === 'enter') {
                 tauriDragHasSupportedFile = payload.paths.some(isSupportedMediaPath);
-                isDragActive.value = tauriDragHasSupportedFile && await isDropInsideZone(payload.position);
+                isDragActive.value =
+                    tauriDragHasSupportedFile && (await isDropInsideZone(payload.position));
                 return;
             }
 
             if (payload.type === 'over') {
-                isDragActive.value = tauriDragHasSupportedFile && await isDropInsideZone(payload.position);
+                isDragActive.value =
+                    tauriDragHasSupportedFile && (await isDropInsideZone(payload.position));
                 return;
             }
 
@@ -164,31 +168,35 @@ onUnmounted(() => {
 
 <template>
     <div class="mb-6">
-        <label class="block text-sm font-medium text-gray-400 mb-3 uppercase tracking-wider">Source Media</label>
+        <label class="block text-sm font-medium text-gray-400 mb-3 uppercase tracking-wider"
+            >Source Media</label
+        >
         <div
             ref="dropZoneRef"
             data-testid="file-drop-zone"
             :data-drag-active="isDragActive ? 'true' : 'false'"
             class="flex gap-3 rounded-3xl border border-transparent transition-all duration-200"
-            :class="isDragActive ? 'bg-blue-500/10 border-blue-400/50 shadow-lg shadow-blue-900/20' : ''"
+            :class="
+                isDragActive ? 'bg-blue-500/10 border-blue-400/50 shadow-lg shadow-blue-900/20' : ''
+            "
         >
             <div class="flex-1 relative group">
-                <input :value="modelValue" @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)" type="text"
+                <input
+                    :value="modelValue"
+                    @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+                    type="text"
                     class="w-full p-4 pl-12 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 focus:bg-black/30 outline-none transition-all text-gray-300 placeholder-gray-600 font-mono text-sm"
-                    placeholder="Select a media file..." readonly />
+                    placeholder="Select a media file..."
+                    readonly
+                />
                 <div class="absolute left-4 top-4 text-gray-500">
                     <VideoFileIcon class="h-5 w-5" />
                 </div>
             </div>
-            <button @click="selectFile"
-                class="btn-primary px-8 shrink-0">
-                Browse
-            </button>
+            <button @click="selectFile" class="btn-primary px-8 shrink-0">Browse</button>
         </div>
         <!-- Outside the flex row: inside it, the row's stretch alignment made the
              Browse button as tall as the input *plus* this hint. -->
-        <p class="mt-2 px-1 text-xs text-gray-500">
-            Browse or drop a video/audio file here
-        </p>
+        <p class="mt-2 px-1 text-xs text-gray-500">Browse or drop a video/audio file here</p>
     </div>
 </template>

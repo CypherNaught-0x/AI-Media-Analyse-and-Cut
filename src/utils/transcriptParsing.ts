@@ -7,131 +7,125 @@ const END_KEYS = ['end', 'stop', 'finish'] as const;
 const SPEAKER_KEYS = ['speaker', 'speakerName', 'name'] as const;
 const TEXT_KEYS = ['text', 'transcript', 'content'] as const;
 
-function pickString(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): string | undefined {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate.trim();
+function pickString(value: Record<string, unknown>, keys: readonly string[]): string | undefined {
+    for (const key of keys) {
+        const candidate = value[key];
+        if (typeof candidate === 'string' && candidate.trim().length > 0) {
+            return candidate.trim();
+        }
     }
-  }
 
-  return undefined;
+    return undefined;
 }
 
 function describeKeys(value: Record<string, unknown>): string {
-  const keys = Object.keys(value);
-  return keys.length > 0 ? keys.join(', ') : '<none>';
+    const keys = Object.keys(value);
+    return keys.length > 0 ? keys.join(', ') : '<none>';
 }
 
 function requireField(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  label: string,
-  index: number,
+    value: Record<string, unknown>,
+    keys: readonly string[],
+    label: string,
+    index: number,
 ): string {
-  const field = pickString(value, keys);
-  if (field) {
-    return field;
-  }
+    const field = pickString(value, keys);
+    if (field) {
+        return field;
+    }
 
-  throw new Error(
-    `Segment ${index + 1} is missing required '${label}' field. Available keys: ${describeKeys(value)}`,
-  );
+    throw new Error(
+        `Segment ${index + 1} is missing required '${label}' field. Available keys: ${describeKeys(value)}`,
+    );
 }
 
 function extractJsonArray(rawResponse: string): string {
-  const match = rawResponse.match(/\[[\s\S]*\]/);
-  if (!match) {
-    throw new Error('Failed to find JSON array in AI response');
-  }
+    const match = rawResponse.match(/\[[\s\S]*\]/);
+    if (!match) {
+        throw new Error('Failed to find JSON array in AI response');
+    }
 
-  return match[0];
+    return match[0];
 }
 
 function repairSpeakerLabelQuotes(jsonText: string): string {
-  return jsonText.replace(
-    /"speaker":"Speaker\s+"(\d+)"/g,
-    '"speaker":"Speaker $1"',
-  );
+    return jsonText.replace(/"speaker":"Speaker\s+"(\d+)"/g, '"speaker":"Speaker $1"');
 }
 
 function repairStartKeyTypos(jsonText: string): string {
-  let repaired = jsonText.replace(/([{,])"+start":/g, '$1"start":');
+    let repaired = jsonText.replace(/([{,])"+start":/g, '$1"start":');
 
-  repaired = repaired.replace(
-    /\{"((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)","end":/g,
-    '{"start":"$1","end":',
-  );
+    repaired = repaired.replace(
+        /\{"((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)","end":/g,
+        '{"start":"$1","end":',
+    );
 
-  repaired = repaired.replace(
-    /"start":"((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)","((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)",(?="speaker":)/g,
-    '"start":"$1","end":"$2",',
-  );
+    repaired = repaired.replace(
+        /"start":"((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)","((?:\d{1,2}:)?\d{2}:\d{2}(?:\.\d+)?)",(?="speaker":)/g,
+        '"start":"$1","end":"$2",',
+    );
 
-  return repaired;
+    return repaired;
 }
 
 export function repairMalformedTranscriptJson(jsonText: string): string {
-  return repairStartKeyTypos(repairSpeakerLabelQuotes(jsonText));
+    return repairStartKeyTypos(repairSpeakerLabelQuotes(jsonText));
 }
 
 export function parseTranscriptResponse(
-  rawResponse: string,
-  adjustTimestamp?: TimestampAdjuster,
+    rawResponse: string,
+    adjustTimestamp?: TimestampAdjuster,
 ): TranscriptSegment[] {
-  const jsonText = extractJsonArray(rawResponse);
-
-  try {
-    return normalizeTranscriptSegments(JSON.parse(jsonText), adjustTimestamp);
-  } catch (originalError) {
-    const repairedJson = repairMalformedTranscriptJson(jsonText);
-    if (repairedJson === jsonText) {
-      throw originalError;
-    }
+    const jsonText = extractJsonArray(rawResponse);
 
     try {
-      return normalizeTranscriptSegments(JSON.parse(repairedJson), adjustTimestamp);
-    } catch (repairError) {
-      const originalMessage =
-        originalError instanceof Error ? originalError.message : String(originalError);
-      const repairMessage =
-        repairError instanceof Error ? repairError.message : String(repairError);
+        return normalizeTranscriptSegments(JSON.parse(jsonText), adjustTimestamp);
+    } catch (originalError) {
+        const repairedJson = repairMalformedTranscriptJson(jsonText);
+        if (repairedJson === jsonText) {
+            throw originalError;
+        }
 
-      throw new Error(
-        `Failed to parse transcript JSON after repair attempt. Original error: ${originalMessage}. Repair error: ${repairMessage}`,
-        { cause: repairError },
-      );
+        try {
+            return normalizeTranscriptSegments(JSON.parse(repairedJson), adjustTimestamp);
+        } catch (repairError) {
+            const originalMessage =
+                originalError instanceof Error ? originalError.message : String(originalError);
+            const repairMessage =
+                repairError instanceof Error ? repairError.message : String(repairError);
+
+            throw new Error(
+                `Failed to parse transcript JSON after repair attempt. Original error: ${originalMessage}. Repair error: ${repairMessage}`,
+                { cause: repairError },
+            );
+        }
     }
-  }
 }
 
 export function normalizeTranscriptSegments(
-  raw: unknown,
-  adjustTimestamp?: TimestampAdjuster,
+    raw: unknown,
+    adjustTimestamp?: TimestampAdjuster,
 ): TranscriptSegment[] {
-  if (!Array.isArray(raw)) {
-    throw new Error('Response is not an array');
-  }
-
-  return raw.map((segment, index) => {
-    if (!segment || typeof segment !== 'object' || Array.isArray(segment)) {
-      throw new Error(`Segment ${index + 1} is not an object`);
+    if (!Array.isArray(raw)) {
+        throw new Error('Response is not an array');
     }
 
-    const record = segment as Record<string, unknown>;
-    const start = requireField(record, START_KEYS, 'start', index);
-    const end = requireField(record, END_KEYS, 'end', index);
-    const speaker = requireField(record, SPEAKER_KEYS, 'speaker', index);
-    const text = requireField(record, TEXT_KEYS, 'text', index);
+    return raw.map((segment, index) => {
+        if (!segment || typeof segment !== 'object' || Array.isArray(segment)) {
+            throw new Error(`Segment ${index + 1} is not an object`);
+        }
 
-    return {
-      start: adjustTimestamp ? adjustTimestamp(start) : start,
-      end: adjustTimestamp ? adjustTimestamp(end) : end,
-      speaker,
-      text,
-    };
-  });
+        const record = segment as Record<string, unknown>;
+        const start = requireField(record, START_KEYS, 'start', index);
+        const end = requireField(record, END_KEYS, 'end', index);
+        const speaker = requireField(record, SPEAKER_KEYS, 'speaker', index);
+        const text = requireField(record, TEXT_KEYS, 'text', index);
+
+        return {
+            start: adjustTimestamp ? adjustTimestamp(start) : start,
+            end: adjustTimestamp ? adjustTimestamp(end) : end,
+            speaker,
+            text,
+        };
+    });
 }

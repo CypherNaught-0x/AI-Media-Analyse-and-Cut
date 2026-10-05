@@ -3,47 +3,47 @@ import { mount } from '@vue/test-utils';
 import StatusBar from '../StatusBar.vue';
 
 describe('StatusBar.vue', () => {
-  it('renders status', () => {
-    const wrapper = mount(StatusBar, {
-      props: {
-        status: 'Ready',
-        isProcessing: false,
-        progressPercentage: null,
-      },
-    });
-    
-    expect(wrapper.text()).toContain('Ready');
-  });
+    it('renders status', () => {
+        const wrapper = mount(StatusBar, {
+            props: {
+                status: 'Ready',
+                isProcessing: false,
+                progressPercentage: null,
+            },
+        });
 
-  it('shows progress bar when percentage is provided', () => {
-    const wrapper = mount(StatusBar, {
-      props: {
-        status: 'Processing',
-        isProcessing: true,
-        progressPercentage: 50,
-        progressEtaSeconds: 95,
-      },
-    });
-    
-    expect(wrapper.find('.bg-blue-500').exists()).toBe(true);
-    expect(wrapper.find('.bg-blue-500').attributes('style')).toContain('width: 50%');
-    expect(wrapper.text()).toContain('ETA 1:35');
-  });
-
-  it('shows a cancel button while processing', async () => {
-    const wrapper = mount(StatusBar, {
-      props: {
-        status: 'Processing',
-        isProcessing: true,
-        progressPercentage: 10,
-        isCancelling: false,
-      },
+        expect(wrapper.text()).toContain('Ready');
     });
 
-    const button = wrapper.get('button');
-    expect(button.text()).toBe('Cancel');
+    it('shows progress bar when percentage is provided', () => {
+        const wrapper = mount(StatusBar, {
+            props: {
+                status: 'Processing',
+                isProcessing: true,
+                progressPercentage: 50,
+                progressEtaSeconds: 95,
+            },
+        });
 
-    await button.trigger('click');
-    expect(wrapper.emitted('cancel')).toHaveLength(1);
-  });
+        expect(wrapper.find('.bg-blue-500').exists()).toBe(true);
+        expect(wrapper.find('.bg-blue-500').attributes('style')).toContain('width: 50%');
+        expect(wrapper.text()).toContain('ETA 1:35');
+    });
+
+    it('shows a cancel button while processing', async () => {
+        const wrapper = mount(StatusBar, {
+            props: {
+                status: 'Processing',
+                isProcessing: true,
+                progressPercentage: 10,
+                isCancelling: false,
+            },
+        });
+
+        const button = wrapper.get('button');
+        expect(button.text()).toBe('Cancel');
+
+        await button.trigger('click');
+        expect(wrapper.emitted('cancel')).toHaveLength(1);
+    });
 });
