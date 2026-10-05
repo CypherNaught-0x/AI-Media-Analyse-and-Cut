@@ -6,6 +6,7 @@ import type { PodcastScript, PodcastSegment, PodcastWorkspaceState, TranscriptSe
 import { useSettings } from '../composables/useSettings';
 import { formatDuration, calculateSegmentsDuration } from '../composables/useTimeFormat';
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
+import { exportFolderOf } from '../utils/filePath';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
@@ -547,9 +548,8 @@ async function exportClips() {
 
 async function openExportFolder() {
   if (lastExportPath.value) {
-    // Get directory from path
-    const dir = lastExportPath.value.replace(/[/\\][^/\\]+$/, "");
-    await invoke("open_folder", { path: dir });
+    // The last export is either the podcast file or the clips directory.
+    await invoke("open_folder", { path: exportFolderOf(lastExportPath.value) });
   }
 }
 </script>
