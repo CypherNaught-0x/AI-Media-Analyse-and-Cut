@@ -29,6 +29,12 @@ const props = withDefaults(defineProps<{
   videoAvailable?: boolean;
   videoPreviewIndex?: number | null;
   getPlayhead?: () => number | null;
+  /**
+   * Only the wording can be edited (used for translated views): splitting,
+   * merging, deleting, timing and speaker changes belong to the original
+   * transcript, which drives the cut.
+   */
+  lockStructure?: boolean;
 }>(), {
   showOnlyReviewSegments: false,
   reviewThreshold: 0.85,
@@ -38,7 +44,8 @@ const props = withDefaults(defineProps<{
   audioAvailable: false,
   previewIndex: null,
   videoAvailable: false,
-  videoPreviewIndex: null
+  videoPreviewIndex: null,
+  lockStructure: false
 });
 
 const emit = defineEmits<{
@@ -385,6 +392,7 @@ const canConfirmSplit = computed(() => {
 });
 
 const startSplitting = (originalIndex: number) => {
+  if (props.lockStructure) return;
   const segment = props.segments[originalIndex];
   if (!segment) return;
   cancelEdit();
@@ -661,6 +669,7 @@ const toggleReviewResolved = (originalIndex: number) => {
 };
 
 const deleteSegment = async (originalIndex: number) => {
+  if (props.lockStructure) return;
   const confirmed = await ask('Are you sure you want to delete this segment?', {
     title: 'Confirm Deletion',
     kind: 'warning'
@@ -674,6 +683,7 @@ const deleteSegment = async (originalIndex: number) => {
 };
 
 const deleteSelected = async () => {
+  if (props.lockStructure) return;
   const confirmed = await ask(`Are you sure you want to delete ${selectedIndices.value.size} segments?`, {
     title: 'Confirm Deletion',
     kind: 'warning'
@@ -691,6 +701,7 @@ const deleteSelected = async () => {
 };
 
 const mergeSelected = () => {
+  if (props.lockStructure) return;
   const indices = Array.from(selectedIndices.value).sort((a, b) => a - b);
   if (indices.length < 2) return;
 
@@ -725,6 +736,7 @@ const mergeSelected = () => {
 };
 
 const mergeDown = (originalIndex: number) => {
+  if (props.lockStructure) return;
   if (originalIndex >= props.segments.length - 1) return;
   
   const current = props.segments[originalIndex];
@@ -818,7 +830,7 @@ const mergeDown = (originalIndex: number) => {
     </div>
 
     <!-- Multi-selection Toolbar -->
-    <div v-if="selectedIndices.size > 0" class="sticky top-0 z-50 mb-4 p-2 bg-blue-600/20 backdrop-blur-md border border-blue-500/30 rounded-lg flex items-center justify-between">
+    <div v-if="selectedIndices.size > 0 && !lockStructure" class="sticky top-0 z-50 mb-4 p-2 bg-blue-600/20 backdrop-blur-md border border-blue-500/30 rounded-lg flex items-center justify-between">
         <span class="text-sm text-blue-200 font-medium px-2">{{ selectedIndices.size }} selected</span>
         <div class="flex gap-2">
             <button @click="mergeSelected" class="px-3 py-1.5 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors font-medium">Merge Selected</button>
@@ -940,7 +952,7 @@ const mergeDown = (originalIndex: number) => {
 
       <!-- Edit Mode -->
       <div v-else-if="editingIndex === originalIndex && tempSegment" class="space-y-4 bg-black/40 p-4 rounded-lg border border-white/10">
-        <div class="flex gap-4">
+        <div v-if="!lockStructure" class="flex gap-4">
             <div class="flex flex-col gap-1.5">
                 <label class="text-xs font-medium text-gray-400">Start</label>
                 <input v-model="tempSegment.start" class="w-24 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all" placeholder="MM:SS">
@@ -1171,9 +1183,11 @@ const mergeDown = (originalIndex: number) => {
                 {{ segment.reviewResolved ? 'Reopen' : 'Mark Done' }}
               </button>
               <button @click.stop="startEditing(originalIndex)" class="hidden rounded border border-blue-500/30 bg-blue-500/20 px-2 py-1 text-xs text-blue-300 transition-colors hover:bg-blue-500/30 group-hover:block">Edit</button>
+              <template v-if="!lockStructure">
               <button :data-testid="`segment-split-${originalIndex}`" @click.stop="startSplitting(originalIndex)" class="hidden rounded border border-teal-500/30 bg-teal-500/20 px-2 py-1 text-xs text-teal-300 transition-colors hover:bg-teal-500/30 group-hover:block" title="Split this segment at a chosen point">Split</button>
               <button v-if="originalIndex < segments.length - 1" @click.stop="mergeDown(originalIndex)" class="hidden rounded border border-purple-500/30 bg-purple-500/20 px-2 py-1 text-xs text-purple-300 transition-colors hover:bg-purple-500/30 group-hover:block" title="Merge with next">Merge ↓</button>
-              <button @click.stop="deleteSegment(originalIndex)" class="hidden rounded border border-red-500/30 bg-red-500/20 px-2 py-1 text-xs text-red-300 transition-colors hover:bg-red-500/30 group-hover:block">Del</button>
+              <button :data-testid="`segment-delete-${originalIndex}`" @click.stop="deleteSegment(originalIndex)" class="hidden rounded border border-red-500/30 bg-red-500/20 px-2 py-1 text-xs text-red-300 transition-colors hover:bg-red-500/30 group-hover:block">Del</button>
+              </template>
             </template>
       </div>
 

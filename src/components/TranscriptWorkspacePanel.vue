@@ -551,8 +551,18 @@ function onTimeUpdate() {
       </div>
     </div>
 
+    <p
+      v-if="currentLanguage !== 'Original'"
+      data-testid="translation-edit-hint"
+      class="mb-3 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-200"
+    >
+      Viewing the {{ currentLanguage }} translation: you can edit the wording here. Switch to
+      Original to cut, split, merge or retime segments.
+    </p>
+
     <Editor
       :segments="displaySegments"
+      :lockStructure="currentLanguage !== 'Original'"
       :speakerVisibility="speakerVisibility"
       :showOnlyReviewSegments="showOnlyReviewSegments"
       :reviewThreshold="reviewThresholdPercent / 100"
