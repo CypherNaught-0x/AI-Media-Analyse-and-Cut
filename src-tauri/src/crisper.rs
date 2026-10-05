@@ -206,16 +206,14 @@ fn system_python_candidates() -> Vec<String> {
     if cfg!(target_os = "windows") {
         // The `py` launcher resolves the newest installed version.
         let mut candidates = vec!["py".to_string()];
-        candidates.extend(
-            VERSIONED_PYTHONS
-                .iter()
-                .map(|name| format!("{name}.exe")),
-        );
+        candidates.extend(VERSIONED_PYTHONS.iter().map(|name| format!("{name}.exe")));
         candidates.push("python.exe".to_string());
         candidates
     } else {
-        let mut candidates: Vec<String> =
-            VERSIONED_PYTHONS.iter().map(|name| name.to_string()).collect();
+        let mut candidates: Vec<String> = VERSIONED_PYTHONS
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
         candidates.push("python".to_string());
         candidates
     }
@@ -423,8 +421,7 @@ fn finalize_status(mut status: CrisperEnvironmentStatus) -> CrisperEnvironmentSt
         ));
     } else if !status.installed {
         status.ready = false;
-        status.message =
-            Some("The 'crisperwhisper' package is not installed yet.".to_string());
+        status.message = Some("The 'crisperwhisper' package is not installed yet.".to_string());
     } else if status.backends.is_empty() {
         status.ready = false;
         status.message = Some(
@@ -735,10 +732,7 @@ async fn resolve_ready_python(
 /// The break is what makes removal real: the export concatenates segment spans,
 /// so a dropped word's time range only disappears from the video if it falls
 /// between two segments.
-fn partition_words(
-    words: Vec<WordWithSpeaker>,
-    drop: &[bool],
-) -> Vec<Vec<WordWithSpeaker>> {
+fn partition_words(words: Vec<WordWithSpeaker>, drop: &[bool]) -> Vec<Vec<WordWithSpeaker>> {
     let mut runs: Vec<Vec<WordWithSpeaker>> = Vec::new();
     let mut current: Vec<WordWithSpeaker> = Vec::new();
 
@@ -794,18 +788,12 @@ pub async fn transcribe_with_crisper(
         // Diarization needs the samples; the bridge script needs a file. One
         // FFmpeg pass produces the 16 kHz mono WAV both can use.
         emit_progress(&window, "Preparing audio for CrisperWhisper...")?;
-        let wav_path = std::env::temp_dir()
-            .join(format!("ai-media-cutter-crisper-{}.wav", fastrand::u64(..)));
+        let wav_path =
+            std::env::temp_dir().join(format!("ai-media-cutter-crisper-{}.wav", fastrand::u64(..)));
         write_wav_16k_mono(&audio_file, &wav_path)?;
 
         let outcome = transcribe_and_build(
-            &window,
-            &python,
-            &script,
-            &wav_path,
-            &language,
-            &mode,
-            &options,
+            &window, &python, &script, &wav_path, &language, &mode, &options,
         )
         .await;
 
@@ -945,7 +933,11 @@ mod tests {
 
     #[test]
     fn partition_words_keeps_everything_when_nothing_is_dropped() {
-        let words = vec![word(0.0, 0.2, "so"), word(0.2, 0.4, "we"), word(0.4, 0.6, "ship")];
+        let words = vec![
+            word(0.0, 0.2, "so"),
+            word(0.2, 0.4, "we"),
+            word(0.4, 0.6, "ship"),
+        ];
         let runs = partition_words(words, &[false, false, false]);
 
         assert_eq!(runs.len(), 1);
@@ -1070,9 +1062,9 @@ mod tests {
     }
 
     fn seconds(timestamp: &str) -> f64 {
-        timestamp
-            .split(':')
-            .fold(0.0, |total, part| total * 60.0 + part.parse::<f64>().unwrap())
+        timestamp.split(':').fold(0.0, |total, part| {
+            total * 60.0 + part.parse::<f64>().unwrap()
+        })
     }
 
     #[test]
@@ -1093,12 +1085,17 @@ mod tests {
                 "segments overlap or go backwards at {segment:?}"
             );
             assert!(end <= fixture.duration as f64 + 1.0);
-            assert!(segment.words.as_ref().is_some_and(|words| !words.is_empty()));
+            assert!(segment
+                .words
+                .as_ref()
+                .is_some_and(|words| !words.is_empty()));
             previous_end = end;
         }
 
         // Without diarization every word belongs to one speaker.
-        assert!(segments.iter().all(|segment| segment.speaker == "Speaker 1"));
+        assert!(segments
+            .iter()
+            .all(|segment| segment.speaker == "Speaker 1"));
 
         // The joined transcript should carry the recording's distinctive content.
         let joined = segments
@@ -1115,8 +1112,7 @@ mod tests {
     #[test]
     fn real_model_output_carries_the_recordings_fillers_verbatim() {
         let fixture = fixture();
-        let fillers: Vec<&RunnerWord> =
-            fixture.words.iter().filter(|word| word.filler).collect();
+        let fillers: Vec<&RunnerWord> = fixture.words.iter().filter(|word| word.filler).collect();
 
         // The recording contains two audible "uh"s.
         assert_eq!(fillers.len(), 2, "expected two fillers in this recording");
@@ -1241,7 +1237,9 @@ mod tests {
         );
 
         assert_eq!(baseline.len(), vocal_only.len());
-        assert!(vocal_only.iter().any(|segment| segment.text.contains("[UH]")));
+        assert!(vocal_only
+            .iter()
+            .any(|segment| segment.text.contains("[UH]")));
     }
 
     #[test]

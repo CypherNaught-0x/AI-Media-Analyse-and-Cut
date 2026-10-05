@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use log::{debug, error, info};
@@ -130,20 +130,21 @@ where
         cmd.input(outro.to_str().unwrap());
     }
 
-    let mut child = cmd.args([
-        "-y",
-        "-filter_complex",
-        &filter_complex,
-        "-map",
-        "[outa]",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-    ])
-    .output(output_path.to_str().unwrap())
-    .spawn()
-    .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
+    let mut child = cmd
+        .args([
+            "-y",
+            "-filter_complex",
+            &filter_complex,
+            "-map",
+            "[outa]",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+        ])
+        .output(output_path.to_str().unwrap())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
     let pid = child.as_inner().id();
     run_control
@@ -151,19 +152,19 @@ where
         .map_err(|error| anyhow::anyhow!(error))?;
 
     child
-    .iter()
-    .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
-    .for_each(|event| match event {
-        FfmpegEvent::Progress(p) => on_progress(p.time),
-        FfmpegEvent::Log(_level, msg) => {
-            debug!("[FFmpeg Log] {}", msg);
-        }
-        FfmpegEvent::Error(e) => {
-            error!("[FFmpeg Error] {}", e);
-            last_error = Some(e);
-        }
-        _ => {}
-    });
+        .iter()
+        .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
+        .for_each(|event| match event {
+            FfmpegEvent::Progress(p) => on_progress(p.time),
+            FfmpegEvent::Log(_level, msg) => {
+                debug!("[FFmpeg Log] {}", msg);
+            }
+            FfmpegEvent::Error(e) => {
+                error!("[FFmpeg Error] {}", e);
+                last_error = Some(e);
+            }
+            _ => {}
+        });
 
     run_control.clear_pid(run_id, pid);
 

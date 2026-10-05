@@ -29,8 +29,7 @@ const PAUSE_BREAK_SECONDS: f32 = 0.9;
 /// diarization model lives here and is shared by every local backend.
 pub(crate) const HF_RESOLVE_BASE: &str =
     "https://huggingface.co/altunenes/parakeet-rs/resolve/main";
-pub(crate) const DEFAULT_SORTFORMER_FILE_NAME: &str =
-    "diar_streaming_sortformer_4spk-v2.onnx";
+pub(crate) const DEFAULT_SORTFORMER_FILE_NAME: &str = "diar_streaming_sortformer_4spk-v2.onnx";
 
 /// A single recognised word with its speaker attribution.
 #[derive(Clone, Debug)]
@@ -293,8 +292,8 @@ pub(crate) fn build_transcript_segments_from_runs(
 
 /// Decode any media file to 16 kHz mono `f32` samples via FFmpeg.
 pub(crate) fn load_audio_16k_mono(path: &Path) -> Result<Vec<f32>> {
-    let temp_wav_path = std::env::temp_dir()
-        .join(format!("ai-media-cutter-asr-{}.wav", fastrand::u64(..)));
+    let temp_wav_path =
+        std::env::temp_dir().join(format!("ai-media-cutter-asr-{}.wav", fastrand::u64(..)));
 
     let result = (|| -> Result<Vec<f32>> {
         write_wav_16k_mono(path, &temp_wav_path)?;
@@ -478,14 +477,13 @@ pub(crate) fn diarize(sortformer_file: &Path, audio: Vec<f32>) -> Result<Vec<Spe
     }
 
     let mut sortformer =
-        Sortformer::with_config(sortformer_file, None, DiarizationConfig::callhome()).with_context(
-            || {
+        Sortformer::with_config(sortformer_file, None, DiarizationConfig::callhome())
+            .with_context(|| {
                 format!(
                     "Failed to load Sortformer model '{}'",
                     sortformer_file.display()
                 )
-            },
-        )?;
+            })?;
 
     sortformer
         .diarize(audio, SAMPLE_RATE as u32, 1)
@@ -628,10 +626,7 @@ mod tests {
 
     #[test]
     fn speaker_label_prefers_the_most_overlapping_speaker() {
-        let diarization = vec![
-            speaker_segment(0, 0.0, 1.0),
-            speaker_segment(1, 1.0, 3.0),
-        ];
+        let diarization = vec![speaker_segment(0, 0.0, 1.0), speaker_segment(1, 1.0, 3.0)];
 
         assert_eq!(speaker_label_for_word(0.1, 0.4, &diarization), "Speaker 1");
         assert_eq!(speaker_label_for_word(1.5, 2.0, &diarization), "Speaker 2");

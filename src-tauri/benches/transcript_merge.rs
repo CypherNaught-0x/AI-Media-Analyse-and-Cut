@@ -14,9 +14,7 @@ use std::hint::black_box;
 
 use ai_media_cutter_lib::transcript_merge::merge_transcript_hypotheses;
 use ai_media_cutter_lib::video::{TranscriptSegment, TranscriptWord};
-use criterion::{
-    criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 
 /// Tiny deterministic xorshift PRNG so the benchmark needs no external rng and
 /// produces identical input on every run.
