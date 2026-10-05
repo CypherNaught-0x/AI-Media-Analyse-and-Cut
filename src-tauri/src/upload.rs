@@ -1,5 +1,4 @@
 use anyhow::Result;
-use reqwest::Client;
 use serde::Deserialize;
 use std::path::Path;
 use tokio::time::{sleep, Duration};
@@ -29,7 +28,7 @@ pub async fn upload_file_and_wait(
         return Ok(None);
     }
 
-    let client = Client::new();
+    let client = crate::http::http_client();
     let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
 
     let content = tokio::fs::read(path).await?;
@@ -61,8 +60,14 @@ pub async fn upload_file_and_wait(
     let name = file_resource.name;
     let uri = file_resource.uri;
 
-    // Poll if not active
+    // Poll until Google has processed the file, but not forever.
+    let deadline = std::time::Instant::now() + Duration::from_secs(600);
     while state == "PROCESSING" {
+        if std::time::Instant::now() > deadline {
+            return Err(anyhow::anyhow!(
+                "The uploaded audio was still being processed after 10 minutes"
+            ));
+        }
         sleep(Duration::from_secs(2)).await;
 
         let get_res = client

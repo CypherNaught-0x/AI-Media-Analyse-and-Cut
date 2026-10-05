@@ -103,7 +103,7 @@ async fn resolve_parakeet_dir(
 
     let parakeet_dir = model_root(window, "parakeet-rs")?.join(DEFAULT_TDT_DIR_NAME);
     tokio::fs::create_dir_all(&parakeet_dir).await?;
-    let client = reqwest::Client::new();
+    let client = crate::http::http_client();
     for file in &PARAKEET_TDT_INT8 {
         ensure_pinned_file(
             &client,
