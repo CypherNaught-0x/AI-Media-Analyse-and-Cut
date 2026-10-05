@@ -73,6 +73,11 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Dependency policy (licences, advisories, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: src-tauri/Cargo.toml
+
       - name: Backend tests
         working-directory: src-tauri
         env:
