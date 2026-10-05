@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { appendFileNameSuffix } from '../filePath';
+import { appendFileNameSuffix, exportFolderOf } from '../filePath';
 
 describe('appendFileNameSuffix', () => {
   it('inserts the suffix before the file extension', () => {
@@ -25,5 +25,20 @@ describe('appendFileNameSuffix', () => {
 
   it('appends the suffix when there is no extension', () => {
     expect(appendFileNameSuffix('/videos/talk', '_cut')).toBe('/videos/talk_cut');
+  });
+});
+
+describe('exportFolderOf', () => {
+  it('returns the parent folder of an exported file', () => {
+    expect(exportFolderOf('/videos/talk_podcast.m4a')).toBe('/videos');
+    expect(exportFolderOf('C:\\videos\\talk_podcast.m4a')).toBe('C:\\videos');
+  });
+
+  it('returns an export directory itself', () => {
+    expect(exportFolderOf('/videos/talk_podcast_clips')).toBe('/videos/talk_podcast_clips');
+  });
+
+  it('is not fooled by a dot in a parent directory', () => {
+    expect(exportFolderOf('/v1.2/talk_clips')).toBe('/v1.2/talk_clips');
   });
 });
