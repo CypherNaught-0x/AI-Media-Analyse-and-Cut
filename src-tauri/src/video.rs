@@ -1,4 +1,6 @@
+use crate::encoders::{encode_args, preferred_h264_encoder, ExportQuality};
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
+use crate::media_probe::probe_media;
 use crate::run_control::RunControl;
 use crate::time_utils::parse_timestamp_to_seconds_raw;
 use anyhow::Result;
@@ -108,15 +110,6 @@ where
     run_control
         .ensure_active(run_id)
         .map_err(|error| anyhow::anyhow!(error))?;
-    // Optimization: Use filter_complex to cut and concat in a single pass.
-    // Example:
-    // ffmpeg -i input.mp4 -filter_complex
-    // "[0:v]trim=start=10:end=20,setpts=PTS-STARTPTS[v0];
-    //  [0:a]atrim=start=10:end=20,asetpts=PTS-STARTPTS[a0];
-    //  [0:v]trim=start=30:end=40,setpts=PTS-STARTPTS[v1];
-    //  [0:a]atrim=start=30:end=40,asetpts=PTS-STARTPTS[a1];
-    //  [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
-    // -map "[v]" -map "[a]" output.mp4
 
     info!(
         "Starting cut_video: input={:?}, output={:?}, segments={}",
@@ -125,20 +118,23 @@ where
         segments.len()
     );
 
-    let (filter_complex, _inputs) = build_filter_complex(segments)?;
+    let media = probe_media(input_path).map_err(|error| anyhow::anyhow!(error))?;
+    let plan = plan_cut(segments, media.video.is_some(), media.audio.is_some())?;
 
     let mut command = FfmpegCommand::new();
+    // Seek the input to the first kept range: ffmpeg then starts decoding
+    // there instead of at 0:00, and stays frame-accurate because the output is
+    // re-encoded.
     command
+        .args(["-y", "-ss", &format!("{:.6}", plan.seek_seconds)])
         .input(input_path.to_str().unwrap())
-        .args([
-            "-y",
-            "-filter_complex",
-            &filter_complex,
-            "-map",
-            "[v]",
-            "-map",
-            "[a]",
-        ])
+        .args(["-filter_complex", &plan.filter])
+        .args(
+            plan.maps
+                .iter()
+                .flat_map(|label| ["-map".to_string(), label.clone()]),
+        )
+        .args(encode_args_for_output(output_path, media.video.is_some()))
         .output(output_path.to_str().unwrap());
     run_ffmpeg(
         command,
@@ -159,42 +155,114 @@ where
     Ok(())
 }
 
-fn build_filter_complex(segments: &[Segment]) -> Result<(String, String)> {
-    let mut filter_complex = String::new();
-    let mut inputs = String::new();
+/// How to cut and join source ranges in one ffmpeg pass.
+#[derive(Debug, PartialEq)]
+struct CutPlan {
+    /// Input seek (seconds); trims in `filter` are relative to it.
+    seek_seconds: f64,
+    filter: String,
+    /// Output labels to `-map`.
+    maps: Vec<String>,
+}
 
-    for (i, segment) in segments.iter().enumerate() {
-        // Parse timestamps to bare numbers so untrusted strings can't be
-        // injected into the ffmpeg filtergraph.
-        let start = parse_timestamp_to_seconds_raw(&segment.start).map_err(|e| {
-            anyhow::anyhow!("Invalid segment start timestamp '{}': {}", segment.start, e)
-        })?;
-        let end = parse_timestamp_to_seconds_raw(&segment.end).map_err(|e| {
-            anyhow::anyhow!("Invalid segment end timestamp '{}': {}", segment.end, e)
-        })?;
-
-        // Video trim
-        filter_complex.push_str(&format!(
-            "[0:v]trim=start={}:end={},setpts=PTS-STARTPTS[v{}];",
-            start, end, i
-        ));
-
-        // Audio trim
-        filter_complex.push_str(&format!(
-            "[0:a]atrim=start={}:end={},asetpts=PTS-STARTPTS[a{}];",
-            start, end, i
-        ));
-
-        inputs.push_str(&format!("[v{}][a{}]", i, i));
+/// Plan a cut that keeps `segments` (in the given order) from a source with
+/// the given streams:
+///
+/// `-ss <seek> -i in -filter_complex
+///  "[0:v]trim=start=..:end=..,setpts=PTS-STARTPTS[v0];[0:a]atrim=..[a0];...
+///   [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"`
+fn plan_cut(segments: &[Segment], has_video: bool, has_audio: bool) -> Result<CutPlan> {
+    if !has_video && !has_audio {
+        return Err(anyhow::anyhow!("The source has no audio or video to cut"));
+    }
+    if segments.is_empty() {
+        return Err(anyhow::anyhow!("Nothing to cut: no segments were given"));
     }
 
-    filter_complex.push_str(&format!(
-        "{}concat=n={}:v=1:a=1[v][a]",
-        inputs,
-        segments.len()
+    // Parse timestamps to bare numbers so untrusted strings can't be injected
+    // into the ffmpeg filtergraph.
+    let ranges = segments
+        .iter()
+        .map(|segment| {
+            let start = parse_timestamp_to_seconds_raw(&segment.start).map_err(|e| {
+                anyhow::anyhow!("Invalid segment start timestamp '{}': {}", segment.start, e)
+            })?;
+            let end = parse_timestamp_to_seconds_raw(&segment.end).map_err(|e| {
+                anyhow::anyhow!("Invalid segment end timestamp '{}': {}", segment.end, e)
+            })?;
+            if end <= start {
+                return Err(anyhow::anyhow!(
+                    "Segment end {} must be after its start {}",
+                    segment.end,
+                    segment.start
+                ));
+            }
+            Ok((start.max(0.0), end))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let seek = ranges
+        .iter()
+        .map(|(start, _)| *start)
+        .fold(f64::INFINITY, f64::min);
+
+    let mut filter = String::new();
+    let mut concat_inputs = String::new();
+    for (i, (start, end)) in ranges.iter().enumerate() {
+        let (start, end) = (start - seek, end - seek);
+        if has_video {
+            filter.push_str(&format!(
+                "[0:v]trim=start={start:.6}:end={end:.6},setpts=PTS-STARTPTS[v{i}];"
+            ));
+            concat_inputs.push_str(&format!("[v{i}]"));
+        }
+        if has_audio {
+            filter.push_str(&format!(
+                "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS[a{i}];"
+            ));
+            concat_inputs.push_str(&format!("[a{i}]"));
+        }
+    }
+
+    let mut maps = Vec::new();
+    let mut outputs = String::new();
+    if has_video {
+        outputs.push_str("[v]");
+        maps.push("[v]".to_string());
+    }
+    if has_audio {
+        outputs.push_str("[a]");
+        maps.push("[a]".to_string());
+    }
+    filter.push_str(&format!(
+        "{concat_inputs}concat=n={}:v={}:a={}{outputs}",
+        ranges.len(),
+        u8::from(has_video),
+        u8::from(has_audio)
     ));
 
-    Ok((filter_complex, inputs))
+    Ok(CutPlan {
+        seek_seconds: seek,
+        filter,
+        maps,
+    })
+}
+
+/// Encoder arguments for a cut written to `output`. Containers that take
+/// H.264 get the preferred (hardware when available) encoder with explicit
+/// quality settings; anything else (webm, avi, audio formats) keeps ffmpeg's
+/// per-container defaults, which is what made those exports work before.
+fn encode_args_for_output(output: &Path, has_video: bool) -> Vec<String> {
+    let extension = output
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if has_video && matches!(extension.as_str(), "mp4" | "mov" | "m4v" | "mkv") {
+        encode_args(preferred_h264_encoder(), ExportQuality::Balanced)
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn export_clips<F>(
@@ -298,18 +366,6 @@ where
     Ok(())
 }
 
-/// Encoder settings for re-encoded clip exports: broadly playable H.264/AAC
-/// with the moov atom up front so the file streams and seeks immediately.
-const CLIP_ENCODE_ARGS: &[(&str, &str)] = &[
-    ("-c:v", "libx264"),
-    ("-preset", "veryfast"),
-    ("-crf", "20"),
-    ("-pix_fmt", "yuv420p"),
-    ("-c:a", "aac"),
-    ("-b:a", "192k"),
-    ("-movflags", "+faststart"),
-];
-
 /// ffmpeg arguments (before and after `-i`) for exporting one source range.
 ///
 /// The seek is an *input* option in both modes, so ffmpeg jumps straight to the
@@ -338,11 +394,11 @@ fn single_clip_args(segment: &Segment, fast_mode: bool) -> Result<(Vec<String>, 
     if fast_mode {
         output_args.extend(["-c", "copy", "-avoid_negative_ts", "make_zero"].map(String::from));
     } else {
-        output_args.extend(
-            CLIP_ENCODE_ARGS
-                .iter()
-                .flat_map(|(flag, value)| [flag.to_string(), value.to_string()]),
-        );
+        // Clips are always .mp4.
+        output_args.extend(encode_args(
+            preferred_h264_encoder(),
+            ExportQuality::Balanced,
+        ));
     }
     Ok((input_args, output_args))
 }
@@ -365,29 +421,6 @@ fn build_clip_output_filename(i: usize, segment: &ClipSegment) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_build_filter_complex() {
-        let segments = vec![
-            Segment {
-                start: "00:00".to_string(),
-                end: "00:10".to_string(),
-            },
-            Segment {
-                start: "00:20".to_string(),
-                end: "00:30".to_string(),
-            },
-        ];
-
-        let (filter, inputs) = build_filter_complex(&segments).unwrap();
-
-        assert!(filter.contains("[0:v]trim=start=0:end=10,setpts=PTS-STARTPTS[v0];"));
-        assert!(filter.contains("[0:a]atrim=start=0:end=10,asetpts=PTS-STARTPTS[a0];"));
-        assert!(filter.contains("[0:v]trim=start=20:end=30,setpts=PTS-STARTPTS[v1];"));
-        assert!(filter.contains("[0:a]atrim=start=20:end=30,asetpts=PTS-STARTPTS[a1];"));
-        assert!(filter.contains("concat=n=2:v=1:a=1[v][a]"));
-        assert_eq!(inputs, "[v0][a0][v1][a1]");
-    }
-
     fn segment(start: &str, end: &str) -> Segment {
         Segment {
             start: start.to_string(),
@@ -396,11 +429,79 @@ mod tests {
     }
 
     #[test]
+    fn plan_cut_seeks_to_the_first_range_and_trims_relative_to_it() {
+        let plan = plan_cut(
+            &[segment("00:10", "00:20"), segment("00:30", "00:40")],
+            true,
+            true,
+        )
+        .unwrap();
+        assert_eq!(plan.seek_seconds, 10.0);
+        assert_eq!(
+            plan.filter,
+            "[0:v]trim=start=0.000000:end=10.000000,setpts=PTS-STARTPTS[v0];\
+             [0:a]atrim=start=0.000000:end=10.000000,asetpts=PTS-STARTPTS[a0];\
+             [0:v]trim=start=20.000000:end=30.000000,setpts=PTS-STARTPTS[v1];\
+             [0:a]atrim=start=20.000000:end=30.000000,asetpts=PTS-STARTPTS[a1];\
+             [v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"
+        );
+        assert_eq!(plan.maps, ["[v]", "[a]"]);
+    }
+
+    #[test]
+    fn plan_cut_keeps_spliced_order_and_seeks_to_the_earliest_range() {
+        let plan = plan_cut(
+            &[segment("00:30", "00:31"), segment("00:05", "00:06")],
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(plan.seek_seconds, 5.0);
+        assert!(plan
+            .filter
+            .starts_with("[0:v]trim=start=25.000000:end=26.000000"));
+        assert!(plan.filter.ends_with("[v0][v1]concat=n=2:v=1:a=0[v]"));
+        assert_eq!(plan.maps, ["[v]"]);
+    }
+
+    #[test]
+    fn plan_cut_handles_audio_only_sources() {
+        let plan = plan_cut(&[segment("00:01", "00:02")], false, true).unwrap();
+        assert_eq!(
+            plan.filter,
+            "[0:a]atrim=start=0.000000:end=1.000000,asetpts=PTS-STARTPTS[a0];\
+             [a0]concat=n=1:v=0:a=1[a]"
+        );
+        assert_eq!(plan.maps, ["[a]"]);
+    }
+
+    #[test]
+    fn plan_cut_rejects_unusable_input() {
+        assert!(plan_cut(&[], true, true).is_err());
+        assert!(plan_cut(&[segment("00:02", "00:01")], true, true).is_err());
+        assert!(plan_cut(&[segment("x", "00:01")], true, true).is_err());
+        assert!(plan_cut(&[segment("00:00", "00:01")], false, false).is_err());
+    }
+
+    #[test]
+    fn only_h264_containers_get_explicit_video_encoding() {
+        assert!(encode_args_for_output(Path::new("/a/b_cut.mp4"), true)
+            .windows(2)
+            .any(|w| w == ["-pix_fmt", "yuv420p"]));
+        assert!(encode_args_for_output(Path::new("/a/b_cut.MOV"), true).len() > 2);
+        assert!(encode_args_for_output(Path::new("/a/b_cut.webm"), true).is_empty());
+        assert!(encode_args_for_output(Path::new("/a/b_cut.mp4"), false).is_empty());
+        assert!(encode_args_for_output(Path::new("/a/b_cut.mp3"), false).is_empty());
+    }
+
+    #[test]
     fn single_clip_seeks_on_the_input_and_reencodes_by_default() {
         let (input, output) = single_clip_args(&segment("01:05.250", "01:15.750"), false).unwrap();
         assert_eq!(input, ["-y", "-ss", "65.250"]);
         assert_eq!(&output[..2], ["-t", "10.500"]);
-        assert!(output.windows(2).any(|w| w == ["-c:v", "libx264"]));
+        assert!(output
+            .windows(2)
+            .any(|w| w == ["-c:v", preferred_h264_encoder().ffmpeg_name()]));
         assert!(output.windows(2).any(|w| w == ["-pix_fmt", "yuv420p"]));
         assert!(!output.iter().any(|a| a == "copy"));
     }
@@ -502,6 +603,93 @@ mod tests {
                 "{stream} duration {duration}"
             );
         }
+    }
+
+    /// 4 s of video, one solid colour per second (red, green, blue, white),
+    /// with a keyframe only every 2 s, plus a tone.
+    fn make_colour_source(dir: &Path) -> std::path::PathBuf {
+        let source = dir.join("colours.mp4");
+        let colours = ["red", "green", "blue", "white"]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("color=c={c}:s=64x64:r=25:d=1[c{i}];"))
+            .collect::<String>();
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args([
+                "-filter_complex",
+                &format!("{colours}[c0][c1][c2][c3]concat=n=4:v=1:a=0,format=yuv420p[v]"),
+            ])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
+            .args(["-map", "[v]", "-map", "0:a"])
+            .args(["-c:v", "libx264", "-g", "50", "-keyint_min", "50"])
+            .args(["-sc_threshold", "0", "-c:a", "aac", "-shortest"])
+            .arg(&source)
+            .status()
+            .expect("ffmpeg must be on PATH for this test");
+        assert!(status.success());
+        source
+    }
+
+    /// Average colour (r, g, b) of the frame at `seconds`.
+    fn colour_at(path: &Path, seconds: f64) -> (u8, u8, u8) {
+        let output = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error"])
+            .args(["-ss", &seconds.to_string()])
+            .arg("-i")
+            .arg(path)
+            .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
+            .args(["-pix_fmt", "rgb24", "-"])
+            .output()
+            .expect("ffmpeg must be on PATH for this test");
+        let rgb = output.stdout;
+        assert_eq!(rgb.len(), 3, "expected one rgb pixel");
+        (rgb[0], rgb[1], rgb[2])
+    }
+
+    fn is_close(actual: (u8, u8, u8), expected: (u8, u8, u8)) -> bool {
+        let d = |a: u8, b: u8| (a as i16 - b as i16).abs();
+        d(actual.0, expected.0) < 40 && d(actual.1, expected.1) < 40 && d(actual.2, expected.2) < 40
+    }
+
+    /// The input seek must not shift what each range shows: cutting
+    /// [1.2, 1.8] (green) then [2.2, 2.8] (blue) mid-GOP must play green, then
+    /// blue.
+    #[test]
+    fn cut_video_ranges_show_the_right_source_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = make_colour_source(dir.path());
+        let output = dir.path().join("cut.mp4");
+        let control = RunControl::default();
+        let run_id = control.begin_run();
+
+        cut_video(
+            &source,
+            &[
+                segment("00:01.200", "00:01.800"),
+                segment("00:02.200", "00:02.800"),
+            ],
+            &output,
+            run_id,
+            &control,
+            |_| {},
+        )
+        .unwrap();
+
+        let green = (0, 128, 0);
+        let blue = (0, 0, 255);
+        assert!(
+            is_close(colour_at(&output, 0.3), green),
+            "{:?}",
+            colour_at(&output, 0.3)
+        );
+        assert!(
+            is_close(colour_at(&output, 0.9), blue),
+            "{:?}",
+            colour_at(&output, 0.9)
+        );
+        let duration = stream_duration(&output, "v:0");
+        assert!((duration - 1.2).abs() < 0.08, "duration {duration}");
     }
 
     /// Runs real ffmpeg (expected on PATH, like the silence tests): a clip cut
