@@ -1,3 +1,5 @@
 # Formatting-only commits (git config blame.ignoreRevsFile .git-blame-ignore-revs)
 # style(rust): apply cargo fmt
 19b3f1b34d8fa5621484b544be733767e61479ca
+# style: format the frontend with Prettier
+626d602203346b23c553f9c45a78c25048ddd6a6
