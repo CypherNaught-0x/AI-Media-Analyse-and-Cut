@@ -91,7 +91,16 @@ The project includes a comprehensive test suite, including unit tests and integr
 
 ### Running Tests
 
-To run all tests (unit and integration):
+To run everything CI checks — ESLint, type-checking of the app and the specs,
+`cargo fmt`, clippy and all tests — use [`just`](https://github.com/casey/just):
+
+```bash
+just check
+```
+
+`just --list` shows the individual recipes (`lint`, `typecheck`, `test`, `clippy`, …).
+
+To run only the Rust tests (unit and integration):
 
 ```bash
 cd src-tauri
