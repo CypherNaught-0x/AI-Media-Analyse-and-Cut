@@ -16,6 +16,8 @@ interface Props {
   hasMediaFile: boolean;
   state: PodcastWorkspaceState;
   cancelGeneration: number;
+  /** The analysis context the user described for this media, if any. */
+  context: string;
   /** Another job (analysis, translation, export, ...) is running app-wide. */
   busy: boolean;
 }
@@ -191,7 +193,7 @@ async function generatePodcast() {
       transcript,
       minDuration: minDurationSeconds.value,
       maxDuration: maxDurationSeconds.value,
-      context: null
+      context: props.context.trim() || null
     });
     assertActiveRun(runId);
 
