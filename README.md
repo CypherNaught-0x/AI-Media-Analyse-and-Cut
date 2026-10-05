@@ -317,3 +317,10 @@ To extend blacklist coverage for another language, add a new `xx.txt` file in th
 ## License
 
 MIT
+
+Third-party licences are checked in CI: `cargo deny check` (policy in
+`src-tauri/deny.toml`) covers the Rust dependencies, and
+[`src/assets/runtime-licenses.json`](src/assets/runtime-licenses.json) registers everything the
+app downloads at runtime (FFmpeg, model weights, the CrisperWhisper Python environment). The
+register's notices are shown under *Settings → Third-Party Models & Tools*; the CrisperWhisper
+weights are the one licence exception (non-commercial).

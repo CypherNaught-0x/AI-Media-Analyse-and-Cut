@@ -7,7 +7,7 @@ dev:
     pnpm tauri dev
 
 # Run every check CI runs: lint, types, formatting, clippy and all tests
-check: lint format-check typecheck fmt-check clippy test
+check: lint format-check typecheck fmt-check clippy deny test
 
 # Lint the frontend
 lint:
@@ -41,6 +41,10 @@ fmt-check:
 # Lint the Rust code (warnings are errors, as in CI)
 clippy:
     cd src-tauri && cargo clippy --all-targets -- -D warnings
+
+# Check Rust dependency licences, advisories and sources (needs cargo-deny)
+deny:
+    cd src-tauri && cargo deny check
 
 # Run the transcript-merge benchmark
 bench:
