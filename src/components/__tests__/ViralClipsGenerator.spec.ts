@@ -68,7 +68,7 @@ describe('ViralClipsGenerator', () => {
       runId: 123,
       inputPath: '/tmp/source.mp4',
       outputDir: '/tmp/source_clips',
-      fastMode: true,
+      fastMode: false,
       segments: [
         {
           label: 'Numeric clip',

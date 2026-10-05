@@ -273,19 +273,15 @@ where
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
             let mut last_error = None;
+            let (input_args, output_args) = single_clip_args(s, fast_mode)?;
 
             let mut cmd = FfmpegCommand::new();
+            cmd.args(input_args);
             cmd.input(input_path.to_str().unwrap());
+            cmd.args(output_args);
 
-            if fast_mode {
-                cmd.args(["-y", "-ss", &s.start, "-to", &s.end, "-c", "copy"]);
-            } else {
-                cmd.args([
-                    "-y", "-ss", &s.start, "-to", &s.end, "-c:v", "libx264", "-c:a", "aac",
-                ]);
-            }
-
-            let mut child = cmd.output(output_path.to_str().unwrap())
+            let mut child = cmd
+                .output(output_path.to_str().unwrap())
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
 
@@ -340,6 +336,55 @@ where
     Ok(())
 }
 
+/// Encoder settings for re-encoded clip exports: broadly playable H.264/AAC
+/// with the moov atom up front so the file streams and seeks immediately.
+const CLIP_ENCODE_ARGS: &[(&str, &str)] = &[
+    ("-c:v", "libx264"),
+    ("-preset", "veryfast"),
+    ("-crf", "20"),
+    ("-pix_fmt", "yuv420p"),
+    ("-c:a", "aac"),
+    ("-b:a", "192k"),
+    ("-movflags", "+faststart"),
+];
+
+/// ffmpeg arguments (before and after `-i`) for exporting one source range.
+///
+/// The seek is an *input* option in both modes, so ffmpeg jumps straight to the
+/// range instead of decoding from the start of the file.
+/// - Re-encode (default): frame-accurate, because ffmpeg decodes from the
+///   preceding keyframe and discards frames up to the exact start.
+/// - `fast_mode` (stream copy): a draft export. Copying can only start on a
+///   keyframe, so the clip may begin slightly before `start`; seeking on the
+///   input keeps it starting on that keyframe instead of on a frame that can't
+///   be decoded (frozen or garbled opening).
+fn single_clip_args(segment: &Segment, fast_mode: bool) -> Result<(Vec<String>, Vec<String>)> {
+    let start = parse_timestamp_to_seconds_raw(&segment.start)
+        .map_err(|e| anyhow::anyhow!("Invalid clip start timestamp '{}': {}", segment.start, e))?;
+    let end = parse_timestamp_to_seconds_raw(&segment.end)
+        .map_err(|e| anyhow::anyhow!("Invalid clip end timestamp '{}': {}", segment.end, e))?;
+    if end <= start {
+        return Err(anyhow::anyhow!(
+            "Clip end {} must be after its start {}",
+            segment.end,
+            segment.start
+        ));
+    }
+
+    let input_args = vec!["-y".to_string(), "-ss".to_string(), format!("{:.3}", start)];
+    let mut output_args = vec!["-t".to_string(), format!("{:.3}", end - start)];
+    if fast_mode {
+        output_args.extend(["-c", "copy", "-avoid_negative_ts", "make_zero"].map(String::from));
+    } else {
+        output_args.extend(
+            CLIP_ENCODE_ARGS
+                .iter()
+                .flat_map(|(flag, value)| [flag.to_string(), value.to_string()]),
+        );
+    }
+    Ok((input_args, output_args))
+}
+
 fn build_clip_output_filename(i: usize, segment: &ClipSegment) -> String {
     let suffix = segment
         .label
@@ -379,6 +424,131 @@ mod tests {
         assert!(filter.contains("[0:a]atrim=start=20:end=30,asetpts=PTS-STARTPTS[a1];"));
         assert!(filter.contains("concat=n=2:v=1:a=1[v][a]"));
         assert_eq!(inputs, "[v0][a0][v1][a1]");
+    }
+
+    fn segment(start: &str, end: &str) -> Segment {
+        Segment {
+            start: start.to_string(),
+            end: end.to_string(),
+        }
+    }
+
+    #[test]
+    fn single_clip_seeks_on_the_input_and_reencodes_by_default() {
+        let (input, output) = single_clip_args(&segment("01:05.250", "01:15.750"), false).unwrap();
+        assert_eq!(input, ["-y", "-ss", "65.250"]);
+        assert_eq!(&output[..2], ["-t", "10.500"]);
+        assert!(output.windows(2).any(|w| w == ["-c:v", "libx264"]));
+        assert!(output.windows(2).any(|w| w == ["-pix_fmt", "yuv420p"]));
+        assert!(!output.iter().any(|a| a == "copy"));
+    }
+
+    #[test]
+    fn single_clip_fast_mode_stream_copies() {
+        let (input, output) = single_clip_args(&segment("00:10", "00:20"), true).unwrap();
+        assert_eq!(input, ["-y", "-ss", "10.000"]);
+        assert_eq!(
+            output,
+            [
+                "-t",
+                "10.000",
+                "-c",
+                "copy",
+                "-avoid_negative_ts",
+                "make_zero"
+            ]
+        );
+    }
+
+    #[test]
+    fn single_clip_rejects_empty_or_invalid_ranges() {
+        assert!(single_clip_args(&segment("00:20", "00:20"), false).is_err());
+        assert!(single_clip_args(&segment("00:20", "00:10"), false).is_err());
+        assert!(single_clip_args(&segment("-ss", "00:10"), false).is_err());
+    }
+
+    /// Runs real ffmpeg (expected on PATH, like the silence tests): a clip cut
+    /// between keyframes must start on a decodable keyframe and have the exact
+    /// requested length.
+    #[test]
+    fn exported_clip_is_frame_accurate() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        // 4 s at 25 fps with a keyframe only every 2 s, so 0.6 s is mid-GOP.
+        let status = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=320x240:rate=25:duration=4",
+            ])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
+            .args([
+                "-c:v",
+                "libx264",
+                "-g",
+                "50",
+                "-keyint_min",
+                "50",
+                "-sc_threshold",
+                "0",
+            ])
+            .args(["-c:a", "aac", "-shortest"])
+            .arg(&source)
+            .status()
+            .expect("ffmpeg must be on PATH for this test");
+        assert!(status.success());
+
+        let out_dir = dir.path().join("clips");
+        let control = RunControl::default();
+        let run_id = control.begin_run();
+        let clip = ClipSegment {
+            segments: vec![segment("00:00.600", "00:01.600")],
+            label: None,
+            reason: None,
+        };
+        export_clips(
+            &source,
+            &[clip],
+            &out_dir,
+            false,
+            run_id,
+            &control,
+            |_, _, _| {},
+        )
+        .unwrap();
+
+        let clip_path = out_dir.join("clip_001.mp4");
+        let probe = |args: &[&str]| {
+            let output = Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", "v:0"])
+                .args(args)
+                .arg(&clip_path)
+                .output()
+                .expect("ffprobe must be on PATH for this test");
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+
+        let duration: f64 = probe(&["-show_entries", "stream=duration", "-of", "csv=p=0"])
+            .parse()
+            .unwrap();
+        assert!((duration - 1.0).abs() < 0.05, "clip duration {duration}");
+
+        let first_packet_flags = probe(&[
+            "-read_intervals",
+            "%+#1",
+            "-show_entries",
+            "packet=flags",
+            "-of",
+            "csv=p=0",
+        ]);
+        assert!(
+            first_packet_flags.starts_with('K'),
+            "first packet flags {first_packet_flags}"
+        );
     }
 
     #[test]

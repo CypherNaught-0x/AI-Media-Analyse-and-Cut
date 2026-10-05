@@ -202,7 +202,9 @@ async function exportClips() {
       inputPath: props.inputPath,
       segments: clipSegments,
       outputDir,
-      fastMode: true
+      // Stream copy can only start on a keyframe, so clips would open early or
+      // on a frame that can't be decoded. Social clips need exact cuts.
+      fastMode: false
     });
     assertActiveRun(runId);
 
