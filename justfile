@@ -2,6 +2,42 @@
 default:
     @just --list
 
+# Run the app in development mode
+dev:
+    pnpm tauri dev
+
+# Run every check CI runs: lint, types, formatting, clippy and all tests
+check: lint typecheck fmt-check clippy test
+
+# Lint the frontend
+lint:
+    pnpm lint
+
+# Type-check the app and the specs
+typecheck:
+    pnpm typecheck
+
+# Run frontend and backend tests
+test:
+    pnpm test -- --run
+    cd src-tauri && cargo test
+
+# Format the Rust code
+fmt:
+    cd src-tauri && cargo fmt
+
+# Check Rust formatting without changing files
+fmt-check:
+    cd src-tauri && cargo fmt --check
+
+# Lint the Rust code (warnings are errors, as in CI)
+clippy:
+    cd src-tauri && cargo clippy --all-targets -- -D warnings
+
+# Run the transcript-merge benchmark
+bench:
+    cd src-tauri && cargo bench --bench transcript_merge
+
 # Regenerate the README preview screenshots in dev-resources/
 screenshots:
     pnpm exec playwright install chromium
