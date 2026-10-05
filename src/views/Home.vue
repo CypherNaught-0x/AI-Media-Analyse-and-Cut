@@ -9,7 +9,6 @@ export default { name: 'Home' };
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
@@ -20,7 +19,6 @@ import HomeSourcePanel from '../components/HomeSourcePanel.vue';
 import TranscriptWorkspacePanel from '../components/TranscriptWorkspacePanel.vue';
 import WorkspaceTabs from '../components/WorkspaceTabs.vue';
 import type {
-    AudioChunk,
     AudioInfo,
     Clip,
     ClipWorkspaceState,
@@ -50,6 +48,7 @@ import {
 
 import { adjustSegmentsWithOffsets } from '../utils/transcriptOffsets';
 import { appendFileNameSuffix } from '../utils/filePath';
+import { commands } from '../bindings';
 
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
@@ -265,7 +264,7 @@ async function refreshExtractedAudioPath() {
     // run already produced it; otherwise it is created during analysis.
     const candidate = input.replace(/\.[^/.]+$/, '') + '_preview.m4a';
     try {
-        const exists = await invoke<boolean>('path_exists', { path: candidate });
+        const exists = await commands.pathExists(candidate);
         extractedAudioPath.value = exists ? candidate : '';
     } catch (error) {
         console.error('Failed to check preview audio path:', error);
@@ -390,7 +389,7 @@ async function updateInputPathExists(path: string) {
     }
 
     try {
-        inputPathExists.value = await invoke<boolean>('path_exists', { path });
+        inputPathExists.value = await commands.pathExists(path);
     } catch (error) {
         console.error('Failed to check input path existence:', error);
         inputPathExists.value = false;
@@ -408,7 +407,7 @@ async function grantMediaAccess(path: string) {
     // Allow the webview's asset protocol to load this file (and its sibling
     // .ogg) via convertFileSrc, even when it lives outside the static scope.
     try {
-        await invoke('allow_media_access', { path });
+        await commands.allowMediaAccess(path);
     } catch (error) {
         console.error('Failed to grant media asset access:', error);
     }
@@ -554,7 +553,7 @@ onMounted(async () => {
     // subsequent remounts to avoid redundant re-initialization side effects.
     if (!ffmpegInitialized) {
         try {
-            const res = await invoke<string>('init_ffmpeg');
+            const res = await commands.initFfmpeg();
             status.value = res;
             ffmpegInitialized = true;
         } catch (e) {
@@ -626,7 +625,7 @@ async function loadTranscript() {
     if (!inputPath.value) return;
     const transcriptPath = inputPath.value + '.transcript.json';
     try {
-        const content = await invoke<string>('read_text_file', { path: transcriptPath });
+        const content = await commands.readTextFile(transcriptPath);
         const parsed = parseTranscriptSidecar(content, createDefaultLastAnalyzedSettings());
         if (!parsed) {
             return;
@@ -722,14 +721,10 @@ async function saveTranscript() {
     if (segments.value.length === 0) return;
     const transcriptPath = inputPath.value + '.transcript.json';
     try {
-        await invoke('write_text_file', {
-            path: transcriptPath,
-            content: JSON.stringify(
-                buildTranscriptSidecar(transcriptWorkspaceState.value),
-                null,
-                2,
-            ),
-        });
+        await commands.writeTextFile(
+            transcriptPath,
+            JSON.stringify(buildTranscriptSidecar(transcriptWorkspaceState.value), null, 2),
+        );
         console.log('Transcript saved.');
     } catch (e) {
         console.error('Failed to save transcript:', e);
@@ -756,7 +751,7 @@ async function cancelCurrentRun() {
     status.value = 'Cancelling run...';
 
     try {
-        await invoke('cancel_current_run');
+        await commands.cancelCurrentRun();
         status.value = 'Run cancelled.';
     } catch (error) {
         status.value = `Failed to cancel run: ${error}`;
@@ -783,15 +778,15 @@ async function translateTranscript() {
     status.value = `Translating to ${lang}...`;
 
     try {
-        const response = await invoke<string>('translate_transcript', {
+        const response = await commands.translateTranscript(
             runId,
-            transcript: segments.value,
-            targetLanguage: lang,
-            context: context.value,
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            model: settings.value.model,
-        });
+            settings.value.apiKey,
+            settings.value.baseUrl,
+            settings.value.model,
+            segments.value,
+            lang,
+            context.value,
+        );
         assertActiveRun(runId);
 
         const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -909,33 +904,33 @@ async function requestLlmTranscriptForChunk(
     let audioBase64: string | null = null;
 
     if (isGoogleApi) {
-        uri = await invoke<string | null>('upload_file', {
+        uri = await commands.uploadFile(
             runId,
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            path: chunkAudioPath,
-        });
+            settings.value.apiKey,
+            settings.value.baseUrl,
+            chunkAudioPath,
+        );
         assertActiveRun(runId);
     } else {
-        audioBase64 = await invoke<string>('read_file_as_base64', { path: chunkAudioPath });
+        audioBase64 = await commands.readFileAsBase64(chunkAudioPath);
         assertActiveRun(runId);
     }
 
-    const response = await invoke<string>('analyze_audio', {
+    const response = await commands.analyzeAudio(
         runId,
-        llm: {
+        {
             apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
             model: settings.value.model,
         },
-        enforceJsonSchema: settings.value.enforceJsonSchema,
-        context: context.value,
-        glossary: workspaceSettings.value.glossary,
-        speakerCount: speakerCount.value,
-        removeFillerWords: removeFillerWords.value,
-        audioUri: uri,
-        audioBase64: audioBase64,
-    });
+        settings.value.enforceJsonSchema,
+        context.value,
+        workspaceSettings.value.glossary,
+        speakerCount.value,
+        removeFillerWords.value,
+        uri,
+        audioBase64,
+    );
     assertActiveRun(runId);
     return response;
 }
@@ -999,12 +994,12 @@ async function transcribeChunkWithResplit(
             `Chunk ${label} failed (${error}); re-splitting into smaller parts and retrying.`,
         );
         status.value = `Part ${label} timed out; splitting it into smaller parts and retrying...`;
-        const subChunks = await invoke<AudioChunk[]>('split_audio_for_analysis', {
+        const subChunks = await commands.splitAudioForAnalysis(
             runId,
-            path: chunkPath,
-            maxChunkSeconds: halfMax,
-            parakeetModelPath: workspaceSettings.value.parakeetModelPath,
-        });
+            chunkPath,
+            halfMax,
+            workspaceSettings.value.parakeetModelPath,
+        );
         assertActiveRun(runId);
 
         if (subChunks.length <= 1) {
@@ -1043,12 +1038,12 @@ async function analyzeWithLlmTranscript(
     // the original file (no extra work).
     const maxChunkSeconds = (settings.value.maxAnalysisChunkMinutes ?? 30) * 60;
     status.value = 'Planning audio chunks...';
-    const chunks = await invoke<AudioChunk[]>('split_audio_for_analysis', {
+    const chunks = await commands.splitAudioForAnalysis(
         runId,
-        path: analysisAudioPath,
+        analysisAudioPath,
         maxChunkSeconds,
-        parakeetModelPath: workspaceSettings.value.parakeetModelPath,
-    });
+        workspaceSettings.value.parakeetModelPath,
+    );
     assertActiveRun(runId);
 
     // Maps a silence-trimmed timestamp back onto the original timeline.
@@ -1100,30 +1095,27 @@ async function transcribeWithLocalEngine(
 
     const segments =
         workspaceSettings.value.localEngine === 'crisper'
-            ? await invoke<TranscriptSegment[]>('transcribe_with_crisper', {
-                  audioPath: analysisAudioPath,
-                  options: {
-                      pythonPath: settings.value.crisperPythonPath,
-                      model: settings.value.crisperModel,
-                      language: settings.value.crisperLanguage,
-                      mode: settings.value.crisperMode,
-                      backend: settings.value.crisperBackend,
-                      device: settings.value.crisperDevice,
-                      computeType: settings.value.crisperComputeType,
-                      // The editor cuts on word timings, so they are always requested
-                      // (the model adds no measurable overhead for them).
-                      wordTimestamps: true,
-                      removeFillers: removeFillerWords.value,
-                      removeVocalEvents: settings.value.crisperRemoveVocalEvents,
-                      diarize: settings.value.crisperDiarize,
-                      sortformerModelPath: workspaceSettings.value.sortformerModelPath,
-                  },
-              })
-            : await invoke<TranscriptSegment[]>('transcribe_with_parakeet', {
-                  audioPath: analysisAudioPath,
-                  parakeetModelPath: workspaceSettings.value.parakeetModelPath,
+            ? await commands.transcribeWithCrisper(analysisAudioPath, {
+                  pythonPath: settings.value.crisperPythonPath,
+                  model: settings.value.crisperModel,
+                  language: settings.value.crisperLanguage,
+                  mode: settings.value.crisperMode,
+                  backend: settings.value.crisperBackend,
+                  device: settings.value.crisperDevice,
+                  computeType: settings.value.crisperComputeType,
+                  // The editor cuts on word timings, so they are always requested
+                  // (the model adds no measurable overhead for them).
+                  wordTimestamps: true,
+                  removeFillers: removeFillerWords.value,
+                  removeVocalEvents: settings.value.crisperRemoveVocalEvents,
+                  diarize: settings.value.crisperDiarize,
                   sortformerModelPath: workspaceSettings.value.sortformerModelPath,
-              });
+              })
+            : await commands.transcribeWithParakeet(
+                  analysisAudioPath,
+                  workspaceSettings.value.parakeetModelPath,
+                  workspaceSettings.value.sortformerModelPath,
+              );
 
     assertActiveRun(runId);
     // Cache the raw, pre-offset output so changing only LLM-side inputs (or
@@ -1181,10 +1173,7 @@ async function processFile() {
 
         let audioInfo: AudioInfo;
         try {
-            audioInfo = await invoke<AudioInfo>('prepare_audio_for_ai', {
-                runId,
-                inputPath: inputPath.value,
-            });
+            audioInfo = await commands.prepareAudioForAi(runId, inputPath.value);
             assertActiveRun(runId);
         } catch (error) {
             failStage('Audio preparation', error);
@@ -1196,10 +1185,7 @@ async function processFile() {
         // stream for the in-app audio scrubber. Failure here is non-fatal: it only
         // disables the audio preview, not the transcription itself.
         try {
-            const previewPath = await invoke<string>('prepare_preview_audio', {
-                runId,
-                sourcePath: audioInfo.path,
-            });
+            const previewPath = await commands.preparePreviewAudio(runId, audioInfo.path);
             extractedAudioPath.value = previewPath;
             await grantMediaAccess(previewPath);
         } catch (error) {
@@ -1211,10 +1197,11 @@ async function processFile() {
         if (trimSilence.value) {
             status.value = 'Removing silence...';
             try {
-                processedAudio = await invoke<ProcessedAudio>('remove_silence', {
+                processedAudio = await commands.removeSilence(
                     runId,
-                    path: audioInfo.path,
-                });
+                    audioInfo.path,
+                    null /* default minimum silence */,
+                );
                 assertActiveRun(runId);
             } catch (error) {
                 failStage('Silence removal', error);
@@ -1274,18 +1261,15 @@ async function processFile() {
                 if (workspaceSettings.value.transcriptionBackend === 'hybrid') {
                     status.value = 'Cleaning transcript with AI...';
                     try {
-                        nextSegments = await invoke<TranscriptSegment[]>(
-                            'cleanup_local_transcript',
-                            {
-                                runId,
-                                apiKey: settings.value.apiKey,
-                                baseUrl: settings.value.baseUrl,
-                                model: settings.value.model,
-                                transcript: localSegments,
-                                context: context.value,
-                                glossary: workspaceSettings.value.glossary,
-                                removeFillerWords: removeFillerWords.value,
-                            },
+                        nextSegments = await commands.cleanupLocalTranscript(
+                            runId,
+                            settings.value.apiKey,
+                            settings.value.baseUrl,
+                            settings.value.model,
+                            localSegments,
+                            context.value,
+                            workspaceSettings.value.glossary,
+                            removeFillerWords.value,
                         );
                         assertActiveRun(runId);
                     } catch (error) {
@@ -1315,13 +1299,10 @@ async function processFile() {
                     if (referenceTranscript.length > 0) {
                         status.value = `Merging ${localEngineLabel.value} and remote transcripts...`;
                         try {
-                            nextSegments = await invoke<TranscriptSegment[]>(
-                                'merge_transcript_hypotheses',
-                                {
-                                    runId,
-                                    primaryTranscript: localSegments,
-                                    referenceTranscript,
-                                },
+                            nextSegments = await commands.mergeTranscriptHypotheses(
+                                runId,
+                                localSegments,
+                                referenceTranscript,
                             );
                             assertActiveRun(runId);
                         } catch (error) {
@@ -1422,12 +1403,7 @@ async function cutVideo() {
         const cutSegments = segments.value.map((s) => ({ start: s.start, end: s.end }));
         const outputPath = appendFileNameSuffix(inputPath.value, '_cut');
 
-        await invoke('cut_video', {
-            runId,
-            inputPath: inputPath.value,
-            segments: cutSegments,
-            outputPath,
-        });
+        await commands.cutVideo(runId, inputPath.value, cutSegments, outputPath);
         assertActiveRun(runId);
 
         status.value = `Media cut successfully to ${outputPath}`;

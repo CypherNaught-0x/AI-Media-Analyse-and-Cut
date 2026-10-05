@@ -48,6 +48,26 @@ export default tseslint.config(
         files: ['scripts/**', '*.config.{js,ts}'],
         languageOptions: { globals: { ...globals.node } },
     },
+    {
+        // Commands go through the generated, typed bindings (src/bindings.ts);
+        // a raw invoke() can drift from the Rust signature unnoticed.
+        files: ['src/**/*.{ts,vue}'],
+        ignores: ['src/**/__tests__/**'],
+        rules: {
+            'no-restricted-imports': [
+                'error',
+                {
+                    paths: [
+                        {
+                            name: '@tauri-apps/api/core',
+                            importNames: ['invoke'],
+                            message: 'Call the typed `commands` from src/bindings.ts instead.',
+                        },
+                    ],
+                },
+            ],
+        },
+    },
     // Formatting is Prettier's job; switch off any stylistic rules it would fight.
     prettierConfig,
 );

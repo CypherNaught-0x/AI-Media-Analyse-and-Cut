@@ -26,6 +26,7 @@ use tauri::{Emitter, State};
 #[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct AudioChunk {
     pub path: String,
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     pub start_offset: f64,
 }
 

@@ -1,3 +1,14 @@
+// IPC payloads generated from the Rust commands (src/bindings.ts) are the
+// source of truth for the shapes the backend sends and accepts.
+export type {
+    AudioChunk,
+    AudioInfo,
+    CrisperEnvironmentStatus,
+    ProcessedAudio,
+    SegmentOffset,
+    SilenceInterval,
+} from '../bindings';
+
 /**
  * Which pipeline produces the transcript. Orthogonal to [`LocalEngine`]: every
  * pipeline except `llm` runs the selected local engine, and the hybrid stages
@@ -75,29 +86,11 @@ export const CRISPER_LANGUAGES: { value: CrisperLanguage; label: string }[] = [
 
 export const CRISPER_MODELS = ['large', 'medium', 'turbo', 'small'] as const;
 
-/** Result of probing the Python environment CrisperWhisper runs in. */
-export interface CrisperEnvironmentStatus {
-    pythonPath: string;
-    python: string;
-    pythonSupported: boolean;
-    minimumPython: string;
-    installed: boolean;
-    crisperwhisperVersion: string | null;
-    backends: string[];
-    torchVersion: string | null;
-    cuda: boolean;
-    mps: boolean;
-    environmentDir: string;
-    managedEnvironmentExists: boolean;
-    ready: boolean;
-    message: string | null;
-}
-
 export interface TranscriptWord {
     start: string;
     end: string;
     text: string;
-    speaker?: string;
+    speaker?: string | null;
 }
 
 /**
@@ -116,8 +109,8 @@ export function migrateAlternativeSource(value: unknown): TranscriptAlternativeS
 export interface TranscriptAlternative {
     source: TranscriptAlternativeSource;
     text: string;
-    speaker?: string;
-    similarityScore?: number;
+    speaker?: string | null;
+    similarityScore?: number | null;
 }
 
 export type TranscriptMergeStatus = 'matched' | 'conflict' | 'missing_google' | 'missing_local';
@@ -133,11 +126,11 @@ export interface TranscriptSegment {
     end: string;
     text: string;
     speaker: string;
-    words?: TranscriptWord[];
-    alternatives?: TranscriptAlternative[];
-    mergeStatus?: TranscriptMergeStatus;
-    activeSource?: TranscriptAlternativeSource;
-    similarityScore?: number;
+    words?: TranscriptWord[] | null;
+    alternatives?: TranscriptAlternative[] | null;
+    mergeStatus?: TranscriptMergeStatus | null;
+    activeSource?: TranscriptAlternativeSource | null;
+    similarityScore?: number | null;
     reviewResolved?: boolean;
 }
 
@@ -154,34 +147,6 @@ export interface ClipExportPayload {
     includeSubtitles: boolean;
     fastMode: boolean;
     trimBoundarySilence: boolean;
-}
-
-export interface AudioInfo {
-    path: string;
-    size: number;
-    duration: number;
-}
-
-export interface SilenceInterval {
-    start: number;
-    end: number;
-    duration: number;
-}
-
-export interface SegmentOffset {
-    min_time: number;
-    offset: number;
-}
-
-export interface ProcessedAudio {
-    path: string;
-    silence_intervals: SilenceInterval[];
-    offsets: SegmentOffset[];
-}
-
-export interface AudioChunk {
-    path: string;
-    start_offset: number;
 }
 
 // Podcast Generator Types

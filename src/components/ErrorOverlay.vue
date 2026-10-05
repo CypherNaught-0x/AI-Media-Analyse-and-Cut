@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useSettings } from '../composables/useSettings';
+import { commands } from '../bindings';
 
 const { settings } = useSettings();
 
@@ -54,7 +54,7 @@ async function exportLogs() {
 
         if (!path) return;
 
-        await invoke('zip_logs', { targetPath: path });
+        await commands.zipLogs(path);
         emit('update:status', 'Logs exported successfully.');
     } catch (e) {
         console.error('Failed to export logs:', e);

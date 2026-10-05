@@ -104,7 +104,7 @@ const hasSpeakerVisibilityFilter = computed(() =>
 const segmentNeedsReview = (segment: TranscriptSegment): boolean => {
     if (segment.reviewResolved) return false;
 
-    if (segment.similarityScore !== undefined) {
+    if (segment.similarityScore != null) {
         return segment.similarityScore < reviewThresholdPercent.value / 100;
     }
 

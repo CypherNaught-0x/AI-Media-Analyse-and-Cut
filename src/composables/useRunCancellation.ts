@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { commands } from '../bindings';
 
 export const RUN_CANCELLED_MESSAGE = 'Run cancelled.';
 
@@ -8,5 +8,5 @@ export function isRunCancelled(error: unknown): boolean {
 }
 
 export async function beginRun(): Promise<number> {
-    return invoke<number>('begin_run');
+    return commands.beginRun();
 }

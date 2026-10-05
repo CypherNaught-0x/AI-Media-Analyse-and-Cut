@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useSettings } from '../composables/useSettings';
-import { invoke } from '@tauri-apps/api/core';
 import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
@@ -19,6 +18,7 @@ import type {
     LocalEngine,
     TranscriptionBackend,
 } from '../types';
+import { commands } from '../bindings';
 
 const PIPELINE_OPTIONS: { value: TranscriptionBackend; title: string; description: string }[] = [
     {
@@ -167,9 +167,9 @@ async function refreshCrisperStatus() {
     isCheckingCrisper.value = true;
     crisperProgress.value = '';
     try {
-        crisperStatus.value = await invoke<CrisperEnvironmentStatus>('crisper_environment_status', {
-            pythonPath: localCrisperPythonPath.value.trim(),
-        });
+        crisperStatus.value = await commands.crisperEnvironmentStatus(
+            localCrisperPythonPath.value.trim(),
+        );
     } catch (e) {
         console.error('Failed to probe the CrisperWhisper environment:', e);
         crisperStatus.value = null;
@@ -196,12 +196,9 @@ async function setUpCrisperEnvironment() {
     isInstallingCrisper.value = true;
     crisperProgress.value = 'Starting...';
     try {
-        crisperStatus.value = await invoke<CrisperEnvironmentStatus>(
-            'install_crisper_environment',
-            {
-                pythonPath: localCrisperPythonPath.value.trim(),
-                extra: localCrisperBackend.value === 'ct2' ? 'ct2' : 'transformers',
-            },
+        crisperStatus.value = await commands.installCrisperEnvironment(
+            localCrisperPythonPath.value.trim(),
+            localCrisperBackend.value === 'ct2' ? 'ct2' : 'transformers',
         );
         if (crisperStatus.value?.ready) {
             showToast('CrisperWhisper is ready to use.', 'success');
@@ -471,7 +468,7 @@ async function exportLogs() {
         });
 
         if (path) {
-            await invoke('zip_logs', { targetPath: path });
+            await commands.zipLogs(path);
             await message('Logs exported successfully!', { title: 'Export Logs' });
         }
     } catch (e) {

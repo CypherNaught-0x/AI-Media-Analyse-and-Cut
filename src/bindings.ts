@@ -71,13 +71,13 @@ export const commands = {
  */
 export type AudioChunk = {
 	path: string,
-	start_offset: number | null,
+	start_offset: number,
 };
 
 export type AudioInfo = {
 	path: string,
 	size: number,
-	duration: number | null,
+	duration: number,
 };
 
 export type ClipSegment = {
@@ -88,25 +88,25 @@ export type ClipSegment = {
 
 export type CrisperEnvironmentStatus = {
 	/**  Interpreter that was probed, if one could be found at all. */
-	pythonPath?: string,
-	python?: string,
-	pythonSupported?: boolean,
-	minimumPython?: string,
+	pythonPath: string,
+	python: string,
+	pythonSupported: boolean,
+	minimumPython: string,
 	/**  Whether the `crisperwhisper` package imports successfully. */
-	installed?: boolean,
-	crisperwhisperVersion?: string | null,
+	installed: boolean,
+	crisperwhisperVersion: string | null,
 	/**  Installed inference backends: `transformers` and/or `ct2`. */
-	backends?: string[],
-	torchVersion?: string | null,
-	cuda?: boolean,
-	mps?: boolean,
+	backends: string[],
+	torchVersion: string | null,
+	cuda: boolean,
+	mps: boolean,
 	/**  Path of the app-managed virtual environment (whether or not it exists). */
-	environmentDir?: string,
-	managedEnvironmentExists?: boolean,
+	environmentDir: string,
+	managedEnvironmentExists: boolean,
 	/**  True when a transcription can actually be started. */
-	ready?: boolean,
+	ready: boolean,
 	/**  Human-readable reason when `ready` is false. */
-	message?: string | null,
+	message: string | null,
 };
 
 export type CrisperOptions = {
@@ -158,8 +158,8 @@ export type PodcastSegment_Deserialize = {
 	text: string,
 	speaker: string,
 	segment_type?: PodcastSegmentType,
-	include_reason: string | null,
-	transition_note: string | null,
+	include_reason?: string | null,
+	transition_note?: string | null,
 };
 
 export type PodcastSegment_Serialize = {
@@ -184,14 +184,14 @@ export type Segment = {
 };
 
 export type SegmentOffset = {
-	min_time: number | null,
-	offset: number | null,
+	min_time: number,
+	offset: number,
 };
 
 export type SilenceInterval = {
-	start: number | null,
-	end: number | null,
-	duration: number | null,
+	start: number,
+	end: number,
+	duration: number,
 };
 
 export type TranscriptAlternative = TranscriptAlternative_Serialize | TranscriptAlternative_Deserialize;
@@ -223,8 +223,8 @@ export type TranscriptAlternativeSource_Serialize =
 export type TranscriptAlternative_Deserialize = {
 	source: TranscriptAlternativeSource_Deserialize,
 	text: string,
-	speaker: string | null,
-	similarityScore: number | null,
+	speaker?: string | null,
+	similarityScore?: number | null,
 };
 
 export type TranscriptAlternative_Serialize = {
@@ -262,11 +262,11 @@ export type TranscriptSegment_Deserialize = {
 	end: string,
 	speaker: string,
 	text: string,
-	words: TranscriptWord_Deserialize[] | null,
-	alternatives: TranscriptAlternative_Deserialize[] | null,
-	mergeStatus: TranscriptMergeStatus_Deserialize | null,
-	activeSource: TranscriptAlternativeSource_Deserialize | null,
-	similarityScore: number | null,
+	words?: TranscriptWord_Deserialize[] | null,
+	alternatives?: TranscriptAlternative_Deserialize[] | null,
+	mergeStatus?: TranscriptMergeStatus_Deserialize | null,
+	activeSource?: TranscriptAlternativeSource_Deserialize | null,
+	similarityScore?: number | null,
 };
 
 export type TranscriptSegment_Serialize = {
@@ -287,7 +287,7 @@ export type TranscriptWord_Deserialize = {
 	start: string,
 	end: string,
 	text: string,
-	speaker: string | null,
+	speaker?: string | null,
 };
 
 export type TranscriptWord_Serialize = {

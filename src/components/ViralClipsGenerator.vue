@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import type { TranscriptSegment, SilenceInterval, ViralClipsWorkspaceState } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
@@ -8,6 +7,7 @@ import { normalizeClips, normalizeClipTimeSegments, padClipSegments } from '../u
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
+import { commands } from '../bindings';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -101,20 +101,20 @@ async function generateClips() {
             .map((s) => `[${s.start}-${s.end}] ${s.speaker}: ${s.text}`)
             .join('\n');
 
-        const response = await invoke<string>('generate_clips', {
+        const response = await commands.generateClips(
             runId,
-            llm: {
+            {
                 apiKey: settings.value.apiKey,
                 baseUrl: settings.value.baseUrl,
                 model: settings.value.model,
             },
             transcript,
-            count: clipCount.value,
-            minDuration: clipMinDuration.value,
-            maxDuration: clipMaxDuration.value,
-            topic: clipTopic.value || null,
-            splicing: allowSplicing.value,
-        });
+            clipCount.value,
+            clipMinDuration.value,
+            clipMaxDuration.value,
+            clipTopic.value || null,
+            allowSplicing.value,
+        );
         assertActiveRun(runId);
 
         const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -186,10 +186,11 @@ async function exportClips() {
                 !silenceIntervalsCache.value ||
                 silenceIntervalsCache.value.path !== props.inputPath
             ) {
-                const intervals = await invoke<SilenceInterval[]>('detect_silence', {
+                const intervals = await commands.detectSilence(
                     runId,
-                    path: props.inputPath,
-                });
+                    props.inputPath,
+                    null /* default minimum silence */,
+                );
                 assertActiveRun(runId);
                 silenceIntervalsCache.value = { path: props.inputPath, intervals };
             }
@@ -215,15 +216,16 @@ async function exportClips() {
         }));
 
         emit('update:status', `Exporting to ${outputDir}...`);
-        await invoke('export_clips', {
+        await commands.exportClips(
             runId,
-            inputPath: props.inputPath,
-            segments: clipSegments,
+            props.inputPath,
+            clipSegments,
             outputDir,
-            // Stream copy can only start on a keyframe, so clips would open early or
-            // on a frame that can't be decoded. Social clips need exact cuts.
-            fastMode: false,
-        });
+            // fastMode off: stream copy can only start on a keyframe, so clips
+            // would open early or on a frame that can't be decoded. Social clips
+            // need exact cuts.
+            false,
+        );
         assertActiveRun(runId);
 
         updateState({ lastExportPath: outputDir });
@@ -245,7 +247,7 @@ async function exportClips() {
 
 async function openExportFolder() {
     if (lastExportPath.value) {
-        await invoke('open_folder', { path: lastExportPath.value });
+        await commands.openFolder(lastExportPath.value);
     }
 }
 </script>
