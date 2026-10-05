@@ -632,6 +632,9 @@ async function loadTranscript() {
 
 async function saveTranscript() {
     if (!inputPath.value) return;
+    // An empty transcript is never worth persisting, and writing one would
+    // destroy the existing sidecar (e.g. after a failed load or a reset).
+    if (segments.value.length === 0) return;
     const transcriptPath = inputPath.value + ".transcript.json";
     try {
         await invoke("write_text_file", { 
@@ -1049,7 +1052,9 @@ async function processFile() {
     progressPercentage.value = null;
     progressEtaSeconds.value = null;
     status.value = "Preparing audio...";
-    segments.value = [];
+    // Keep the current transcript until the new one arrives: clearing it here
+    // would let autosave persist an empty transcript over the sidecar, losing it
+    // for good if this run fails or is cancelled.
     await grantMediaAccess(inputPath.value);
 
     try {
@@ -1214,6 +1219,9 @@ async function processFile() {
 
         assertActiveRun(runId);
         segments.value = nextSegments;
+        // Translations are index-aligned to the transcript they were made from.
+        translations.value = {};
+        currentLanguage.value = "Original";
         const foundSuffix = `Found ${segments.value.length} segments.`;
         const backend = settings.value.transcriptionBackend;
         status.value = backend === 'llm'
