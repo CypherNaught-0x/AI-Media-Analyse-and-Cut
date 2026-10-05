@@ -396,11 +396,11 @@ async function fetchModels(silent = false) {
 
         if (data.models && Array.isArray(data.models)) {
             fetchedModels = data.models
-                .map((m: any) => m.name?.replace('models/', '') || m.name)
+                .map((m: { name?: string }) => m.name?.replace('models/', '') || m.name)
                 .filter(Boolean);
         } else if (data.data && Array.isArray(data.data)) {
             fetchedModels = data.data
-                .map((m: any) => m.id)
+                .map((m: { id?: string }) => m.id)
                 .filter(Boolean);
         } else {
             throw new Error('Invalid response format');

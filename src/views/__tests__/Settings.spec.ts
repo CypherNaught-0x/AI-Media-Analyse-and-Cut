@@ -136,10 +136,10 @@ describe('Settings.vue', () => {
 
   it('fetches models correctly', async () => {
     const mockModels = { models: [{ name: 'models/gemini-pro' }] };
-    (globalThis.fetch as any).mockResolvedValue({
+    vi.mocked(globalThis.fetch).mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(mockModels),
-    });
+    } as unknown as Response);
 
     const wrapper = mount(Settings, {
       global: {

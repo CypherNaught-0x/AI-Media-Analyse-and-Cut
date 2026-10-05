@@ -277,6 +277,26 @@ async function generatePodcast() {
   }
 }
 
+/** The script shape the LLM is asked for; validated field by field below. */
+interface RawPodcastSegment {
+  segment_type?: PodcastSegment['type'];
+  type?: PodcastSegment['type'];
+  start?: string;
+  end?: string;
+  text?: string;
+  speaker?: string;
+  include_reason?: string;
+  includeReason?: string;
+  transition_note?: string;
+  transitionNote?: string;
+}
+
+interface RawPodcastScript {
+  title?: string;
+  summary?: string;
+  segments?: RawPodcastSegment[];
+}
+
 function parseScriptResponse(response: string): PodcastScript | null {
   // Locate and parse the JSON object. A missing/invalid envelope is a soft
   // failure (return null); a well-formed object with malformed segments is a
@@ -284,7 +304,7 @@ function parseScriptResponse(response: string): PodcastScript | null {
   const jsonMatch = response.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return null;
 
-  let parsed: any;
+  let parsed: RawPodcastScript;
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch (e) {
@@ -297,7 +317,7 @@ function parseScriptResponse(response: string): PodcastScript | null {
   }
 
   const problems: string[] = [];
-  const segments: PodcastSegment[] = parsed.segments.map((s: any, index: number) => {
+  const segments: PodcastSegment[] = parsed.segments.map((s, index) => {
     const type: PodcastSegment['type'] = s.segment_type || s.type || 'content'; // Handle both snake_case and camelCase
     // Every segment needs string timestamps; parseTime throws on anything else.
     if (typeof s.start !== 'string' || typeof s.end !== 'string') {
@@ -308,8 +328,8 @@ function parseScriptResponse(response: string): PodcastScript | null {
       problems.push(`segment ${index + 1}: content segment has empty text`);
     }
     return {
-      start: s.start,
-      end: s.end,
+      start: s.start as string,
+      end: s.end as string,
       text: s.text || "",
       // The export commands require a speaker string.
       speaker: s.speaker ?? "",

@@ -13,7 +13,7 @@ const props = defineProps<{
   trimSilence: boolean;
 }>();
 
-const emit = defineEmits<{
+defineEmits<{
   (e: 'update:transcriptionBackend', value: TranscriptionBackend): void;
   (e: 'update:localEngine', value: LocalEngine): void;
   (e: 'update:context', value: string): void;
