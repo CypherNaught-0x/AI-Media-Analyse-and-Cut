@@ -1,0 +1,20 @@
+# Generated, vendored or not ours
+dist/
+node_modules/
+.pnpm-store/
+pnpm-lock.yaml
+src-tauri/
+public/
+coverage/
+
+# Prose and CI config keep their hand formatting
+*.md
+*.yml
+*.yaml
+
+# Local tooling state
+.claude/
+memory/
+
+# Test fixtures (captured model output, gold-standard transcripts)
+dev-resources/

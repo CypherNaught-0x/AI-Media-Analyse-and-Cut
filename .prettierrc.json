@@ -1,0 +1,11 @@
+{
+  "tabWidth": 4,
+  "singleQuote": true,
+  "printWidth": 100,
+  "overrides": [
+    {
+      "files": ["*.json", "*.jsonc"],
+      "options": { "tabWidth": 2 }
+    }
+  ]
+}
