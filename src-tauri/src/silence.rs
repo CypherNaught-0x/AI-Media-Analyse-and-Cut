@@ -1,6 +1,6 @@
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
 use crate::format_path_io_error;
-use crate::run_control::RunControl;
+use crate::run_control::{run_blocking, RunControl};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use ffmpeg_sidecar::paths::ffmpeg_path;
@@ -132,6 +132,23 @@ pub(crate) async fn detect_silence_internal(
     min_duration: f64,
     run_control: Option<(u64, &RunControl)>,
 ) -> Result<Vec<SilenceInterval>, String> {
+    let path = path.to_string();
+    let run = run_control.map(|(run_id, control)| (run_id, control.clone()));
+    run_blocking(move || {
+        detect_silence_blocking(
+            &path,
+            min_duration,
+            run.as_ref().map(|(run_id, control)| (*run_id, control)),
+        )
+    })
+    .await
+}
+
+fn detect_silence_blocking(
+    path: &str,
+    min_duration: f64,
+    run_control: Option<(u64, &RunControl)>,
+) -> Result<Vec<SilenceInterval>, String> {
     let input_path = PathBuf::from(path);
     if !input_path.exists() {
         return Err("File not found".to_string());
@@ -238,8 +255,24 @@ async fn remove_silence_internal(
     min_duration: Option<f64>,
     run_context: Option<(u64, &RunControl)>,
 ) -> Result<ProcessedAudio, String> {
+    let run = run_context.map(|(run_id, control)| (run_id, control.clone()));
+    run_blocking(move || {
+        remove_silence_blocking(
+            path,
+            min_duration,
+            run.as_ref().map(|(run_id, control)| (*run_id, control)),
+        )
+    })
+    .await
+}
+
+fn remove_silence_blocking(
+    path: String,
+    min_duration: Option<f64>,
+    run_context: Option<(u64, &RunControl)>,
+) -> Result<ProcessedAudio, String> {
     let min_duration_val = min_duration.unwrap_or(10.0);
-    let detected_intervals = detect_silence_internal(&path, min_duration_val, run_context).await?;
+    let detected_intervals = detect_silence_blocking(&path, min_duration_val, run_context)?;
     let silence_intervals = merge_silence_intervals(&detected_intervals);
     let input_path = PathBuf::from(&path);
 
@@ -261,8 +294,7 @@ async fn remove_silence_internal(
 
     // `silencedetect` does not report a silence that runs to EOF as ending, so
     // the tail is derived from the probed duration rather than from the intervals.
-    let duration = probe_duration(&path)
-        .await
+    let duration = probe_duration_blocking(&path)
         .map_err(|e| format!("Failed to probe media duration for silence removal: {}", e))?;
 
     // The keep segments drive both the filtergraph and the offset table, so the
@@ -341,6 +373,11 @@ async fn remove_silence_internal(
 }
 
 pub(crate) async fn probe_duration(path: &str) -> Result<f64, String> {
+    let path = path.to_string();
+    run_blocking(move || probe_duration_blocking(&path)).await
+}
+
+fn probe_duration_blocking(path: &str) -> Result<f64, String> {
     use std::process::Command;
 
     // Try using ffmpeg -i path

@@ -32,6 +32,7 @@ use crate::local_asr::{
     build_transcript_segments_from_runs, diarize, emit_progress, load_audio_16k_mono,
     resolve_sortformer_file, speaker_label_for_word, write_wav_16k_mono, WordWithSpeaker,
 };
+use crate::run_control::run_blocking;
 use crate::video::TranscriptSegment;
 
 /// The bridge script is embedded in the binary rather than shipped as a Tauri
@@ -804,7 +805,14 @@ pub async fn transcribe_with_crisper(
         emit_progress(&window, "Preparing audio for CrisperWhisper...")?;
         let wav_path =
             std::env::temp_dir().join(format!("ai-media-cutter-crisper-{}.wav", fastrand::u64(..)));
-        write_wav_16k_mono(&audio_file, &wav_path)?;
+        {
+            let (source, destination) = (audio_file.clone(), wav_path.clone());
+            run_blocking(move || {
+                write_wav_16k_mono(&source, &destination).map_err(|error| format!("{error:#}"))
+            })
+            .await
+            .map_err(|error| anyhow!(error))?;
+        }
 
         let outcome = transcribe_and_build(
             &window, &python, &script, &wav_path, &language, &mode, &options,
@@ -877,11 +885,16 @@ async fn transcribe_and_build(
     let diarization = match sortformer_file {
         Some(file) => {
             emit_progress(window, "Running Sortformer diarization...")?;
-            let audio = load_audio_16k_mono(wav_path)?;
-            // Sortformer is CPU-bound; keep it off the async runtime threads.
-            tokio::task::spawn_blocking(move || diarize(&file, audio))
-                .await
-                .map_err(|error| anyhow!("Diarization task failed: {error}"))??
+            // Decoding and Sortformer are CPU-bound; keep them off the async
+            // runtime threads.
+            let wav_path = wav_path.to_path_buf();
+            run_blocking(move || {
+                load_audio_16k_mono(&wav_path)
+                    .and_then(|audio| diarize(&file, audio))
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .await
+            .map_err(|error| anyhow!(error))?
         }
         None => Vec::new(),
     };

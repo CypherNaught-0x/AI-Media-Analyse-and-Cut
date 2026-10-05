@@ -11,7 +11,7 @@
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
 use crate::format_path_io_error;
 use crate::parakeet::parakeet_word_boundaries;
-use crate::run_control::RunControl;
+use crate::run_control::{run_blocking, RunControl};
 use crate::silence::{detect_silence_internal, probe_duration};
 use ffmpeg_sidecar::command::FfmpegCommand;
 #[allow(unused_imports)]
@@ -229,16 +229,24 @@ pub async fn split_audio_for_analysis(
                 "96k",
             ])
             .output(output_path.to_str().unwrap());
-        run_ffmpeg(
-            command,
-            FfmpegTask {
-                operation: &format!("split audio for analysis (part {})", index + 1),
-                input: &input_path,
-                output: Some(&output_path),
-                run: Some((run_id, run_control.inner())),
-            },
-            |_| {},
-        )?;
+        let (input, output, control) = (
+            input_path.clone(),
+            output_path.clone(),
+            run_control.inner().clone(),
+        );
+        run_blocking(move || {
+            run_ffmpeg(
+                command,
+                FfmpegTask {
+                    operation: &format!("split audio for analysis (part {})", index + 1),
+                    input: &input,
+                    output: Some(&output),
+                    run: Some((run_id, &control)),
+                },
+                |_| {},
+            )
+        })
+        .await?;
 
         chunks.push(AudioChunk {
             path: output_path.to_string_lossy().to_string(),

@@ -58,6 +58,11 @@ pub(crate) fn format_path_io_error(operation: &str, path: &Path, err: &std::io::
 #[tauri::command]
 #[specta::specta]
 async fn init_ffmpeg() -> Result<String, String> {
+    // Probing spawns ffmpeg and the fallback downloads a build; both block.
+    run_blocking(init_ffmpeg_blocking).await
+}
+
+fn init_ffmpeg_blocking() -> Result<String, String> {
     if ffmpeg_is_installed() {
         info!("FFmpeg is already installed.");
         return Ok("FFmpeg is already installed.".to_string());
@@ -203,43 +208,47 @@ async fn prepare_audio_for_ai(
     }
 
     let output_path = input.with_extension("ogg");
-    let duration = get_media_duration(input.to_str().unwrap());
-    // Normalize input to OGG/Opus for downstream silence removal and AI upload.
-    let mut command = FfmpegCommand::new();
-    command
-        .input(input.to_str().unwrap())
-        .args(["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
-        .output(output_path.to_str().unwrap());
-    run_ffmpeg(
-        command,
-        FfmpegTask {
-            operation: "prepare audio for AI analysis",
-            input: &input,
-            output: Some(&output_path),
-            run: Some((run_id, run_control.inner())),
-        },
-        |event| {
-            if let FfmpegEvent::Progress(progress) = event {
-                let payload = serde_json::json!({
-                    "time": progress.time,
-                    "percentage": progress_percentage(&progress.time, duration),
-                });
-                let _ = window.emit("progress", payload);
-            }
-        },
-    )?;
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        let duration = get_media_duration(input.to_str().unwrap());
+        // Normalize input to OGG/Opus for downstream silence removal and AI upload.
+        let mut command = FfmpegCommand::new();
+        command
+            .input(input.to_str().unwrap())
+            .args(["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
+            .output(output_path.to_str().unwrap());
+        run_ffmpeg(
+            command,
+            FfmpegTask {
+                operation: "prepare audio for AI analysis",
+                input: &input,
+                output: Some(&output_path),
+                run: Some((run_id, &run_control)),
+            },
+            |event| {
+                if let FfmpegEvent::Progress(progress) = event {
+                    let payload = serde_json::json!({
+                        "time": progress.time,
+                        "percentage": progress_percentage(&progress.time, duration),
+                    });
+                    let _ = window.emit("progress", payload);
+                }
+            },
+        )?;
 
-    // Check size
-    let metadata = std::fs::metadata(&output_path).map_err(|e| {
-        format_path_io_error("read generated audio file metadata", &output_path, &e)
-    })?;
-    let size = metadata.len();
+        // Check size
+        let metadata = std::fs::metadata(&output_path).map_err(|e| {
+            format_path_io_error("read generated audio file metadata", &output_path, &e)
+        })?;
+        let size = metadata.len();
 
-    Ok(AudioInfo {
-        path: output_path.to_string_lossy().to_string(),
-        size,
-        duration: duration.unwrap_or(0.0),
+        Ok(AudioInfo {
+            path: output_path.to_string_lossy().to_string(),
+            size,
+            duration: duration.unwrap_or(0.0),
+        })
     })
+    .await
 }
 
 /// Transcode `source_path` into a seekable `<stem>_preview.m4a` sitting next to
@@ -287,43 +296,47 @@ async fn prepare_preview_audio(
         }
     }
 
-    let duration = get_media_duration(source.to_str().unwrap());
-    let mut command = FfmpegCommand::new();
-    command
-        .input(source.to_str().unwrap())
-        .args([
-            "-y",
-            "-vn",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-movflags",
-            "+faststart",
-        ])
-        .output(output_path.to_str().unwrap());
-    run_ffmpeg(
-        command,
-        FfmpegTask {
-            operation: "prepare preview audio",
-            input: &source,
-            output: Some(&output_path),
-            run: Some((run_id, run_control.inner())),
-        },
-        |event| {
-            if let FfmpegEvent::Progress(progress) = event {
-                let _ = window.emit(
-                    "progress",
-                    serde_json::json!({
-                        "time": progress.time,
-                        "percentage": progress_percentage(&progress.time, duration),
-                    }),
-                );
-            }
-        },
-    )?;
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        let duration = get_media_duration(source.to_str().unwrap());
+        let mut command = FfmpegCommand::new();
+        command
+            .input(source.to_str().unwrap())
+            .args([
+                "-y",
+                "-vn",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-movflags",
+                "+faststart",
+            ])
+            .output(output_path.to_str().unwrap());
+        run_ffmpeg(
+            command,
+            FfmpegTask {
+                operation: "prepare preview audio",
+                input: &source,
+                output: Some(&output_path),
+                run: Some((run_id, &run_control)),
+            },
+            |event| {
+                if let FfmpegEvent::Progress(progress) = event {
+                    let _ = window.emit(
+                        "progress",
+                        serde_json::json!({
+                            "time": progress.time,
+                            "percentage": progress_percentage(&progress.time, duration),
+                        }),
+                    );
+                }
+            },
+        )?;
 
-    Ok(output_path.to_string_lossy().to_string())
+        Ok(output_path.to_string_lossy().to_string())
+    })
+    .await
 }
 
 pub mod chunking;
@@ -352,7 +365,7 @@ use crate::podcast::{
     calculate_segments_duration as calc_duration, export_podcast as export_podcast_fn,
     export_podcast_clips as export_podcast_clips_fn, PodcastSegment,
 };
-use crate::run_control::RunControl;
+use crate::run_control::{run_blocking, RunControl};
 use crate::silence::{detect_silence, remove_silence};
 use crate::transcript_merge::merge_transcript_hypotheses_with_progress as merge_transcript_hypotheses_fn;
 use crate::upload::upload_file_and_wait;
@@ -504,31 +517,35 @@ async fn merge_transcript_hypotheses(
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, String> {
     run_control.ensure_active(run_id)?;
+    let run_control = run_control.inner().clone();
     let started_at = std::time::Instant::now();
-    Ok(merge_transcript_hypotheses_fn(
-        primary_transcript,
-        reference_transcript,
-        |percentage, message| {
-            if run_control.is_cancelled(run_id) {
-                return;
-            }
-            let elapsed_seconds = started_at.elapsed().as_secs_f32();
-            let eta_seconds = if percentage > 0.0 && percentage < 100.0 {
-                Some((elapsed_seconds * ((100.0 - percentage) / percentage)).max(0.0))
-            } else {
-                None
-            };
-            let _ = window.emit(
-                "progress",
-                serde_json::json!({
-                    "percentage": percentage,
-                    "message": message,
-                    "elapsedSeconds": elapsed_seconds,
-                    "etaSeconds": eta_seconds,
-                }),
-            );
-        },
-    ))
+    run_blocking(move || {
+        Ok(merge_transcript_hypotheses_fn(
+            primary_transcript,
+            reference_transcript,
+            |percentage, message| {
+                if run_control.is_cancelled(run_id) {
+                    return;
+                }
+                let elapsed_seconds = started_at.elapsed().as_secs_f32();
+                let eta_seconds = if percentage > 0.0 && percentage < 100.0 {
+                    Some((elapsed_seconds * ((100.0 - percentage) / percentage)).max(0.0))
+                } else {
+                    None
+                };
+                let _ = window.emit(
+                    "progress",
+                    serde_json::json!({
+                        "percentage": percentage,
+                        "message": message,
+                        "elapsedSeconds": elapsed_seconds,
+                        "etaSeconds": eta_seconds,
+                    }),
+                );
+            },
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -556,27 +573,31 @@ async fn cut_video(
         })
         .sum();
 
-    cut_video_fn(
-        &input,
-        &segments,
-        &output,
-        run_id,
-        run_control.inner(),
-        move |time| {
-            let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
-            let percentage = if total_duration > 0.0 {
-                (current / total_duration) * 100.0
-            } else {
-                0.0
-            };
-            let payload = serde_json::json!({
-                "time": time,
-                "percentage": percentage
-            });
-            let _ = window.emit("progress", payload);
-        },
-    )
-    .map_err(|e| e.to_string())
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        cut_video_fn(
+            &input,
+            &segments,
+            &output,
+            run_id,
+            &run_control,
+            move |time| {
+                let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+                let percentage = if total_duration > 0.0 {
+                    (current / total_duration) * 100.0
+                } else {
+                    0.0
+                };
+                let payload = serde_json::json!({
+                    "time": time,
+                    "percentage": percentage
+                });
+                let _ = window.emit("progress", payload);
+            },
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -613,37 +634,41 @@ async fn export_clips(
 
     let total_duration: f64 = clip_durations.iter().sum();
 
-    export_clips_fn(
-        &input,
-        &segments,
-        &output,
-        fast_mode,
-        run_id,
-        run_control.inner(),
-        move |clip_idx, total_clips, time| {
-            let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        export_clips_fn(
+            &input,
+            &segments,
+            &output,
+            fast_mode,
+            run_id,
+            &run_control,
+            move |clip_idx, total_clips, time| {
+                let current_clip_time = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
 
-            // Sum duration of previous clips
-            let previous_duration: f64 = clip_durations.iter().take(clip_idx).sum();
+                // Sum duration of previous clips
+                let previous_duration: f64 = clip_durations.iter().take(clip_idx).sum();
 
-            let total_current = previous_duration + current_clip_time;
+                let total_current = previous_duration + current_clip_time;
 
-            let percentage = if total_duration > 0.0 {
-                ((total_current / total_duration) * 100.0).min(100.0)
-            } else {
-                0.0
-            };
+                let percentage = if total_duration > 0.0 {
+                    ((total_current / total_duration) * 100.0).min(100.0)
+                } else {
+                    0.0
+                };
 
-            let payload = serde_json::json!({
-                "time": time,
-                "percentage": percentage,
-                "current_clip": clip_idx + 1,
-                "total_clips": total_clips
-            });
-            let _ = window.emit("progress", payload);
-        },
-    )
-    .map_err(|e| e.to_string())
+                let payload = serde_json::json!({
+                    "time": time,
+                    "percentage": percentage,
+                    "current_clip": clip_idx + 1,
+                    "total_clips": total_clips
+                });
+                let _ = window.emit("progress", payload);
+            },
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -888,21 +913,25 @@ async fn export_podcast(
     let intro = intro_path.map(PathBuf::from);
     let outro = outro_path.map(PathBuf::from);
 
-    export_podcast_fn(
-        &input,
-        &segments,
-        intro.as_deref(),
-        outro.as_deref(),
-        start_padding,
-        end_padding,
-        &output,
-        run_id,
-        run_control.inner(),
-        move |time| {
-            let _ = window.emit("progress", time);
-        },
-    )
-    .map_err(|e: anyhow::Error| e.to_string())
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        export_podcast_fn(
+            &input,
+            &segments,
+            intro.as_deref(),
+            outro.as_deref(),
+            start_padding,
+            end_padding,
+            &output,
+            run_id,
+            &run_control,
+            move |time| {
+                let _ = window.emit("progress", time);
+            },
+        )
+        .map_err(|e: anyhow::Error| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -923,19 +952,23 @@ async fn export_podcast_clips(
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_dir);
 
-    export_podcast_clips_fn(
-        &input,
-        &segments,
-        start_padding,
-        end_padding,
-        &output,
-        run_id,
-        run_control.inner(),
-        move |time| {
-            let _ = window.emit("progress", time);
-        },
-    )
-    .map_err(|e: anyhow::Error| e.to_string())
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        export_podcast_clips_fn(
+            &input,
+            &segments,
+            start_padding,
+            end_padding,
+            &output,
+            run_id,
+            &run_control,
+            move |time| {
+                let _ = window.emit("progress", time);
+            },
+        )
+        .map_err(|e: anyhow::Error| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]

@@ -7,6 +7,7 @@ use crate::local_asr::{
     load_audio_16k_mono, model_root, resolve_sortformer_file, speaker_label_for_word,
     WordWithSpeaker, HF_RESOLVE_BASE, SAMPLE_RATE,
 };
+use crate::run_control::run_blocking;
 use crate::video::TranscriptSegment;
 
 const CHUNK_SECONDS: usize = 240;
@@ -141,7 +142,21 @@ pub(crate) async fn parakeet_word_boundaries(
     parakeet_model_path: &str,
 ) -> Result<Vec<f64>> {
     let parakeet_dir = resolve_parakeet_dir(window, parakeet_model_path).await?;
+    let window = window.clone();
+    let audio_path = audio_path.to_string();
+    run_blocking(move || {
+        word_boundaries_blocking(&window, &audio_path, &parakeet_dir)
+            .map_err(|error| format!("{error:#}"))
+    })
+    .await
+    .map_err(|error| anyhow!(error))
+}
 
+fn word_boundaries_blocking(
+    window: &tauri::Window,
+    audio_path: &str,
+    parakeet_dir: &Path,
+) -> Result<Vec<f64>> {
     let audio_file = Path::new(audio_path);
     if !audio_file.exists() {
         return Err(anyhow!("Audio file not found: {}", audio_file.display()));
@@ -158,7 +173,7 @@ pub(crate) async fn parakeet_word_boundaries(
         .with_context(|| format!("Failed to load audio '{}'", audio_file.display()))?;
 
     emit_progress(window, "Loading Parakeet TDT for split-point detection...")?;
-    let mut parakeet = ParakeetTDT::from_pretrained(&parakeet_dir, None).with_context(|| {
+    let mut parakeet = ParakeetTDT::from_pretrained(parakeet_dir, None).with_context(|| {
         format!(
             "Failed to load Parakeet TDT model directory '{}'",
             parakeet_dir.display()
@@ -186,7 +201,9 @@ pub async fn transcribe_with_parakeet(
             .await
             .map_err(|error| error.to_string())?;
 
-    let run = || -> Result<Vec<TranscriptSegment>> {
+    // Audio decoding and both ONNX models are CPU-bound for minutes on long
+    // recordings; keep them off the async runtime.
+    let run = move || -> Result<Vec<TranscriptSegment>> {
         let audio_file = Path::new(&audio_path);
         if !audio_file.exists() {
             return Err(anyhow!("Audio file not found: {}", audio_file.display()));
@@ -231,5 +248,5 @@ pub async fn transcribe_with_parakeet(
         Ok(build_transcript_segments(&speaker_words))
     };
 
-    run().map_err(|error| error.to_string())
+    run_blocking(move || run().map_err(|error| error.to_string())).await
 }
