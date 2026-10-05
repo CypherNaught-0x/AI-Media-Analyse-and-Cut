@@ -347,6 +347,7 @@ impl GeminiClient {
         self.send_request(system_prompt, &user_prompt).await
     }
 
+    #[allow(clippy::too_many_arguments)] // one per request option; see the analyze_audio command
     pub async fn analyze_audio(
         &self,
         context: &str,

@@ -70,6 +70,7 @@ pub fn calculate_segments_duration_with_padding(
 }
 
 /// Export podcast as M4A audio file with optional intro and outro
+#[allow(clippy::too_many_arguments)] // one per export option; see the Tauri command
 pub fn export_podcast<F>(
     input_path: &Path,
     segments: &[PodcastSegment],
@@ -241,6 +242,7 @@ fn build_podcast_filter_complex(
 }
 
 /// Export individual podcast clips as separate M4A files
+#[allow(clippy::too_many_arguments)] // one per export option; see the Tauri command
 pub fn export_podcast_clips<F>(
     input_path: &Path,
     segments: &[PodcastSegment],

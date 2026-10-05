@@ -2506,8 +2506,8 @@ mod tests {
 
             // Reassemble the alignment exactly as compute_alignment does.
             let mut alignment = Vec::new();
-            for i in 0..gaps.len() {
-                alignment.extend(gap_alignments[i].iter().copied());
+            for (i, gap_alignment) in gap_alignments.iter().enumerate().take(gaps.len()) {
+                alignment.extend(gap_alignment.iter().copied());
                 if let Some(anchor) = anchors.get(i) {
                     alignment.push(AlignmentStep::Match {
                         primary_len: 1,

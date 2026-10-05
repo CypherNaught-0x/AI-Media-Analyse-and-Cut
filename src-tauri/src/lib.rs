@@ -453,6 +453,8 @@ use crate::video::{
 };
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn translate_transcript(
     run_id: u64,
     api_key: String,
@@ -497,6 +499,8 @@ async fn upload_file(
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn analyze_audio(
     run_id: u64,
     api_key: String,
@@ -536,6 +540,8 @@ async fn analyze_audio(
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn cleanup_local_transcript(
     run_id: u64,
     api_key: String,
@@ -727,6 +733,8 @@ async fn read_file_as_base64(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn generate_clips(
     run_id: u64,
     api_key: String,
@@ -868,6 +876,8 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn generate_podcast(
     run_id: u64,
     api_key: String,
@@ -890,6 +900,8 @@ async fn generate_podcast(
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn refine_podcast(
     run_id: u64,
     api_key: String,
@@ -919,6 +931,8 @@ async fn refine_podcast(
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn export_podcast(
     run_id: u64,
     window: tauri::Window,
@@ -955,6 +969,8 @@ async fn export_podcast(
 }
 
 #[tauri::command]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn export_podcast_clips(
     run_id: u64,
     window: tauri::Window,
