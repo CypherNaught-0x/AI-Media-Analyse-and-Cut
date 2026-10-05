@@ -56,6 +56,21 @@ const AUTOSAVE_DEBOUNCE_MS = 750;
 const router = useRouter();
 const { settings } = useSettings();
 
+/**
+ * Payloads of the backend's shared `progress` event: elapsed seconds, a plain
+ * message, or an object with a percentage and/or a message.
+ */
+type ProgressPayload =
+    | number
+    | string
+    | {
+          percentage?: number;
+          etaSeconds?: number;
+          current_clip?: number;
+          total_clips?: number;
+          message?: string;
+      };
+
 type WorkspaceSettings = TranscriptWorkspaceState['settingsSnapshot'];
 const WORKSPACE_SETTING_KEYS = [
     'glossary',
@@ -494,7 +509,7 @@ onMounted(async () => {
     // unlisten handle so onUnmounted can tear it down. Without this, navigating
     // away and back stacks a new listener on each remount.
     try {
-        unlistenProgress = await listen<any>('progress', (event) => {
+        unlistenProgress = await listen<ProgressPayload>('progress', (event) => {
             const payload = event.payload;
             if (typeof payload === 'number') {
                  status.value = `Processing... ${payload.toFixed(1)}s`;

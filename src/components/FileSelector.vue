@@ -23,7 +23,7 @@ const MEDIA_EXTENSIONS = [
 ];
 const SUPPORTED_MEDIA_EXTENSIONS = new Set(MEDIA_EXTENSIONS);
 
-const props = defineProps<{
+defineProps<{
   modelValue: string;
 }>();
 

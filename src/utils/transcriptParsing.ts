@@ -102,6 +102,7 @@ export function parseTranscriptResponse(
 
       throw new Error(
         `Failed to parse transcript JSON after repair attempt. Original error: ${originalMessage}. Repair error: ${repairMessage}`,
+        { cause: repairError },
       );
     }
   }

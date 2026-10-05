@@ -2,15 +2,18 @@ import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import FileSelector from '../FileSelector.vue';
 
+// The subset of Tauri's drag-drop event the component reads.
+type DragDropTestEvent = { payload: { type: string; paths?: string[]; position?: { x: number; y: number } } };
+
 const mocks = vi.hoisted(() => {
   return {
     open: vi.fn(() => Promise.resolve('test-file.mp4')),
-    onDragDropEvent: vi.fn(async (handler: (event: any) => void) => {
+    onDragDropEvent: vi.fn(async (handler: (event: DragDropTestEvent) => void) => {
       mocks.dragDropHandler = handler;
       return mocks.unlisten;
     }),
     innerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
-    dragDropHandler: null as null | ((event: any) => void),
+    dragDropHandler: null as null | ((event: DragDropTestEvent) => void),
     unlisten: vi.fn(),
   };
 });

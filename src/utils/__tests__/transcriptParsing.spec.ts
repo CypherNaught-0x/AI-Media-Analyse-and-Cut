@@ -73,7 +73,7 @@ describe('parseTime', () => {
 describe('repairMalformedTranscriptJson', () => {
   it('repairs obvious timestamp key typos and speaker quote corruption', () => {
     const repaired = repairMalformedTranscriptJson(
-      '[{"speaker":"Speaker "1","text":"Hello","start":"00:00","00:04","speaker":"Speaker 1"},{"02:37","end":"02:41","speaker":"Speaker 3","text":"World"},{"\"\"start":"03:05","end":"03:08","speaker":"Speaker 3","text":"Again"}]',
+      '[{"speaker":"Speaker "1","text":"Hello","start":"00:00","00:04","speaker":"Speaker 1"},{"02:37","end":"02:41","speaker":"Speaker 3","text":"World"},{"""start":"03:05","end":"03:08","speaker":"Speaker 3","text":"Again"}]',
     );
 
     expect(repaired).toContain('"speaker":"Speaker 1"');
@@ -86,7 +86,7 @@ describe('repairMalformedTranscriptJson', () => {
 describe('parseTranscriptResponse', () => {
   it('parses a malformed AI response after conservative repair', () => {
     const response = `\`\`\`json
-[{"speaker":"Speaker "1","text":"Hello","start":"00:00","00:04","speaker":"Speaker 1"},{"02:37","end":"02:41","speaker":"Speaker 3","text":"World"},{"\"\"start":"03:05","end":"03:08","speaker":"Speaker 3","text":"Again"}]
+[{"speaker":"Speaker "1","text":"Hello","start":"00:00","00:04","speaker":"Speaker 1"},{"02:37","end":"02:41","speaker":"Speaker 3","text":"World"},{"""start":"03:05","end":"03:08","speaker":"Speaker 3","text":"Again"}]
 \`\`\``;
 
     expect(parseTranscriptResponse(response)).toEqual([

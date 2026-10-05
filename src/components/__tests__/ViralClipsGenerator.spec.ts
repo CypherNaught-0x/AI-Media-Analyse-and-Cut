@@ -42,7 +42,7 @@ describe('ViralClipsGenerator', () => {
           reason: 'AI returned seconds',
           segments: [{ start: 41.744, end: 59.2 }],
         },
-      ] as any,
+      ] as unknown as ViralClipsWorkspaceState['clips'],
       lastExportPath: '',
       trimBoundarySilence: false,
     };
