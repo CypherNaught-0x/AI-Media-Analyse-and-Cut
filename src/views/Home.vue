@@ -1096,7 +1096,7 @@ async function transcribeWithLocalEngine(
 
     const segments =
         workspaceSettings.value.localEngine === 'crisper'
-            ? await commands.transcribeWithCrisper(analysisAudioPath, {
+            ? await commands.transcribeWithCrisper(runId, analysisAudioPath, {
                   pythonPath: settings.value.crisperPythonPath,
                   model: settings.value.crisperModel,
                   language: settings.value.crisperLanguage,
@@ -1113,6 +1113,7 @@ async function transcribeWithLocalEngine(
                   sortformerModelPath: workspaceSettings.value.sortformerModelPath,
               })
             : await commands.transcribeWithParakeet(
+                  runId,
                   analysisAudioPath,
                   workspaceSettings.value.parakeetModelPath,
                   workspaceSettings.value.sortformerModelPath,

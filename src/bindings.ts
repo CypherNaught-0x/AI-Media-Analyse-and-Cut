@@ -29,9 +29,9 @@ export const commands = {
 	analyzeAudio: (runId: number, llm: LlmConfig, enforceJsonSchema: boolean, context: string, glossary: string, speakerCount: number | null, removeFillerWords: boolean, audioUri: string | null, audioBase64: string | null) => __TAURI_INVOKE<string>("analyze_audio", { runId, llm, enforceJsonSchema, context, glossary, speakerCount, removeFillerWords, audioUri, audioBase64 }),
 	cleanupLocalTranscript: (runId: number, apiKey: string, baseUrl: string, model: string, transcript: TranscriptSegment_Deserialize[], context: string, glossary: string, removeFillerWords: boolean) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("cleanup_local_transcript", { runId, apiKey, baseUrl, model, transcript, context, glossary, removeFillerWords }),
 	mergeTranscriptHypotheses: (runId: number, primaryTranscript: TranscriptSegment_Deserialize[], referenceTranscript: TranscriptSegment_Deserialize[]) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("merge_transcript_hypotheses", { runId, primaryTranscript, referenceTranscript }),
-	transcribeWithParakeet: (audioPath: string, parakeetModelPath: string, sortformerModelPath: string) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_parakeet", { audioPath, parakeetModelPath, sortformerModelPath }),
+	transcribeWithParakeet: (runId: number, audioPath: string, parakeetModelPath: string, sortformerModelPath: string) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_parakeet", { runId, audioPath, parakeetModelPath, sortformerModelPath }),
 	/**  Transcribe with CrisperWhisper 2.0 and return editor-ready segments. */
-	transcribeWithCrisper: (audioPath: string, options: CrisperOptions) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_crisper", { audioPath, options }),
+	transcribeWithCrisper: (runId: number, audioPath: string, options: CrisperOptions) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_crisper", { runId, audioPath, options }),
 	/**  Report whether CrisperWhisper can run, and on what. */
 	crisperEnvironmentStatus: (pythonPath: string) => __TAURI_INVOKE<CrisperEnvironmentStatus>("crisper_environment_status", { pythonPath }),
 	/**  Create the managed virtual environment and install `crisperwhisper` into it. */

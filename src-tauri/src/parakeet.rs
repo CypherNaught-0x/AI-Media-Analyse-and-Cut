@@ -8,8 +8,9 @@ use crate::local_asr::{
     load_audio_16k_mono, model_root, onnx_execution_config, resolve_sortformer_file,
     speaker_label_for_word, WordWithSpeaker, HF_RESOLVE_BASE, SAMPLE_RATE,
 };
-use crate::run_control::run_blocking;
+use crate::run_control::{run_blocking, RunControl};
 use crate::video::TranscriptSegment;
+use tauri::State;
 
 const CHUNK_SECONDS: usize = 240;
 const CHUNK_SAMPLES: usize = CHUNK_SECONDS * SAMPLE_RATE;
@@ -27,10 +28,13 @@ const DEFAULT_TDT_FILES: [(&str, &str); 3] = [
     ("vocab.txt", "tdt/vocab.txt?download=1"),
 ];
 
+/// Transcribe `audio` in overlapping chunks. `check` runs before each chunk
+/// and aborts with its error, so a cancelled run stops within one chunk.
 fn transcribe_words(
     window: &tauri::Window,
     model: &mut ParakeetTDT,
     audio: &[f32],
+    check: &dyn Fn() -> Result<()>,
 ) -> Result<Vec<TimedToken>> {
     if audio.is_empty() {
         return Ok(Vec::new());
@@ -40,6 +44,7 @@ fn transcribe_words(
     let mut words = Vec::new();
 
     for chunk_index in 0..chunk_count {
+        check()?;
         let keep_start = chunk_index * CHUNK_SAMPLES;
         let keep_end = (keep_start + CHUNK_SAMPLES).min(audio.len());
         let window_start = keep_start.saturating_sub(CHUNK_OVERLAP_SAMPLES);
@@ -141,12 +146,19 @@ pub(crate) async fn parakeet_word_boundaries(
     window: &tauri::Window,
     audio_path: &str,
     parakeet_model_path: &str,
+    run: (u64, &RunControl),
 ) -> Result<Vec<f64>> {
     let parakeet_dir = resolve_parakeet_dir(window, parakeet_model_path).await?;
     let window = window.clone();
     let audio_path = audio_path.to_string();
+    let (run_id, run_control) = (run.0, run.1.clone());
     run_blocking(move || {
-        word_boundaries_blocking(&window, &audio_path, &parakeet_dir)
+        let check = || {
+            run_control
+                .ensure_active(run_id)
+                .map_err(|error| anyhow!(error))
+        };
+        word_boundaries_blocking(&window, &audio_path, &parakeet_dir, &check)
             .map_err(|error| format!("{error:#}"))
     })
     .await
@@ -157,6 +169,7 @@ fn word_boundaries_blocking(
     window: &tauri::Window,
     audio_path: &str,
     parakeet_dir: &Path,
+    check: &dyn Fn() -> Result<()>,
 ) -> Result<Vec<f64>> {
     let audio_file = Path::new(audio_path);
     if !audio_file.exists() {
@@ -182,8 +195,8 @@ fn word_boundaries_blocking(
             )
         })?;
 
-    let words =
-        transcribe_words(window, &mut parakeet, &audio).context("Parakeet transcription failed")?;
+    let words = transcribe_words(window, &mut parakeet, &audio, check)
+        .context("Parakeet transcription failed")?;
 
     let mut boundaries: Vec<f64> = words.iter().map(|word| word.end as f64).collect();
     boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -193,11 +206,15 @@ fn word_boundaries_blocking(
 #[tauri::command]
 #[specta::specta]
 pub async fn transcribe_with_parakeet(
+    run_id: u64,
     window: tauri::Window,
     audio_path: String,
     parakeet_model_path: String,
     sortformer_model_path: String,
+    run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, AppError> {
+    run_control.ensure_active(run_id)?;
+    let run_control = run_control.inner().clone();
     let (resolved_parakeet_dir, resolved_sortformer_file) =
         resolve_model_paths(&window, &parakeet_model_path, &sortformer_model_path)
             .await
@@ -206,6 +223,13 @@ pub async fn transcribe_with_parakeet(
     // Audio decoding and both ONNX models are CPU-bound for minutes on long
     // recordings; keep them off the async runtime.
     let run = move || -> Result<Vec<TranscriptSegment>> {
+        // Diarization and model loading can't be interrupted; check between
+        // the steps and before every transcription chunk.
+        let check = || {
+            run_control
+                .ensure_active(run_id)
+                .map_err(|error| anyhow!(error))
+        };
         let audio_file = Path::new(&audio_path);
         if !audio_file.exists() {
             return Err(anyhow!("Audio file not found: {}", audio_file.display()));
@@ -223,9 +247,11 @@ pub async fn transcribe_with_parakeet(
         let audio = load_audio_16k_mono(audio_file)
             .with_context(|| format!("Failed to load audio '{}'", audio_file.display()))?;
 
+        check()?;
         emit_progress(&window, "Running Sortformer diarization...")?;
         let diarization = diarize(&resolved_sortformer_file, audio.clone())?;
 
+        check()?;
         emit_progress(&window, "Loading Parakeet TDT...")?;
         let mut parakeet =
             ParakeetTDT::from_pretrained(parakeet_dir, Some(onnx_execution_config()))
@@ -236,7 +262,7 @@ pub async fn transcribe_with_parakeet(
                     )
                 })?;
 
-        let words = transcribe_words(&window, &mut parakeet, &audio)
+        let words = transcribe_words(&window, &mut parakeet, &audio, &check)
             .context("Parakeet transcription failed")?;
 
         let speaker_words = words
