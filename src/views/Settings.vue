@@ -70,6 +70,12 @@ const localMaxAnalysisChunkMinutes = ref(settings.value.maxAnalysisChunkMinutes 
 const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const localPreClipPadding = ref(settings.value.preClipPadding || 0);
 const localPostClipPadding = ref(settings.value.postClipPadding || 0);
+const localExportQuality = ref(settings.value.exportQuality ?? 'balanced');
+const EXPORT_QUALITY_OPTIONS = [
+    { value: 'high', label: 'High', description: 'Visually lossless; larger files, slower.' },
+    { value: 'balanced', label: 'Balanced', description: 'Good quality at a sensible size.' },
+    { value: 'draft', label: 'Draft', description: 'Fast and small, for previews.' },
+] as const;
 const localTranscriptionBackend = ref<TranscriptionBackend>(
     settings.value.transcriptionBackend ?? 'llm',
 );
@@ -322,6 +328,7 @@ const hasChanges = computed(() => {
         localMaxAnalysisChunkMinutes.value !== (settings.value.maxAnalysisChunkMinutes ?? 30) ||
         localPreClipPadding.value !== (settings.value.preClipPadding || 0) ||
         localPostClipPadding.value !== (settings.value.postClipPadding || 0) ||
+        localExportQuality.value !== (settings.value.exportQuality ?? 'balanced') ||
         localTranscriptionBackend.value !== (settings.value.transcriptionBackend ?? 'llm') ||
         localLocalEngine.value !== (settings.value.localEngine ?? 'parakeet') ||
         localParakeetModelPath.value !== (settings.value.parakeetModelPath ?? '') ||
@@ -515,6 +522,7 @@ function saveSettings() {
         maxAnalysisChunkMinutes: localMaxAnalysisChunkMinutes.value,
         preClipPadding: localPreClipPadding.value,
         postClipPadding: localPostClipPadding.value,
+        exportQuality: localExportQuality.value,
         transcriptionBackend: localTranscriptionBackend.value,
         localEngine: localLocalEngine.value,
         parakeetModelPath: localParakeetModelPath.value.trim(),
@@ -1185,6 +1193,39 @@ function cancel() {
                         on long videos). Splits prefer a ~1s silence near the boundary and fall back
                         to Parakeet word boundaries. Set to 0 to disable chunking. Only applies to
                         LLM-based transcription.
+                    </p>
+                </div>
+
+                <!-- Export -->
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
+                    >
+                        Video Export Quality
+                    </label>
+                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3" role="radiogroup">
+                        <button
+                            v-for="option in EXPORT_QUALITY_OPTIONS"
+                            :key="option.value"
+                            type="button"
+                            role="radio"
+                            :aria-checked="localExportQuality === option.value"
+                            :data-testid="`export-quality-${option.value}`"
+                            class="flex flex-col rounded-xl border px-4 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+                            :class="
+                                localExportQuality === option.value
+                                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
+                                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'
+                            "
+                            @click="localExportQuality = option.value"
+                        >
+                            <span class="text-sm font-semibold">{{ option.label }}</span>
+                            <span class="mt-1 text-xs text-gray-400">{{ option.description }}</span>
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">
+                        Applies to Export Video and clip exports. A hardware encoder is used when
+                        this machine has one.
                     </p>
                 </div>
 

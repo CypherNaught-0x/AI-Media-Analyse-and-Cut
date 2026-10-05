@@ -100,6 +100,7 @@ pub fn cut_video<F>(
     input_path: &Path,
     segments: &[Segment],
     output_path: &Path,
+    quality: ExportQuality,
     run_id: u64,
     run_control: &RunControl,
     on_progress: F,
@@ -134,7 +135,11 @@ where
                 .iter()
                 .flat_map(|label| ["-map".to_string(), label.clone()]),
         )
-        .args(encode_args_for_output(output_path, media.video.is_some()))
+        .args(encode_args_for_output(
+            output_path,
+            media.video.is_some(),
+            quality,
+        ))
         .output(output_path.to_str().unwrap());
     run_ffmpeg(
         command,
@@ -252,24 +257,26 @@ fn plan_cut(segments: &[Segment], has_video: bool, has_audio: bool) -> Result<Cu
 /// H.264 get the preferred (hardware when available) encoder with explicit
 /// quality settings; anything else (webm, avi, audio formats) keeps ffmpeg's
 /// per-container defaults, which is what made those exports work before.
-fn encode_args_for_output(output: &Path, has_video: bool) -> Vec<String> {
+fn encode_args_for_output(output: &Path, has_video: bool, quality: ExportQuality) -> Vec<String> {
     let extension = output
         .extension()
         .and_then(|ext| ext.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
     if has_video && matches!(extension.as_str(), "mp4" | "mov" | "m4v" | "mkv") {
-        encode_args(preferred_h264_encoder(), ExportQuality::Balanced)
+        encode_args(preferred_h264_encoder(), quality)
     } else {
         Vec::new()
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one per export option; see the Tauri command
 pub fn export_clips<F>(
     input_path: &Path,
     segments: &[ClipSegment],
     output_dir: &Path,
     fast_mode: bool,
+    quality: ExportQuality,
     run_id: u64,
     run_control: &RunControl,
     on_progress: F,
@@ -326,7 +333,7 @@ where
         // If single segment, use simple cut. If multiple, use cut_video logic (concat).
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
-            let (input_args, output_args) = single_clip_args(s, fast_mode)?;
+            let (input_args, output_args) = single_clip_args(s, fast_mode, quality)?;
 
             let mut command = FfmpegCommand::new();
             command
@@ -355,6 +362,7 @@ where
                 input_path,
                 &segment.segments,
                 &output_path,
+                quality,
                 run_id,
                 run_control,
                 move |time| {
@@ -376,7 +384,11 @@ where
 ///   keyframe, so the clip may begin slightly before `start`; seeking on the
 ///   input keeps it starting on that keyframe instead of on a frame that can't
 ///   be decoded (frozen or garbled opening).
-fn single_clip_args(segment: &Segment, fast_mode: bool) -> Result<(Vec<String>, Vec<String>)> {
+fn single_clip_args(
+    segment: &Segment,
+    fast_mode: bool,
+    quality: ExportQuality,
+) -> Result<(Vec<String>, Vec<String>)> {
     let start = parse_timestamp_to_seconds_raw(&segment.start)
         .map_err(|e| anyhow::anyhow!("Invalid clip start timestamp '{}': {}", segment.start, e))?;
     let end = parse_timestamp_to_seconds_raw(&segment.end)
@@ -395,10 +407,7 @@ fn single_clip_args(segment: &Segment, fast_mode: bool) -> Result<(Vec<String>, 
         output_args.extend(["-c", "copy", "-avoid_negative_ts", "make_zero"].map(String::from));
     } else {
         // Clips are always .mp4.
-        output_args.extend(encode_args(
-            preferred_h264_encoder(),
-            ExportQuality::Balanced,
-        ));
+        output_args.extend(encode_args(preferred_h264_encoder(), quality));
     }
     Ok((input_args, output_args))
 }
@@ -485,18 +494,37 @@ mod tests {
 
     #[test]
     fn only_h264_containers_get_explicit_video_encoding() {
-        assert!(encode_args_for_output(Path::new("/a/b_cut.mp4"), true)
-            .windows(2)
-            .any(|w| w == ["-pix_fmt", "yuv420p"]));
-        assert!(encode_args_for_output(Path::new("/a/b_cut.MOV"), true).len() > 2);
-        assert!(encode_args_for_output(Path::new("/a/b_cut.webm"), true).is_empty());
-        assert!(encode_args_for_output(Path::new("/a/b_cut.mp4"), false).is_empty());
-        assert!(encode_args_for_output(Path::new("/a/b_cut.mp3"), false).is_empty());
+        assert!(
+            encode_args_for_output(Path::new("/a/b_cut.mp4"), true, ExportQuality::Balanced)
+                .windows(2)
+                .any(|w| w == ["-pix_fmt", "yuv420p"])
+        );
+        assert!(
+            encode_args_for_output(Path::new("/a/b_cut.MOV"), true, ExportQuality::Balanced).len()
+                > 2
+        );
+        assert!(
+            encode_args_for_output(Path::new("/a/b_cut.webm"), true, ExportQuality::Balanced)
+                .is_empty()
+        );
+        assert!(
+            encode_args_for_output(Path::new("/a/b_cut.mp4"), false, ExportQuality::Balanced)
+                .is_empty()
+        );
+        assert!(
+            encode_args_for_output(Path::new("/a/b_cut.mp3"), false, ExportQuality::Balanced)
+                .is_empty()
+        );
     }
 
     #[test]
     fn single_clip_seeks_on_the_input_and_reencodes_by_default() {
-        let (input, output) = single_clip_args(&segment("01:05.250", "01:15.750"), false).unwrap();
+        let (input, output) = single_clip_args(
+            &segment("01:05.250", "01:15.750"),
+            false,
+            ExportQuality::Balanced,
+        )
+        .unwrap();
         assert_eq!(input, ["-y", "-ss", "65.250"]);
         assert_eq!(&output[..2], ["-t", "10.500"]);
         assert!(output
@@ -508,7 +536,8 @@ mod tests {
 
     #[test]
     fn single_clip_fast_mode_stream_copies() {
-        let (input, output) = single_clip_args(&segment("00:10", "00:20"), true).unwrap();
+        let (input, output) =
+            single_clip_args(&segment("00:10", "00:20"), true, ExportQuality::Balanced).unwrap();
         assert_eq!(input, ["-y", "-ss", "10.000"]);
         assert_eq!(
             output,
@@ -525,9 +554,15 @@ mod tests {
 
     #[test]
     fn single_clip_rejects_empty_or_invalid_ranges() {
-        assert!(single_clip_args(&segment("00:20", "00:20"), false).is_err());
-        assert!(single_clip_args(&segment("00:20", "00:10"), false).is_err());
-        assert!(single_clip_args(&segment("-ss", "00:10"), false).is_err());
+        assert!(
+            single_clip_args(&segment("00:20", "00:20"), false, ExportQuality::Balanced).is_err()
+        );
+        assert!(
+            single_clip_args(&segment("00:20", "00:10"), false, ExportQuality::Balanced).is_err()
+        );
+        assert!(
+            single_clip_args(&segment("-ss", "00:10"), false, ExportQuality::Balanced).is_err()
+        );
     }
 
     /// 4 s of test video at 25 fps plus a tone, with a keyframe only every
@@ -590,6 +625,7 @@ mod tests {
                 segment("00:02.500", "00:03.000"),
             ],
             &output,
+            ExportQuality::Balanced,
             run_id,
             &control,
             |_| {},
@@ -670,6 +706,7 @@ mod tests {
                 segment("00:02.200", "00:02.800"),
             ],
             &output,
+            ExportQuality::Balanced,
             run_id,
             &control,
             |_| {},
@@ -715,6 +752,7 @@ mod tests {
             &[clip],
             &out_dir,
             false,
+            ExportQuality::Balanced,
             run_id,
             &control,
             |_, _, _| {},

@@ -340,6 +340,7 @@ use crate::chunking::split_audio_for_analysis;
 use crate::crisper::{
     crisper_environment_status, install_crisper_environment, transcribe_with_crisper,
 };
+use crate::encoders::ExportQuality;
 use crate::ffmpeg::{progress_percentage, run_ffmpeg, FfmpegTask};
 use crate::gemini::GeminiClient;
 use crate::media_probe::probe_media;
@@ -539,6 +540,7 @@ async fn cut_video(
     input_path: String,
     segments: Vec<Segment>,
     output_path: String,
+    quality: ExportQuality,
     run_control: State<'_, RunControl>,
 ) -> Result<(), String> {
     run_control.ensure_active(run_id)?;
@@ -562,6 +564,7 @@ async fn cut_video(
             &input,
             &segments,
             &output,
+            quality,
             run_id,
             &run_control,
             move |time| {
@@ -585,6 +588,8 @@ async fn cut_video(
 
 #[tauri::command]
 #[specta::specta]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
 async fn export_clips(
     run_id: u64,
     window: tauri::Window,
@@ -592,6 +597,7 @@ async fn export_clips(
     segments: Vec<ClipSegment>,
     output_dir: String,
     fast_mode: bool,
+    quality: ExportQuality,
     run_control: State<'_, RunControl>,
 ) -> Result<(), String> {
     run_control.ensure_active(run_id)?;
@@ -624,6 +630,7 @@ async fn export_clips(
             &segments,
             &output,
             fast_mode,
+            quality,
             run_id,
             &run_control,
             move |clip_idx, total_clips, time| {

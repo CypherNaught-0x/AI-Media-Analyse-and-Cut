@@ -36,8 +36,8 @@ export const commands = {
 	crisperEnvironmentStatus: (pythonPath: string) => __TAURI_INVOKE<CrisperEnvironmentStatus>("crisper_environment_status", { pythonPath }),
 	/**  Create the managed virtual environment and install `crisperwhisper` into it. */
 	installCrisperEnvironment: (pythonPath: string, extra: string) => __TAURI_INVOKE<CrisperEnvironmentStatus>("install_crisper_environment", { pythonPath, extra }),
-	cutVideo: (runId: number, inputPath: string, segments: Segment[], outputPath: string) => __TAURI_INVOKE<null>("cut_video", { runId, inputPath, segments, outputPath }),
-	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode }),
+	cutVideo: (runId: number, inputPath: string, segments: Segment[], outputPath: string, quality: ExportQuality) => __TAURI_INVOKE<null>("cut_video", { runId, inputPath, segments, outputPath, quality }),
+	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean, quality: ExportQuality) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode, quality }),
 	readFileAsBase64: (path: string) => __TAURI_INVOKE<string>("read_file_as_base64", { path }),
 	generateClips: (runId: number, llm: LlmConfig, transcript: string, count: number, minDuration: number, maxDuration: number, topic: string | null, splicing: boolean) => __TAURI_INVOKE<string>("generate_clips", { runId, llm, transcript, count, minDuration, maxDuration, topic, splicing }),
 	openFolder: (path: string) => __TAURI_INVOKE<null>("open_folder", { path }),
@@ -140,6 +140,15 @@ export type CrisperOptions = {
 	/**  Honoured by Pro models only; standard weights warn and ignore it. */
 	hotwords?: string[],
 };
+
+/**  Speed/quality trade-off for an export. */
+export type ExportQuality = 
+/**  Visually lossless; for final masters. */
+"high" | 
+/**  Good quality at a sensible size; the default for clips and cuts. */
+"balanced" | 
+/**  Fast and small; previews and drafts. */
+"draft";
 
 /**  The remote LLM a request goes to, as configured in Settings. */
 export type LlmConfig = {

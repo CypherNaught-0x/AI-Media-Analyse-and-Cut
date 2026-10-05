@@ -180,6 +180,27 @@ describe('Settings.vue', () => {
         });
     });
 
+    it('saves the chosen video export quality', async () => {
+        const wrapper = mount(Settings, {
+            global: {
+                plugins: [router],
+            },
+        });
+
+        const draft = wrapper.get('[data-testid="export-quality-draft"]');
+        expect(draft.attributes('aria-checked')).toBe('false');
+        await draft.trigger('click');
+        expect(draft.attributes('aria-checked')).toBe('true');
+
+        await wrapper
+            .findAll('button')
+            .find((b) => b.text() === 'Save Settings')!
+            .trigger('click');
+        expect(updateSettingsMock).toHaveBeenCalledWith(
+            expect.objectContaining({ exportQuality: 'draft' }),
+        );
+    });
+
     it('saves settings', async () => {
         const wrapper = mount(Settings, {
             global: {

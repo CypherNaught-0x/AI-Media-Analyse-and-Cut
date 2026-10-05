@@ -1403,7 +1403,13 @@ async function cutVideo() {
         const cutSegments = segments.value.map((s) => ({ start: s.start, end: s.end }));
         const outputPath = appendFileNameSuffix(inputPath.value, '_cut');
 
-        await commands.cutVideo(runId, inputPath.value, cutSegments, outputPath);
+        await commands.cutVideo(
+            runId,
+            inputPath.value,
+            cutSegments,
+            outputPath,
+            settings.value.exportQuality,
+        );
         assertActiveRun(runId);
 
         status.value = `Media cut successfully to ${outputPath}`;

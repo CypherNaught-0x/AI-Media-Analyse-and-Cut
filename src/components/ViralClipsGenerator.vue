@@ -225,6 +225,7 @@ async function exportClips() {
             // would open early or on a frame that can't be decoded. Social clips
             // need exact cuts.
             false,
+            settings.value.exportQuality,
         );
         assertActiveRun(runId);
 
