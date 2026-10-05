@@ -129,6 +129,19 @@ impl RunControl {
     }
 }
 
+/// Run blocking work (an ffmpeg child, ONNX inference, a CPU-heavy merge) on
+/// Tokio's blocking pool, so it doesn't pin an async worker and stall IPC
+/// handling or the cancellation polling in [`RunControl::run_cancellable`].
+pub(crate) async fn run_blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("Background task failed: {error}"))?
+}
+
 fn kill_process(pid: u32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -162,6 +175,44 @@ fn kill_process(pid: u32) -> Result<(), String> {
             "Failed to cancel run (kill exited with {})",
             status
         ))
+    }
+}
+
+#[cfg(test)]
+mod blocking_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// On a single-threaded runtime, blocking work inline would freeze every
+    /// other task; through run_blocking they keep running.
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_work_does_not_stall_other_tasks() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticker = {
+            let ticks = ticks.clone();
+            tokio::spawn(async move {
+                loop {
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        };
+
+        let result = run_blocking(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            Ok::<_, String>(42)
+        })
+        .await;
+        ticker.abort();
+
+        assert_eq!(result, Ok(42));
+        assert!(ticks.load(Ordering::SeqCst) >= 10, "ticker stalled");
+    }
+
+    #[tokio::test]
+    async fn errors_from_blocking_work_pass_through() {
+        let result = run_blocking(|| Err::<(), _>("boom".to_string())).await;
+        assert_eq!(result, Err("boom".to_string()));
     }
 }
 
