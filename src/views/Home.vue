@@ -674,7 +674,7 @@ async function cancelCurrentRun() {
 }
 
 async function translateTranscript() {
-    if (!targetLanguage.value || segments.value.length === 0) return;
+    if (isProcessing.value || !targetLanguage.value || segments.value.length === 0) return;
     
     const lang = targetLanguage.value.trim();
     if (translations.value[lang]) {
@@ -1024,6 +1024,9 @@ async function transcribeWithLocalEngine(
 }
 
 async function processFile() {
+    // Starting a run supersedes the backend's current one, so never start a
+    // second job while one is in flight.
+    if (isProcessing.value) return;
     if (!inputPath.value) {
         status.value = "Please provide a media file.";
         return;
@@ -1269,7 +1272,7 @@ async function processFile() {
 }
 
 async function cutVideo() {
-    if (segments.value.length === 0) return;
+    if (isProcessing.value || segments.value.length === 0) return;
     if (!hasMediaFile.value) {
         status.value = "Select a valid media file before exporting video.";
         return;
@@ -1442,6 +1445,7 @@ function updateProcessing(processing: boolean) {
                     :segments="segments"
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
+                    :busy="isProcessing"
                     :state="viralClipsState"
                     :cancelGeneration="cancelGeneration"
                     class="mb-8"
@@ -1460,6 +1464,7 @@ function updateProcessing(processing: boolean) {
                     :segments="segments"
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
+                    :busy="isProcessing"
                     :state="podcastWorkspaceState"
                     :cancelGeneration="cancelGeneration"
                     class="mb-20"

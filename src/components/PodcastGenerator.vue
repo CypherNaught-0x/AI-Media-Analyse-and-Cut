@@ -16,6 +16,8 @@ interface Props {
   hasMediaFile: boolean;
   state: PodcastWorkspaceState;
   cancelGeneration: number;
+  /** Another job (analysis, translation, export, ...) is running app-wide. */
+  busy: boolean;
 }
 
 const props = defineProps<Props>();
@@ -166,7 +168,7 @@ async function selectOutroFile() {
 }
 
 async function generatePodcast() {
-  if (props.segments.length === 0) return;
+  if (props.busy || props.segments.length === 0) return;
 
   const runId = await beginRun();
   activeRunId.value = runId;
@@ -422,7 +424,7 @@ function isSegmentIncluded(segment: TranscriptSegment): boolean {
 
 // Export Functions
 async function exportPodcast() {
-  if (!podcastScript.value || podcastScript.value.segments.length === 0) return;
+  if (props.busy || !podcastScript.value || podcastScript.value.segments.length === 0) return;
   if (!props.hasMediaFile) {
     emit('update:status', "Select a valid media file before exporting the podcast.");
     return;
@@ -483,7 +485,7 @@ async function exportPodcast() {
 }
 
 async function exportClips() {
-  if (!podcastScript.value || podcastScript.value.segments.length === 0) return;
+  if (props.busy || !podcastScript.value || podcastScript.value.segments.length === 0) return;
   if (!props.hasMediaFile) {
     emit('update:status', "Select a valid media file before exporting podcast clips.");
     return;
@@ -633,7 +635,7 @@ async function openExportFolder() {
     </div>
 
     <!-- Generate Button -->
-    <button @click="generatePodcast" :disabled="isGenerating || isExporting"
+    <button @click="generatePodcast" :disabled="isGenerating || isExporting || busy"
       class="w-full mb-8 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
       <SpinnerIcon v-if="isGenerating" class="animate-spin h-5 w-5" />
       {{ isGenerating ? 'Generating...' : 'Generate Podcast Script' }}
@@ -777,12 +779,12 @@ async function openExportFolder() {
 
       <!-- Export Buttons -->
       <div class="flex gap-4 mt-6">
-        <button @click="exportPodcast" :disabled="isExporting || !hasMediaFile"
+        <button @click="exportPodcast" :disabled="isExporting || busy || !hasMediaFile"
           class="flex-1 bg-teal-600 hover:bg-teal-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
           <SpinnerIcon v-if="isExporting" class="animate-spin h-5 w-5" />
           Export Podcast
         </button>
-        <button @click="exportClips" :disabled="isExporting || !hasMediaFile"
+        <button @click="exportClips" :disabled="isExporting || busy || !hasMediaFile"
           class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
           Export Clips
         </button>
