@@ -87,3 +87,31 @@ export function normalizeClips(rawClips: unknown): Clip[] {
     return normalizeClip(clip as RawClip);
   });
 }
+
+function paddingSeconds(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Add lead-in before a clip's first range and lead-out after its last one
+ * (the Pre/Post-Clip Padding settings). Inner splice boundaries are left as
+ * they are; the start never goes below zero.
+ */
+export function padClipSegments(
+  segments: ClipTimeSegment[],
+  preSeconds: number,
+  postSeconds: number,
+): ClipTimeSegment[] {
+  const pre = paddingSeconds(preSeconds);
+  const post = paddingSeconds(postSeconds);
+  if (segments.length === 0 || (pre === 0 && post === 0)) {
+    return segments;
+  }
+
+  const padded = segments.map((segment) => ({ ...segment }));
+  const first = padded[0];
+  const last = padded[padded.length - 1];
+  first.start = formatTime(Math.max(0, parseTime(first.start) - pre));
+  last.end = formatTime(parseTime(last.end) + post);
+  return padded;
+}

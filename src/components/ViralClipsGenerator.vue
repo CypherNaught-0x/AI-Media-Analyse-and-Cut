@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { TranscriptSegment, SilenceInterval, ViralClipsWorkspaceState } from '../types';
 import { useSettings } from '../composables/useSettings';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
-import { normalizeClips, normalizeClipTimeSegments } from '../utils/clips';
+import { normalizeClips, normalizeClipTimeSegments, padClipSegments } from '../utils/clips';
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
@@ -197,6 +197,17 @@ async function exportClips() {
         segments: trimClipBoundarySilence(clip.segments, silenceIntervalsCache.value?.intervals ?? []),
       }));
     }
+
+    // Padding applies after the silence trim, so it adds deliberate breathing
+    // room rather than restoring the silence that was just removed.
+    clipSegments = clipSegments.map((clip) => ({
+      ...clip,
+      segments: padClipSegments(
+        clip.segments,
+        settings.value.preClipPadding,
+        settings.value.postClipPadding,
+      ),
+    }));
 
     emit('update:status', `Exporting to ${outputDir}...`);
     await invoke("export_clips", {
