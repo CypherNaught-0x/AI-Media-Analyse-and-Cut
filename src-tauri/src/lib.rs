@@ -350,6 +350,7 @@ mod http;
 mod local_asr;
 mod media_cache;
 pub mod media_probe;
+mod media_protocol;
 mod model_download;
 mod parakeet;
 mod path_guard;
@@ -836,6 +837,10 @@ fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), AppErro
     use tauri::Manager;
 
     let target = PathBuf::from(&path);
+    // Previews load through the media:// protocol, which serves the same
+    // folders.
+    app.state::<media_protocol::MediaScope>()
+        .allow(target.parent().unwrap_or(&target));
     let scope = app.asset_protocol_scope();
 
     if let Some(dir) = target.parent() {
@@ -1116,7 +1121,20 @@ pub fn render_ipc_bindings(path: &Path) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(media_protocol::MediaScope::default())
+        .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let scope = app.state::<media_protocol::MediaScope>();
+                responder.respond(media_protocol::serve(&scope, &request).await);
+            });
+        })
         .setup(|app| {
+            // Derived preview audio lives in the media cache.
+            if let Ok(root) = media_cache::cache_root(app.handle()) {
+                let _ = std::fs::create_dir_all(&root);
+                app.state::<media_protocol::MediaScope>().allow(&root);
+            }
             // Keep the derived-media cache bounded; best effort, off the
             // startup path.
             let handle = app.handle().clone();

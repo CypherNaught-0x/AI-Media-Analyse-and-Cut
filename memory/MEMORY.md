@@ -4,6 +4,6 @@
 - [Hybrid alignment perf](hybrid-alignment-perf.md) — where transcript-merge time goes; build phase is the next lever
 - [Silence offset flow](silence-offset-flow.md) — how trim-silence timestamp offsets are recalculated per mode (verified correct)
 - [Subtitle export timelines](subtitle-export-timelines.md) — source vs `_cut` timeline; what "subtitles are N minutes late" actually means
-- [Preview media codec](preview-media-codec.md) — preview players must use the original file, not the extracted Opus/Ogg (WKWebView can't seek it)
+- [Preview media codec](preview-media-codec.md) — silent previews came from asset:// capping ranges at 1000 KiB; use media://; audio scrubber stays AAC/m4a
 - [ONNX execution providers](onnx-execution-providers.md) — CoreML ~5x slower than CPU for Parakeet/Sortformer; CPU with tuned threads wins
 - [WebKit profiles](webkit-profiles.md) — dev builds and the installed app have separate localStorage; check the right one

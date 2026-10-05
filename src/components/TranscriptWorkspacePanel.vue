@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { mediaUrl } from '../utils/mediaUrl';
 import Editor from './Editor.vue';
 import SubtitleExport from './SubtitleExport.vue';
 import type { TranscriptSegment } from '../types';
@@ -338,7 +338,7 @@ function onTimeUpdate() {
         >
             <video
                 ref="videoRef"
-                :src="convertFileSrc(inputPath)"
+                :src="mediaUrl(inputPath)"
                 class="w-full max-h-[500px] mx-auto"
                 controls
                 @timeupdate="onTimeUpdate"
@@ -386,7 +386,7 @@ function onTimeUpdate() {
       -->
             <audio
                 ref="audioRef"
-                :src="convertFileSrc(extractedAudioPath!)"
+                :src="mediaUrl(extractedAudioPath!)"
                 data-testid="extracted-audio"
                 class="w-full"
                 controls

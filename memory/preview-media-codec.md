@@ -1,16 +1,14 @@
 ---
 name: preview-media-codec
-description: The audio preview must be a transcoded seekable AAC/m4a — WKWebView can't seek Opus/Ogg and often can't decode the source audio track
+description: Silent source previews came from asset:// capping range responses at 1000 KiB, not from codecs; previews use the media:// protocol; Opus/Ogg still can't be seeked, so audio previews are AAC/m4a
 metadata:
   type: project
 ---
 
-The transcript workspace audio scrubber (`src/components/TranscriptWorkspacePanel.vue`) must play a **transcoded, seekable AAC/m4a preview**, produced by the `prepare_preview_audio` Tauri command (`src-tauri/src/lib.rs`).
+**Silent `<video>` previews (root cause found 2026-10-05).** Tauri's built-in `asset://` protocol cuts every range response to 1000 KiB (`MAX_LEN` in `tauri/src/protocol/asset.rs`). WebKit's MP4 demuxer requests each box of the `moov` index with one explicit range and drops a track when the answer comes back short. Long recordings have a large `moov` (the user's 777 MB / ~1 h H.264+AAC file: 3.9 MB, already at the front), so the source played with no audio. The earlier explanation, "WKWebView often can't decode the source's audio", was wrong for normal AAC sources.
 
-Why neither obvious source works, on macOS (Tauri = WKWebView):
-- The **source file** (`inputPath`): WKWebView often cannot decode its audio track at all → both the `<video>` and an `<audio src=inputPath>` play silently. (This is the whole reason the app extracts audio.)
-- The **extracted analysis audio** (`prepare_audio_for_ai` → Opus in Ogg, `-c:a libopus`): WKWebView *plays* it but cannot reliably *seek* it — it reports a bogus duration (observed ~14h for a ~1h file) and mis-seeks, so segment previews land at the wrong spot.
+**Fix:** all players load through the app's own `media://` protocol (`src-tauri/src/media_protocol.rs`, frontend `utils/mediaUrl.ts` → `convertFileSrc(path, 'media')`). It answers explicit ranges in full (up to 64 MiB) and open-ended ones in 4 MiB chunks. It only serves folders granted via `allow_media_access` plus the media cache. Don't switch players back to `asset://`.
 
-Fix (2026-07): `prepare_preview_audio` transcodes the already-extracted `.ogg` (fast; same original timeline, untrimmed) to `<stem>_preview.m4a` with `-c:a aac -movflags +faststart` (moov atom at front → immediate duration + smooth seeking). It caches by mtime. `Home.vue` calls it after `prepare_audio_for_ai` and sets `extractedAudioPath` to the m4a; `refreshExtractedAudioPath` looks for the sibling `<stem>_preview.m4a` on load. The Ogg/Opus analysis+upload pipeline (`gemini.rs`, `upload.rs`, `chunking.rs`, `silence.rs`, all `audio/ogg`) is deliberately left untouched — do NOT change it without testing the Gemini upload.
+**Still true:** WKWebView can't reliably *seek* Opus/Ogg (bogus duration, mis-seeks), so the audio scrubber plays the transcoded AAC preview `analysis_preview.m4a` from `prepare_preview_audio`. It now lives in the media cache (see `media_cache.rs`; `cached_preview_audio` finds it on load). The Ogg/Opus analysis + upload pipeline (`gemini.rs`, `upload.rs`, `chunking.rs`, `silence.rs`) is deliberately unchanged; don't change it without testing the Gemini upload.
 
-Known remaining limitation: the `<video>` preview still plays the source file, so if the source's audio codec is undecodable in WKWebView the video is silent; the separate audio scrubber (m4a) is the reliable audio source. The offset math itself is correct — see [[silence-offset-flow]].
+**How to apply:** when a preview is silent or a track is missing, check the container's box layout and `moov` size before blaming codecs (a short Python box walker or `ffprobe` works), and make sure playback goes through `media://`. The offset math is separate and correct; see [[silence-offset-flow]].

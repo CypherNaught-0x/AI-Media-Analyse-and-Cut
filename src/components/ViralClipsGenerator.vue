@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { mediaUrl } from '../utils/mediaUrl';
 import type {
     ClipRole,
     ShortClip,
@@ -143,7 +143,7 @@ function clock(seconds: number): string {
 // ---- Preview: plays a clip's ranges back to back in the player above. ----
 const player = ref<HTMLVideoElement | null>(null);
 const previewing = ref<{ id: string; rangeIndex: number } | null>(null);
-const mediaSrc = computed(() => (props.hasMediaFile ? convertFileSrc(props.inputPath) : ''));
+const mediaSrc = computed(() => (props.hasMediaFile ? mediaUrl(props.inputPath) : ''));
 
 function preview(clip: ShortClip) {
     const video = player.value;
