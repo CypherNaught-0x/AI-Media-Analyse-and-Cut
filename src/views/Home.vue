@@ -54,7 +54,7 @@ import { errorMessage } from '../utils/appError';
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
 const router = useRouter();
-const { settings } = useSettings();
+const { settings, apiKeyStored } = useSettings();
 
 /**
  * Payloads of the backend's shared `progress` event: elapsed seconds, a plain
@@ -202,7 +202,7 @@ function currentParakeetCacheKey(): string {
 }
 
 const isLlmOnlyBackend = computed(() => workspaceSettings.value.transcriptionBackend === 'llm');
-const hasApiKey = computed(() => settings.value.apiKey.length > 0);
+const hasApiKey = computed(() => apiKeyStored.value);
 const localEngineLabel = computed(() => LOCAL_ENGINE_LABELS[workspaceSettings.value.localEngine]);
 
 const hasBackendConfiguration = computed(() => {
@@ -783,7 +783,6 @@ async function translateTranscript() {
     try {
         const response = await commands.translateTranscript(
             runId,
-            settings.value.apiKey,
             settings.value.baseUrl,
             settings.value.model,
             segments.value,
@@ -907,12 +906,7 @@ async function requestLlmTranscriptForChunk(
     let audioBase64: string | null = null;
 
     if (isGoogleApi) {
-        uri = await commands.uploadFile(
-            runId,
-            settings.value.apiKey,
-            settings.value.baseUrl,
-            chunkAudioPath,
-        );
+        uri = await commands.uploadFile(runId, settings.value.baseUrl, chunkAudioPath);
         assertActiveRun(runId);
     } else {
         audioBase64 = await commands.readFileAsBase64(chunkAudioPath);
@@ -922,7 +916,6 @@ async function requestLlmTranscriptForChunk(
     const response = await commands.analyzeAudio(
         runId,
         {
-            apiKey: settings.value.apiKey,
             baseUrl: settings.value.baseUrl,
             model: settings.value.model,
         },
@@ -1267,7 +1260,6 @@ async function processFile() {
                     try {
                         nextSegments = await commands.cleanupLocalTranscript(
                             runId,
-                            settings.value.apiKey,
                             settings.value.baseUrl,
                             settings.value.model,
                             localSegments,

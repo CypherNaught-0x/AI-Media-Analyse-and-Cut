@@ -4,6 +4,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 import Toast from './components/Toast.vue';
+import { migrateLegacyApiKey } from './composables/useSettings';
 
 const toastVisible = ref(false);
 const toastMessage = ref('');
@@ -33,6 +34,10 @@ async function handleToastAction() {
 }
 
 onMounted(async () => {
+    // Moves an API key from an older version's localStorage into the keychain
+    // and loads whether one is stored.
+    void migrateLegacyApiKey();
+
     try {
         const update = await check();
         if (update?.available) {

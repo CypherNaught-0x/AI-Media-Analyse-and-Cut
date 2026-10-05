@@ -355,6 +355,7 @@ mod path_guard;
 pub mod podcast;
 pub mod retry;
 mod run_control;
+mod secrets;
 pub mod silence;
 pub mod time_utils;
 pub mod transcript_merge;
@@ -383,6 +384,21 @@ use crate::video::{
     TranscriptSegment,
 };
 
+/// Models available at `base_url`. Uses `api_key` when given (a key typed in
+/// Settings but not saved yet), otherwise the stored key.
+#[tauri::command]
+#[specta::specta]
+async fn list_models(
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<gemini::ModelList, AppError> {
+    let api_key = match api_key.filter(|key| !key.trim().is_empty()) {
+        Some(key) => key.trim().to_string(),
+        None => secrets::api_key().require()?,
+    };
+    Ok(gemini::list_models(&http::http_client(), &base_url, &api_key).await?)
+}
+
 /// The seekable preview audio a previous analysis of `input_path` produced,
 /// if it is still cached.
 #[tauri::command]
@@ -402,7 +418,6 @@ fn cached_preview_audio(app: tauri::AppHandle, input_path: String) -> Option<Str
 #[allow(clippy::too_many_arguments)]
 async fn translate_transcript(
     run_id: u64,
-    api_key: String,
     base_url: String,
     model: String,
     transcript: Vec<TranscriptSegment>,
@@ -411,6 +426,7 @@ async fn translate_transcript(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
+    let api_key = secrets::api_key().require()?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
         .run_cancellable(
@@ -425,7 +441,6 @@ async fn translate_transcript(
 #[specta::specta]
 async fn upload_file(
     run_id: u64,
-    api_key: String,
     base_url: String,
     path: String,
     run_control: State<'_, RunControl>,
@@ -433,7 +448,10 @@ async fn upload_file(
     run_control.ensure_active(run_id)?;
     let path_buf = PathBuf::from(path);
     run_control
-        .run_cancellable(run_id, upload_file_and_wait(&api_key, &base_url, &path_buf))
+        .run_cancellable(
+            run_id,
+            upload_file_and_wait(&secrets::api_key().require()?, &base_url, &path_buf),
+        )
         .await
         .map_err(|e| {
             format!(
@@ -446,11 +464,11 @@ async fn upload_file(
         .map_err(AppError::from)
 }
 
-/// The remote LLM a request goes to, as configured in Settings.
+/// The remote LLM a request goes to, as configured in Settings. The API key
+/// is not part of it: the backend reads it from the credential store.
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmConfig {
-    pub api_key: String,
     pub base_url: String,
     pub model: String,
 }
@@ -472,11 +490,8 @@ async fn analyze_audio(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
-    let LlmConfig {
-        api_key,
-        base_url,
-        model,
-    } = llm;
+    let LlmConfig { base_url, model } = llm;
+    let api_key = secrets::api_key().require()?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     run_control
         .run_cancellable(
@@ -507,7 +522,6 @@ async fn analyze_audio(
 #[allow(clippy::too_many_arguments)]
 async fn cleanup_local_transcript(
     run_id: u64,
-    api_key: String,
     base_url: String,
     model: String,
     transcript: Vec<TranscriptSegment>,
@@ -517,6 +531,7 @@ async fn cleanup_local_transcript(
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, AppError> {
     run_control.ensure_active(run_id)?;
+    let api_key = secrets::api_key().require()?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     run_control
         .run_cancellable(
@@ -741,7 +756,7 @@ async fn generate_clips(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
-    let client = GeminiClient::new(llm.api_key, llm.base_url, llm.model);
+    let client = GeminiClient::new(secrets::api_key().require()?, llm.base_url, llm.model);
     run_control
         .run_cancellable(
             run_id,
@@ -886,7 +901,6 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), AppE
 #[allow(clippy::too_many_arguments)]
 async fn generate_podcast(
     run_id: u64,
-    api_key: String,
     base_url: String,
     model: String,
     transcript: String,
@@ -896,6 +910,7 @@ async fn generate_podcast(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
+    let api_key = secrets::api_key().require()?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
         .run_cancellable(
@@ -912,7 +927,6 @@ async fn generate_podcast(
 #[allow(clippy::too_many_arguments)]
 async fn refine_podcast(
     run_id: u64,
-    api_key: String,
     base_url: String,
     model: String,
     original_transcript: String,
@@ -923,6 +937,7 @@ async fn refine_podcast(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
+    let api_key = secrets::api_key().require()?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
         .run_cancellable(
@@ -1055,6 +1070,10 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             prepare_audio_for_ai,
             prepare_preview_audio,
             cached_preview_audio,
+            list_models,
+            secrets::set_api_key,
+            secrets::clear_api_key,
+            secrets::has_api_key,
             upload_file,
             split_audio_for_analysis,
             analyze_audio,

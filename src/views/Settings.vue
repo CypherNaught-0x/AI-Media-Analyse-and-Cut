@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useSettings } from '../composables/useSettings';
+import { refreshApiKeyStatus, useSettings } from '../composables/useSettings';
 import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
@@ -61,10 +61,13 @@ const ENGINE_OPTIONS: { value: LocalEngine; title: string; badge?: string; descr
     ];
 
 const router = useRouter();
-const { settings, updateSettings, modelFetchState, updateModelFetchState } = useSettings();
+const { settings, apiKeyStored, updateSettings, modelFetchState, updateModelFetchState } =
+    useSettings();
 
 const localBaseUrl = ref(settings.value.baseUrl);
-const localApiKey = ref(settings.value.apiKey);
+// A new key typed here; the stored key itself is never loaded into the UI.
+const localApiKey = ref('');
+const canUseApiKey = computed(() => apiKeyStored.value || localApiKey.value.trim().length > 0);
 const localModel = ref(settings.value.model);
 const localEnforceJsonSchema = ref(settings.value.enforceJsonSchema ?? true);
 const localMaxAnalysisChunkMinutes = ref(settings.value.maxAnalysisChunkMinutes ?? 30);
@@ -323,7 +326,7 @@ async function checkForUpdates() {
 const hasChanges = computed(() => {
     return (
         localBaseUrl.value !== settings.value.baseUrl ||
-        localApiKey.value !== settings.value.apiKey ||
+        localApiKey.value.trim() !== '' ||
         localModel.value !== settings.value.model ||
         localEnforceJsonSchema.value !== (settings.value.enforceJsonSchema ?? true) ||
         localMaxAnalysisChunkMinutes.value !== (settings.value.maxAnalysisChunkMinutes ?? 30) ||
@@ -366,7 +369,7 @@ const normalizeBaseUrl = (url: string): string => {
 };
 
 async function fetchModels(silent = false) {
-    if (!localApiKey.value) {
+    if (!canUseApiKey.value) {
         if (!silent) {
             fetchError.value = 'Please enter an API key first';
         }
@@ -383,50 +386,21 @@ async function fetchModels(silent = false) {
     const currentModel = localModel.value;
 
     try {
-        const normalizedUrl = normalizeBaseUrl(localBaseUrl.value);
-        const apiPath = isGoogleApi.value ? '/v1beta/models' : '/v1/models';
-
-        let modelsUrl: string;
-        const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-        };
-
-        modelsUrl = `${normalizedUrl}${apiPath}`;
-        if (isGoogleApi.value) {
-            // Send the key via header rather than the URL query string so it does
-            // not leak into logs/history. Google accepts x-goog-api-key.
-            headers['x-goog-api-key'] = localApiKey.value;
-        } else {
-            headers['Authorization'] = `Bearer ${localApiKey.value}`;
-        }
-
-        const response = await fetch(modelsUrl, { headers });
-
-        if (!response.ok) {
-            // Check for 404 - endpoint doesn't support model listing
-            if (response.status === 404) {
-                updateModelFetchState({ supportsModelFetch: false, availableModels: [] });
-                availableModels.value = [];
-                if (!silent) {
-                    fetchError.value = 'This endpoint does not support model listing';
-                }
-                return;
+        // The backend makes the request, with the stored key unless a new one
+        // was typed here and not saved yet.
+        const list = await commands.listModels(
+            normalizeBaseUrl(localBaseUrl.value),
+            localApiKey.value.trim() || null,
+        );
+        if (!list.supported) {
+            updateModelFetchState({ supportsModelFetch: false, availableModels: [] });
+            availableModels.value = [];
+            if (!silent) {
+                fetchError.value = 'This endpoint does not support model listing';
             }
-            throw new Error(`Failed to fetch models: ${response.statusText}`);
+            return;
         }
-
-        const data = await response.json();
-        let fetchedModels: string[] = [];
-
-        if (data.models && Array.isArray(data.models)) {
-            fetchedModels = data.models
-                .map((m: { name?: string }) => m.name?.replace('models/', '') || m.name)
-                .filter(Boolean);
-        } else if (data.data && Array.isArray(data.data)) {
-            fetchedModels = data.data.map((m: { id?: string }) => m.id).filter(Boolean);
-        } else {
-            throw new Error('Invalid response format');
-        }
+        const fetchedModels = list.models;
 
         if (fetchedModels.length === 0) {
             throw new Error('No models found');
@@ -458,10 +432,24 @@ async function fetchModels(silent = false) {
 
 // Auto-fetch models on mount if API key is present
 onMounted(() => {
-    if (localApiKey.value && modelFetchState.value.supportsModelFetch !== false) {
+    if (canUseApiKey.value && modelFetchState.value.supportsModelFetch !== false) {
         fetchModels(true);
     }
 });
+
+async function removeApiKey() {
+    const confirmed = await ask('Remove the saved API key from the system keychain?', {
+        title: 'Remove API key',
+        kind: 'warning',
+    });
+    if (!confirmed) return;
+    try {
+        await commands.clearApiKey();
+    } catch (error) {
+        showToast(`Could not remove the API key: ${errorMessage(error)}`, 'error');
+    }
+    await refreshApiKeyStatus();
+}
 
 async function exportLogs() {
     try {
@@ -515,12 +503,22 @@ async function selectSortformerModelFile() {
     }
 }
 
-function saveSettings() {
+async function saveSettings() {
     const normalizedUrl = normalizeBaseUrl(localBaseUrl.value);
+    const newApiKey = localApiKey.value.trim();
+    if (newApiKey) {
+        try {
+            await commands.setApiKey(newApiKey);
+        } catch (error) {
+            showToast(`Could not save the API key: ${errorMessage(error)}`, 'error');
+            return;
+        }
+        localApiKey.value = '';
+        await refreshApiKeyStatus();
+    }
 
     updateSettings({
         baseUrl: normalizedUrl,
-        apiKey: localApiKey.value,
         model: localModel.value,
         enforceJsonSchema: localEnforceJsonSchema.value,
         maxAnalysisChunkMinutes: localMaxAnalysisChunkMinutes.value,
@@ -1034,14 +1032,32 @@ function cancel() {
                     >
                         LLM API Key
                     </label>
-                    <input
-                        v-model="localApiKey"
-                        type="password"
-                        class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                        placeholder="Enter your API key"
-                    />
+                    <div class="flex gap-3">
+                        <input
+                            v-model="localApiKey"
+                            type="password"
+                            autocomplete="off"
+                            data-testid="api-key-input"
+                            class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
+                            :placeholder="
+                                apiKeyStored
+                                    ? 'Saved in the system keychain — enter a new key to replace it'
+                                    : 'Enter your API key'
+                            "
+                        />
+                        <button
+                            v-if="apiKeyStored"
+                            type="button"
+                            data-testid="api-key-remove"
+                            class="shrink-0 px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-2xl transition-all border border-white/10"
+                            @click="removeApiKey"
+                        >
+                            Remove
+                        </button>
+                    </div>
                     <p class="text-xs text-gray-500 mt-2">
-                        Your API key will be stored locally in the browser
+                        Stored in your system keychain (macOS Keychain, Windows Credential Manager
+                        or the Secret Service on Linux), never in the app's settings.
                     </p>
                 </div>
 
@@ -1109,7 +1125,7 @@ function cancel() {
                         </div>
                         <button
                             @click="fetchModels()"
-                            :disabled="isFetchingModels || !localApiKey"
+                            :disabled="isFetchingModels || !canUseApiKey"
                             class="btn-primary px-6 py-3 flex items-center gap-2"
                         >
                             <svg

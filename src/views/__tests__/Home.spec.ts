@@ -35,7 +35,6 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 // Mock useSettings: one shared instance (like the real module-level ref), so
 // tests can assert on the app-wide defaults.
 const defaultMockSettings = () => ({
-    apiKey: 'test-api-key',
     baseUrl: 'https://test.url',
     model: 'test-model',
     enforceJsonSchema: true,
@@ -48,8 +47,9 @@ const defaultMockSettings = () => ({
     sortformerModelPath: '',
 });
 const mockSettings = ref<Record<string, unknown>>(defaultMockSettings());
+const mockApiKeyStored = ref(true);
 vi.mock('../../composables/useSettings', () => ({
-    useSettings: () => ({ settings: mockSettings }),
+    useSettings: () => ({ settings: mockSettings, apiKeyStored: mockApiKeyStored }),
 }));
 
 // Mock Editor component to avoid testing it again

@@ -29,10 +29,18 @@ export const commands = {
 	 *  if it is still cached.
 	 */
 	cachedPreviewAudio: (inputPath: string) => __TAURI_INVOKE<string | null>("cached_preview_audio", { inputPath }),
-	uploadFile: (runId: number, apiKey: string, baseUrl: string, path: string) => __TAURI_INVOKE<string | null>("upload_file", { runId, apiKey, baseUrl, path }),
+	/**
+	 *  Models available at `base_url`. Uses `api_key` when given (a key typed in
+	 *  Settings but not saved yet), otherwise the stored key.
+	 */
+	listModels: (baseUrl: string, apiKey: string | null) => __TAURI_INVOKE<ModelList>("list_models", { baseUrl, apiKey }),
+	setApiKey: (key: string) => __TAURI_INVOKE<null>("set_api_key", { key }),
+	clearApiKey: () => __TAURI_INVOKE<null>("clear_api_key"),
+	hasApiKey: () => __TAURI_INVOKE<boolean>("has_api_key"),
+	uploadFile: (runId: number, baseUrl: string, path: string) => __TAURI_INVOKE<string | null>("upload_file", { runId, baseUrl, path }),
 	splitAudioForAnalysis: (runId: number, path: string, maxChunkSeconds: number | null, parakeetModelPath: string) => __TAURI_INVOKE<AudioChunk[]>("split_audio_for_analysis", { runId, path, maxChunkSeconds, parakeetModelPath }),
 	analyzeAudio: (runId: number, llm: LlmConfig, enforceJsonSchema: boolean, context: string, glossary: string, speakerCount: number | null, removeFillerWords: boolean, audioUri: string | null, audioBase64: string | null) => __TAURI_INVOKE<string>("analyze_audio", { runId, llm, enforceJsonSchema, context, glossary, speakerCount, removeFillerWords, audioUri, audioBase64 }),
-	cleanupLocalTranscript: (runId: number, apiKey: string, baseUrl: string, model: string, transcript: TranscriptSegment_Deserialize[], context: string, glossary: string, removeFillerWords: boolean) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("cleanup_local_transcript", { runId, apiKey, baseUrl, model, transcript, context, glossary, removeFillerWords }),
+	cleanupLocalTranscript: (runId: number, baseUrl: string, model: string, transcript: TranscriptSegment_Deserialize[], context: string, glossary: string, removeFillerWords: boolean) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("cleanup_local_transcript", { runId, baseUrl, model, transcript, context, glossary, removeFillerWords }),
 	mergeTranscriptHypotheses: (runId: number, primaryTranscript: TranscriptSegment_Deserialize[], referenceTranscript: TranscriptSegment_Deserialize[]) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("merge_transcript_hypotheses", { runId, primaryTranscript, referenceTranscript }),
 	transcribeWithParakeet: (runId: number, audioPath: string, parakeetModelPath: string, sortformerModelPath: string) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_parakeet", { runId, audioPath, parakeetModelPath, sortformerModelPath }),
 	/**  Transcribe with CrisperWhisper 2.0 and return editor-ready segments. */
@@ -59,10 +67,10 @@ export const commands = {
 	allowMediaAccess: (path: string) => __TAURI_INVOKE<null>("allow_media_access", { path }),
 	detectSilence: (runId: number | null, path: string, minDuration: number | null) => __TAURI_INVOKE<SilenceInterval[]>("detect_silence", { runId, path, minDuration }),
 	removeSilence: (runId: number | null, path: string, minDuration: number | null) => __TAURI_INVOKE<ProcessedAudio>("remove_silence", { runId, path, minDuration }),
-	translateTranscript: (runId: number, apiKey: string, baseUrl: string, model: string, transcript: TranscriptSegment_Deserialize[], targetLanguage: string, context: string) => __TAURI_INVOKE<string>("translate_transcript", { runId, apiKey, baseUrl, model, transcript, targetLanguage, context }),
+	translateTranscript: (runId: number, baseUrl: string, model: string, transcript: TranscriptSegment_Deserialize[], targetLanguage: string, context: string) => __TAURI_INVOKE<string>("translate_transcript", { runId, baseUrl, model, transcript, targetLanguage, context }),
 	zipLogs: (targetPath: string) => __TAURI_INVOKE<null>("zip_logs", { targetPath }),
-	generatePodcast: (runId: number, apiKey: string, baseUrl: string, model: string, transcript: string, minDuration: number, maxDuration: number, context: string | null) => __TAURI_INVOKE<string>("generate_podcast", { runId, apiKey, baseUrl, model, transcript, minDuration, maxDuration, context }),
-	refinePodcast: (runId: number, apiKey: string, baseUrl: string, model: string, originalTranscript: string, currentScript: string, currentDuration: number | null, targetMin: number, targetMax: number) => __TAURI_INVOKE<string>("refine_podcast", { runId, apiKey, baseUrl, model, originalTranscript, currentScript, currentDuration, targetMin, targetMax }),
+	generatePodcast: (runId: number, baseUrl: string, model: string, transcript: string, minDuration: number, maxDuration: number, context: string | null) => __TAURI_INVOKE<string>("generate_podcast", { runId, baseUrl, model, transcript, minDuration, maxDuration, context }),
+	refinePodcast: (runId: number, baseUrl: string, model: string, originalTranscript: string, currentScript: string, currentDuration: number | null, targetMin: number, targetMax: number) => __TAURI_INVOKE<string>("refine_podcast", { runId, baseUrl, model, originalTranscript, currentScript, currentDuration, targetMin, targetMax }),
 	exportPodcast: (runId: number, inputPath: string, segments: PodcastSegment_Deserialize[], introPath: string | null, outroPath: string | null, startPadding: number | null, endPadding: number | null, outputPath: string) => __TAURI_INVOKE<null>("export_podcast", { runId, inputPath, segments, introPath, outroPath, startPadding, endPadding, outputPath }),
 	exportPodcastClips: (runId: number, inputPath: string, segments: PodcastSegment_Deserialize[], startPadding: number | null, endPadding: number | null, outputDir: string) => __TAURI_INVOKE<null>("export_podcast_clips", { runId, inputPath, segments, startPadding, endPadding, outputDir }),
 	calculateSegmentsDuration: (segments: PodcastSegment_Deserialize[]) => __TAURI_INVOKE<number | null>("calculate_segments_duration", { segments }),
@@ -171,11 +179,20 @@ export type ExportQuality =
 /**  Fast and small; previews and drafts. */
 "draft";
 
-/**  The remote LLM a request goes to, as configured in Settings. */
+/**
+ *  The remote LLM a request goes to, as configured in Settings. The API key
+ *  is not part of it: the backend reads it from the credential store.
+ */
 export type LlmConfig = {
-	apiKey: string,
 	baseUrl: string,
 	model: string,
+};
+
+/**  Models an endpoint offers, for the model picker in Settings. */
+export type ModelList = {
+	/**  False when the endpoint has no model-listing route (404). */
+	supported: boolean,
+	models: string[],
 };
 
 export type PodcastSegment = PodcastSegment_Serialize | PodcastSegment_Deserialize;

@@ -105,7 +105,6 @@ async function generateClips() {
         const response = await commands.generateClips(
             runId,
             {
-                apiKey: settings.value.apiKey,
                 baseUrl: settings.value.baseUrl,
                 model: settings.value.model,
             },

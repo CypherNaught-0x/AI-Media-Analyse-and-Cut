@@ -16,7 +16,6 @@ vi.mock('../../composables/useSettings', () => ({
     useSettings: () => ({
         settings: {
             value: {
-                apiKey: 'key',
                 baseUrl: '',
                 model: 'model',
             },

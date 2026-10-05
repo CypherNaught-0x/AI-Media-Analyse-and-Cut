@@ -1,6 +1,6 @@
 use crate::retry::{rate_limit_wait, retry_with_backoff, RetryConfig, RetryableError};
 use crate::video::TranscriptSegment;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
 use reqwest::{
     header::{ACCEPT, ACCEPT_ENCODING},
@@ -1529,5 +1529,116 @@ mod tests {
 
         assert_eq!(cleaned[0].speaker, "Alice");
         assert_eq!(cleaned[0].text, "Hello.");
+    }
+}
+
+/// Models an endpoint offers, for the model picker in Settings.
+#[derive(Debug, PartialEq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelList {
+    /// False when the endpoint has no model-listing route (404).
+    pub supported: bool,
+    pub models: Vec<String>,
+}
+
+/// List the models at `base_url` (Google: `/v1beta/models`; OpenAI-compatible:
+/// `/v1/models`). The key goes in a header, never in the URL.
+pub async fn list_models(client: &Client, base_url: &str, api_key: &str) -> Result<ModelList> {
+    let base_url = base_url.trim_end_matches('/');
+    let is_google_api = base_url.contains("generativelanguage.googleapis.com");
+    let request = if is_google_api {
+        client
+            .get(format!("{base_url}/v1beta/models"))
+            .header("x-goog-api-key", api_key)
+    } else {
+        client
+            .get(format!("{base_url}/v1/models"))
+            .bearer_auth(api_key)
+    };
+
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("Failed to reach '{base_url}'"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(ModelList {
+            supported: false,
+            models: Vec::new(),
+        });
+    }
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to fetch models: {}",
+            response.status()
+        ));
+    }
+
+    let body: Value = response
+        .json()
+        .await
+        .context("Invalid model list response")?;
+    let models: Vec<String> = if let Some(models) = body.get("models").and_then(Value::as_array) {
+        models
+            .iter()
+            .filter_map(|model| model.get("name").and_then(Value::as_str))
+            .map(|name| name.trim_start_matches("models/").to_string())
+            .collect()
+    } else if let Some(models) = body.get("data").and_then(Value::as_array) {
+        models
+            .iter()
+            .filter_map(|model| model.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    } else {
+        return Err(anyhow::anyhow!("Invalid model list response format"));
+    };
+
+    Ok(ModelList {
+        supported: true,
+        models,
+    })
+}
+
+#[cfg(test)]
+mod model_list_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lists_openai_compatible_models_with_a_bearer_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer sk-1")
+            .with_body(r#"{"data":[{"id":"gpt-a"},{"id":"gpt-b"}]}"#)
+            .create_async()
+            .await;
+
+        let list = list_models(&Client::new(), &format!("{}/", server.url()), "sk-1")
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+        assert_eq!(
+            list,
+            ModelList {
+                supported: true,
+                models: vec!["gpt-a".into(), "gpt-b".into()]
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn endpoints_without_model_listing_are_reported_not_failed() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/v1/models")
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let list = list_models(&Client::new(), &server.url(), "sk-1")
+            .await
+            .unwrap();
+        assert!(!list.supported);
     }
 }

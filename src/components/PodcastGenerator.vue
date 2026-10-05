@@ -198,7 +198,6 @@ async function generatePodcast() {
         // Initial generation
         let response = await commands.generatePodcast(
             runId,
-            settings.value.apiKey,
             settings.value.baseUrl,
             settings.value.model,
             transcript,
@@ -239,7 +238,6 @@ async function generatePodcast() {
 
             response = await commands.refinePodcast(
                 runId,
-                settings.value.apiKey,
                 settings.value.baseUrl,
                 settings.value.model,
                 transcript,

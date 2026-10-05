@@ -82,7 +82,6 @@ function seedStorage(scenario: Scenario) {
     localStorage.setItem(
         'llm-settings',
         JSON.stringify({
-            apiKey: 'demo',
             model: 'gemini-2.5-flash',
             transcriptionBackend: 'hybrid',
             localEngine: 'parakeet',
@@ -124,6 +123,10 @@ export function setupDemoMode() {
                 return statusMessage;
             case 'path_exists':
                 return true;
+            case 'has_api_key':
+                return true;
+            case 'list_models':
+                return { supported: true, models: ['gemini-2.5-flash', 'gemini-2.5-pro'] };
             case 'cached_preview_audio':
                 // Any path: convertFileSrc maps .m4a to the demo audio.
                 return '/demo/cache/analysis_preview.m4a';

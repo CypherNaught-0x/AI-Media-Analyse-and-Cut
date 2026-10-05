@@ -40,6 +40,9 @@ const invokeMock = vi.fn((command: string, _args?: unknown) => {
             message: null,
         });
     }
+    if (command === 'list_models') {
+        return Promise.resolve({ supported: true, models: ['gemini-pro'] });
+    }
     return Promise.resolve(undefined);
 });
 
@@ -55,7 +58,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 const updateSettingsMock = vi.fn();
 const updateModelFetchStateMock = vi.fn();
 const settingsRef = ref({
-    apiKey: 'test-api-key',
     baseUrl: 'https://test.url',
     model: 'test-model',
     enforceJsonSchema: true,
@@ -79,9 +81,13 @@ const modelFetchStateRef = ref({
     availableModels: [],
     supportsModelFetch: true,
 });
+const apiKeyStoredRef = ref(true);
+const refreshApiKeyStatusMock = vi.fn(() => Promise.resolve());
 vi.mock('../../composables/useSettings', () => ({
+    refreshApiKeyStatus: () => refreshApiKeyStatusMock(),
     useSettings: () => ({
         settings: settingsRef,
+        apiKeyStored: apiKeyStoredRef,
         updateSettings: updateSettingsMock,
         modelFetchState: modelFetchStateRef,
         updateModelFetchState: updateModelFetchStateMock,
@@ -99,8 +105,8 @@ const router = createRouter({
 describe('Settings.vue', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        apiKeyStoredRef.value = true;
         settingsRef.value = {
-            apiKey: 'test-api-key',
             baseUrl: 'https://test.url',
             model: 'test-model',
             enforceJsonSchema: true,
@@ -154,12 +160,6 @@ describe('Settings.vue', () => {
     });
 
     it('fetches models correctly', async () => {
-        const mockModels = { models: [{ name: 'models/gemini-pro' }] };
-        vi.mocked(globalThis.fetch).mockResolvedValue({
-            ok: true,
-            json: () => Promise.resolve(mockModels),
-        } as unknown as Response);
-
         const wrapper = mount(Settings, {
             global: {
                 plugins: [router],
@@ -173,7 +173,12 @@ describe('Settings.vue', () => {
 
         await flushPromises();
 
-        expect(globalThis.fetch).toHaveBeenCalled();
+        // The backend lists the models with the stored key; nothing is sent
+        // from the webview.
+        expect(invokeMock).toHaveBeenCalledWith('list_models', {
+            baseUrl: 'https://test.url',
+            apiKey: null,
+        });
         expect(updateModelFetchStateMock).toHaveBeenCalledWith({
             supportsModelFetch: true,
             availableModels: ['gemini-pro'],
@@ -214,12 +219,33 @@ describe('Settings.vue', () => {
         await input.setValue('new-api-key');
 
         await saveButton!.trigger('click');
+        await flushPromises();
 
-        expect(updateSettingsMock).toHaveBeenCalledWith(
-            expect.objectContaining({
-                apiKey: 'new-api-key',
-            }),
-        );
+        // The key goes to the keychain, not into the saved settings.
+        expect(invokeMock).toHaveBeenCalledWith('set_api_key', { key: 'new-api-key' });
+        expect(updateSettingsMock).toHaveBeenCalled();
+        expect(updateSettingsMock.mock.calls[0][0]).not.toHaveProperty('apiKey');
+        expect(refreshApiKeyStatusMock).toHaveBeenCalled();
+        expect((input.element as HTMLInputElement).value).toBe('');
+    });
+
+    it('never shows the stored key and can remove it', async () => {
+        const { ask } = await import('@tauri-apps/plugin-dialog');
+        vi.mocked(ask).mockResolvedValueOnce(true);
+        const wrapper = mount(Settings, {
+            global: {
+                plugins: [router],
+            },
+        });
+
+        const input = wrapper.get('[data-testid="api-key-input"]');
+        expect((input.element as HTMLInputElement).value).toBe('');
+        expect(input.attributes('placeholder')).toContain('keychain');
+
+        await wrapper.get('[data-testid="api-key-remove"]').trigger('click');
+        await flushPromises();
+        expect(invokeMock).toHaveBeenCalledWith('clear_api_key', undefined);
+        expect(refreshApiKeyStatusMock).toHaveBeenCalled();
     });
 
     it('probes the CrisperWhisper environment on mount and reports it as ready', async () => {
