@@ -44,7 +44,7 @@ describe('AnalysisSettings.vue', () => {
 
     expect(wrapper.find('textarea').element.value).toBe('test context');
     expect(wrapper.findAll('textarea')[1].element.value).toBe('test glossary');
-    expect(wrapper.find('input[type="number"]').element.value).toBe('2');
+    expect((wrapper.find('input[type="number"]').element as HTMLInputElement).value).toBe('2');
   });
 
   it('emits updates', async () => {

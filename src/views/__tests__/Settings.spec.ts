@@ -20,7 +20,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(() => Promise.resolve()),
 }));
 
-const invokeMock = vi.fn((command: string) => {
+const invokeMock = vi.fn((command: string, _args?: unknown) => {
   if (command === 'crisper_environment_status') {
     return Promise.resolve({
       pythonPath: '/usr/bin/python3',

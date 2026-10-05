@@ -49,6 +49,7 @@ describe('transcriptSidecar', () => {
       settingsSnapshot: {
         glossary: 'AI',
         transcriptionBackend: 'llm',
+        localEngine: 'parakeet',
         parakeetModelPath: '',
         sortformerModelPath: '',
       },
@@ -88,6 +89,7 @@ describe('transcriptSidecar', () => {
       settingsSnapshot: {
         glossary: '',
         transcriptionBackend: 'hybrid',
+        localEngine: 'parakeet',
         parakeetModelPath: '',
         sortformerModelPath: '',
       },

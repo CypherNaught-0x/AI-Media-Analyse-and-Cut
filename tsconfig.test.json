@@ -1,0 +1,11 @@
+{
+  // Type-checks the specs as well. The app config excludes them so test-only
+  // types (Node, the build scripts the specs import) stay out of the app build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowJs": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "exclude": []
+}

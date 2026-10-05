@@ -137,7 +137,7 @@ describe('Editor.vue', () => {
 
     const emitted = wrapper.emitted('update:segments');
     expect(emitted).toBeTruthy();
-    const updated = emitted!.at(-1)![0] as TranscriptSegment[];
+    const updated = emitted![emitted!.length - 1][0] as TranscriptSegment[];
     expect(updated[0].speaker).toBe('Speaker 2');
   });
 
@@ -160,7 +160,7 @@ describe('Editor.vue', () => {
 
     const emitted = wrapper.emitted('update:segments');
     expect(emitted).toBeTruthy();
-    const updated = emitted!.at(-1)![0] as TranscriptSegment[];
+    const updated = emitted![emitted!.length - 1][0] as TranscriptSegment[];
     expect(updated[0].speaker).toBe('Alice Example');
   });
 
@@ -457,7 +457,7 @@ describe('Editor.vue', () => {
         similarityScore: 0.51,
         alternatives: [
           { source: 'google', text: 'Google text', speaker: 'Named Speaker' },
-          { source: 'parakeet', text: 'Parakeet text', speaker: 'Speaker 2' },
+          { source: 'local', text: 'Parakeet text', speaker: 'Speaker 2' },
         ],
       },
     ];
@@ -698,7 +698,7 @@ describe('Editor.vue', () => {
 
     await wrapper.find('textarea').setValue('Hola mundo');
     await wrapper.findAll('button').find((button) => button.text() === 'Save Changes')!.trigger('click');
-    const emitted = wrapper.emitted('update:segments')!.at(-1)![0] as TranscriptSegment[];
+    const emitted = wrapper.emitted('update:segments')!.slice(-1)[0][0] as TranscriptSegment[];
     expect(emitted.map((segment) => segment.text)).toEqual(['Hola mundo', 'How are you?']);
   });
 });
