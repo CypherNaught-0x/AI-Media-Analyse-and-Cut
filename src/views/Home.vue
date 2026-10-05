@@ -1481,6 +1481,7 @@ function updateProcessing(processing: boolean) {
                     :inputPath="inputPath"
                     :hasMediaFile="hasMediaFile"
                     :busy="isProcessing"
+                    :context="context"
                     :state="podcastWorkspaceState"
                     :cancelGeneration="cancelGeneration"
                     class="mb-20"
