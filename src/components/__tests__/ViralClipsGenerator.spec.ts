@@ -54,6 +54,7 @@ describe('ViralClipsGenerator', () => {
         hasMediaFile: true,
         state,
         cancelGeneration: 0,
+        busy: false,
       },
     });
 
