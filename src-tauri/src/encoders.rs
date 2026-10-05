@@ -48,8 +48,8 @@ impl H264Encoder {
 }
 
 /// Speed/quality trade-off for an export.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)] // High/Draft are selected by the export quality setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub enum ExportQuality {
     /// Visually lossless; for final masters.
     High,

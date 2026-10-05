@@ -1,3 +1,4 @@
+import type { ExportQuality } from '../bindings';
 import type { CrisperLanguage, CrisperMode, LocalEngine, TranscriptionBackend } from '../types';
 import { migrateTranscriptionBackend } from '../types';
 import { ref, watch } from 'vue';
@@ -11,6 +12,8 @@ export interface LLMSettings {
     glossary: string;
     preClipPadding: number;
     postClipPadding: number;
+    /** Speed/quality trade-off for video cuts and clip exports. */
+    exportQuality: ExportQuality;
     /** Pipeline: `llm`, `local`, `hybrid`, or `hybrid-merge`. */
     transcriptionBackend: TranscriptionBackend;
     /** Which local model the non-`llm` pipelines run. */
@@ -53,6 +56,7 @@ const defaultSettings: LLMSettings = {
     glossary: '',
     preClipPadding: 0.0,
     postClipPadding: 0.0,
+    exportQuality: 'balanced',
     transcriptionBackend: 'llm',
     localEngine: 'parakeet',
     parakeetModelPath: '',
