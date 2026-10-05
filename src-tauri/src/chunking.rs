@@ -8,12 +8,12 @@
 //!      diarization) when no suitable silence exists in the window.
 //!   3. Last resort: a hard cut at the exact target time.
 
+use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
+use crate::format_path_io_error;
 use crate::parakeet::parakeet_word_boundaries;
-use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use crate::run_control::RunControl;
 use crate::silence::{detect_silence_internal, probe_duration};
-use crate::{format_ffmpeg_spawn_error, format_path_io_error};
 use ffmpeg_sidecar::command::FfmpegCommand;
-use ffmpeg_sidecar::event::FfmpegEvent;
 #[allow(unused_imports)]
 use log::{info, warn};
 use serde::Serialize;
@@ -215,8 +215,8 @@ pub async fn split_audio_for_analysis(
         let output_path = chunk_dir.join(format!("{}_{:x}_chunk{:03}.ogg", stem, nonce, index));
         let chunk_duration = (chunk_end - chunk_start).max(0.0);
 
-        let mut last_error = None;
-        let mut child = FfmpegCommand::new()
+        let mut command = FfmpegCommand::new();
+        command
             .args(["-y", "-ss", &chunk_start.to_string()])
             .input(input_path.to_str().unwrap())
             .args([
@@ -228,53 +228,17 @@ pub async fn split_audio_for_analysis(
                 "-b:a",
                 "96k",
             ])
-            .output(output_path.to_str().unwrap())
-            .spawn()
-            .map_err(|error| {
-                format_ffmpeg_spawn_error(
-                    "split audio for analysis",
-                    &input_path,
-                    Some(&output_path),
-                    &error,
-                )
-            })?;
-
-        let pid = child.as_inner().id();
-        run_control.register_pid(run_id, pid)?;
-
-        child
-            .iter()
-            .map_err(|error| {
-                format!(
-                    "Failed while reading FFmpeg output during audio splitting for '{}': {}",
-                    input_path.display(),
-                    error
-                )
-            })?
-            .for_each(|event| match event {
-                FfmpegEvent::Error(error) => last_error = Some(error),
-                FfmpegEvent::Log(
-                    ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal,
-                    message,
-                ) => last_error = Some(message),
-                _ => {}
-            });
-
-        run_control.clear_pid(run_id, pid);
-        if run_control.is_cancelled(run_id) {
-            return Err(RUN_CANCELLED_MESSAGE.to_string());
-        }
-
-        if !output_path.exists() {
-            let message =
-                last_error.unwrap_or_else(|| "FFmpeg finished without creating the chunk".into());
-            return Err(format!(
-                "Audio splitting failed for chunk {} of '{}': {}",
-                index + 1,
-                input_path.display(),
-                message
-            ));
-        }
+            .output(output_path.to_str().unwrap());
+        run_ffmpeg(
+            command,
+            FfmpegTask {
+                operation: &format!("split audio for analysis (part {})", index + 1),
+                input: &input_path,
+                output: Some(&output_path),
+                run: Some((run_id, run_control.inner())),
+            },
+            |_| {},
+        )?;
 
         chunks.push(AudioChunk {
             path: output_path.to_string_lossy().to_string(),
