@@ -345,6 +345,9 @@ pub mod crisper;
 pub(crate) mod encoders;
 pub mod error;
 pub(crate) mod ffmpeg;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
+#[allow(dead_code)]
+mod frames;
 pub mod gemini;
 mod http;
 mod local_asr;
@@ -355,9 +358,15 @@ mod model_download;
 mod parakeet;
 mod path_guard;
 pub mod podcast;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
+#[allow(dead_code)]
+mod reframe;
 pub mod retry;
 mod run_control;
 mod secrets;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
+#[allow(dead_code)]
+mod shots;
 pub mod silence;
 pub mod time_utils;
 pub mod transcript_merge;

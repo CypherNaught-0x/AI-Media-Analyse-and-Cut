@@ -24,6 +24,7 @@ profile-coreml = ["parakeet-rs/coreml"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tempfile = "3.23.0"
 tauri = { version = "~2.10.3", features = ["protocol-asset"] }
 tauri-runtime = "~2.10.1"
 tauri-runtime-wry = "~2.10.1"
@@ -60,7 +61,6 @@ futures-util = "0.3"
 [dev-dependencies]
 dotenvy = "0.15.7"
 mockito = "1.7.1"
-tempfile = "3.23.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
