@@ -169,30 +169,6 @@ struct AudioInfo {
     duration: f64,
 }
 
-fn get_media_duration(input_path: &str) -> Option<f64> {
-    let output = std::process::Command::new(ffmpeg_path())
-        .arg("-i")
-        .arg(input_path)
-        .output()
-        .ok()?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if let Some(pos) = stderr.find("Duration: ") {
-        let s = &stderr[pos + 10..];
-        if let Some(end) = s.find(',') {
-            let duration_str = &s[..end];
-            let parts: Vec<&str> = duration_str.split(':').collect();
-            if parts.len() == 3 {
-                let hours: f64 = parts[0].parse().ok()?;
-                let minutes: f64 = parts[1].parse().ok()?;
-                let seconds: f64 = parts[2].parse().ok()?;
-                return Some(hours * 3600.0 + minutes * 60.0 + seconds);
-            }
-        }
-    }
-    None
-}
-
 #[tauri::command]
 #[specta::specta]
 async fn prepare_audio_for_ai(
@@ -210,7 +186,9 @@ async fn prepare_audio_for_ai(
     let output_path = input.with_extension("ogg");
     let run_control = run_control.inner().clone();
     run_blocking(move || {
-        let duration = get_media_duration(input.to_str().unwrap());
+        let duration = probe_media(&input)
+            .ok()
+            .and_then(|info| info.duration_seconds);
         // Normalize input to OGG/Opus for downstream silence removal and AI upload.
         let mut command = FfmpegCommand::new();
         command
@@ -298,7 +276,9 @@ async fn prepare_preview_audio(
 
     let run_control = run_control.inner().clone();
     run_blocking(move || {
-        let duration = get_media_duration(source.to_str().unwrap());
+        let duration = probe_media(&source)
+            .ok()
+            .and_then(|info| info.duration_seconds);
         let mut command = FfmpegCommand::new();
         command
             .input(source.to_str().unwrap())
@@ -344,6 +324,7 @@ pub mod crisper;
 pub(crate) mod ffmpeg;
 pub mod gemini;
 mod local_asr;
+pub mod media_probe;
 mod parakeet;
 pub mod podcast;
 pub mod retry;
@@ -360,6 +341,7 @@ use crate::crisper::{
 };
 use crate::ffmpeg::{progress_percentage, run_ffmpeg, FfmpegTask};
 use crate::gemini::GeminiClient;
+use crate::media_probe::probe_media;
 use crate::parakeet::transcribe_with_parakeet;
 use crate::podcast::{
     calculate_segments_duration as calc_duration, export_podcast as export_podcast_fn,
