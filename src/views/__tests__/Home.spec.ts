@@ -259,6 +259,39 @@ describe('Home.vue', () => {
     expect(wrapper.text()).toContain('1 Segments');
   });
 
+  it('keeps the transcript and its sidecar when a re-analysis fails', async () => {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const defaultInvoke = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((cmd, args) => {
+      if (cmd === 'begin_run') return Promise.resolve(7);
+      if (cmd === 'prepare_audio_for_ai') return Promise.reject(new Error('ffmpeg exploded'));
+      return defaultInvoke(cmd, args);
+    });
+    localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession()));
+
+    const wrapper = mount(Home, {
+      global: {
+        plugins: [router],
+      },
+    });
+    await flushPromises();
+
+    await (wrapper.vm as unknown as { processFile: () => Promise<void> }).processFile();
+    await flushPromises();
+    // Let the debounced autosave fire.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('1 Segments');
+    const emptySidecarWrites = vi.mocked(invoke).mock.calls.filter(([cmd, args]) => {
+      if (cmd !== 'write_text_file') return false;
+      const { path, content } = args as { path: string; content: string };
+      return path.endsWith('.transcript.json') && JSON.parse(content).segments.length === 0;
+    });
+    expect(emptySidecarWrites).toHaveLength(0);
+    vi.mocked(invoke).mockImplementation(defaultInvoke);
+  });
+
   it('shows a missing-media warning for restored sessions with an invalid source path', async () => {
     localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession('/missing/source.mp4')));
 
