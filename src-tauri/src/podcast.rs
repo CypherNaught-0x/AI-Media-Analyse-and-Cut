@@ -1,8 +1,9 @@
-use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
+use crate::run_control::RunControl;
 use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
-use log::{debug, error, info};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -116,8 +117,6 @@ where
         start_padding,
         end_padding,
     );
-    let mut last_error = None;
-
     let mut cmd = FfmpegCommand::new();
 
     // Add intro input if provided
@@ -133,56 +132,33 @@ where
         cmd.input(outro.to_str().unwrap());
     }
 
-    let mut child = cmd
-        .args([
-            "-y",
-            "-filter_complex",
-            &filter_complex,
-            "-map",
-            "[outa]",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-        ])
-        .output(output_path.to_str().unwrap())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
-
-    let pid = child.as_inner().id();
-    run_control
-        .register_pid(run_id, pid)
-        .map_err(|error| anyhow::anyhow!(error))?;
-
-    child
-        .iter()
-        .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
-        .for_each(|event| match event {
-            FfmpegEvent::Progress(p) => on_progress(p.time),
-            FfmpegEvent::Log(_level, msg) => {
-                debug!("[FFmpeg Log] {}", msg);
+    cmd.args([
+        "-y",
+        "-filter_complex",
+        &filter_complex,
+        "-map",
+        "[outa]",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+    ])
+    .output(output_path.to_str().unwrap());
+    run_ffmpeg(
+        cmd,
+        FfmpegTask {
+            operation: "export the podcast",
+            input: input_path,
+            output: Some(output_path),
+            run: Some((run_id, run_control)),
+        },
+        |event| {
+            if let FfmpegEvent::Progress(progress) = event {
+                on_progress(progress.time.clone());
             }
-            FfmpegEvent::Error(e) => {
-                error!("[FFmpeg Error] {}", e);
-                last_error = Some(e);
-            }
-            _ => {}
-        });
-
-    run_control.clear_pid(run_id, pid);
-
-    if run_control.is_cancelled(run_id) {
-        return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
-    }
-
-    if !output_path.exists() {
-        let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
-        return Err(anyhow::anyhow!(
-            "FFmpeg failed to create output file: {:?}. Error: {}",
-            output_path,
-            msg
-        ));
-    }
+        },
+    )
+    .map_err(|error| anyhow::anyhow!(error))?;
 
     Ok(())
 }
@@ -313,10 +289,9 @@ where
         // Export audio clip with padding
         let start_secs = (parse_time(&segment.start) - start_padding).max(0.0);
         let end_secs = parse_time(&segment.end) + end_padding;
-        let mut last_error = None;
-
         let cb = on_progress.clone();
-        let mut child = FfmpegCommand::new()
+        let mut command = FfmpegCommand::new();
+        command
             .input(input_path.to_str().unwrap())
             .args([
                 "-y",
@@ -330,44 +305,22 @@ where
                 "-b:a",
                 "192k",
             ])
-            .output(output_path.to_str().unwrap())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
-
-        let pid = child.as_inner().id();
-        run_control
-            .register_pid(run_id, pid)
-            .map_err(|error| anyhow::anyhow!(error))?;
-
-        child
-            .iter()
-            .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
-            .for_each(|event| match event {
-                FfmpegEvent::Progress(p) => cb(p.time),
-                FfmpegEvent::Log(_level, msg) => {
-                    debug!("[FFmpeg Log] {}", msg);
+            .output(output_path.to_str().unwrap());
+        run_ffmpeg(
+            command,
+            FfmpegTask {
+                operation: &format!("export podcast clip {}", i + 1),
+                input: input_path,
+                output: Some(&output_path),
+                run: Some((run_id, run_control)),
+            },
+            |event| {
+                if let FfmpegEvent::Progress(progress) = event {
+                    cb(progress.time.clone());
                 }
-                FfmpegEvent::Error(e) => {
-                    error!("[FFmpeg Error] {}", e);
-                    last_error = Some(e);
-                }
-                _ => {}
-            });
-
-        run_control.clear_pid(run_id, pid);
-
-        if run_control.is_cancelled(run_id) {
-            return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
-        }
-
-        if !output_path.exists() {
-            let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
-            return Err(anyhow::anyhow!(
-                "FFmpeg failed to create clip: {:?}. Error: {}",
-                output_path,
-                msg
-            ));
-        }
+            },
+        )
+        .map_err(|error| anyhow::anyhow!(error))?;
     }
 
     Ok(())

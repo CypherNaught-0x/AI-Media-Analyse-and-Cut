@@ -1,5 +1,6 @@
-use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
-use crate::{format_ffmpeg_spawn_error, format_path_io_error};
+use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
+use crate::format_path_io_error;
+use crate::run_control::RunControl;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use ffmpeg_sidecar::paths::ffmpeg_path;
@@ -142,35 +143,6 @@ pub(crate) async fn detect_silence_internal(
     );
 
     // ffmpeg -i input.mp4 -af silencedetect=noise=-30dB:d=min_duration -f null -
-    if let Some((run_id, run_control)) = run_control {
-        run_control.ensure_active(run_id)?;
-    }
-
-    let mut child = FfmpegCommand::new()
-        .input(input_path.to_str().unwrap())
-        .args([
-            "-af",
-            &format!("silencedetect=noise=-30dB:d={}", min_duration),
-            "-f",
-            "null",
-            "-",
-        ])
-        .spawn()
-        .map_err(|e| format_ffmpeg_spawn_error("detect silence", &input_path, None, &e))?;
-
-    let pid = child.as_inner().id();
-    if let Some((run_id, run_control)) = run_control {
-        run_control.register_pid(run_id, pid)?;
-    }
-
-    let events = child.iter().map_err(|e| {
-        format!(
-            "Failed while reading FFmpeg output during silence detection for '{}': {}",
-            input_path.display(),
-            e
-        )
-    })?;
-
     let mut intervals = Vec::new();
     let mut current_start = None;
 
@@ -179,23 +151,38 @@ pub(crate) async fn detect_silence_internal(
     // Regex for end: silence_end: 15.678
     let re_end = Regex::new(r"silence_end: (\d+(\.\d+)?)").unwrap();
 
-    for event in events {
-        if let Some((run_id, run_control)) = run_control {
-            if run_control.is_cancelled(run_id) {
-                break;
-            }
-        }
-
-        if let FfmpegEvent::Log(_, line) = event {
-            // debug!("[FFmpeg] {}", line); // Too verbose
-            if let Some(caps) = re_start.captures(&line) {
+    let mut command = FfmpegCommand::new();
+    command
+        .input(input_path.to_str().unwrap())
+        // Only the audio matters; skip decoding any video stream.
+        .args([
+            "-vn",
+            "-af",
+            &format!("silencedetect=noise=-30dB:d={}", min_duration),
+            "-f",
+            "null",
+            "-",
+        ]);
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "detect silence",
+            input: &input_path,
+            output: None,
+            run: run_control,
+        },
+        |event| {
+            let FfmpegEvent::Log(_, line) = event else {
+                return;
+            };
+            if let Some(caps) = re_start.captures(line) {
                 if let Some(m) = caps.get(1) {
                     if let Ok(val) = m.as_str().parse::<f64>() {
                         current_start = Some(val);
                         debug!("Silence start detected at {}", val);
                     }
                 }
-            } else if let Some(caps) = re_end.captures(&line) {
+            } else if let Some(caps) = re_end.captures(line) {
                 if let Some(m) = caps.get(1) {
                     if let Ok(end_val) = m.as_str().parse::<f64>() {
                         if let Some(start_val) = current_start {
@@ -215,15 +202,8 @@ pub(crate) async fn detect_silence_internal(
                     }
                 }
             }
-        }
-    }
-
-    if let Some((run_id, run_control)) = run_control {
-        run_control.clear_pid(run_id, pid);
-        if run_control.is_cancelled(run_id) {
-            return Err(RUN_CANCELLED_MESSAGE.to_string());
-        }
-    }
+        },
+    )?;
 
     info!(
         "Silence detection complete. Found {} intervals.",
@@ -325,13 +305,8 @@ async fn remove_silence_internal(
 
     info!("Running FFmpeg to remove silence...");
 
-    let mut last_error = None;
-
-    if let Some((run_id, run_control)) = run_context {
-        run_control.ensure_active(run_id)?;
-    }
-
-    let mut child = FfmpegCommand::new()
+    let mut command = FfmpegCommand::new();
+    command
         .input(input_path.to_str().unwrap())
         .args([
             "-y",
@@ -344,50 +319,17 @@ async fn remove_silence_internal(
             "-b:a",
             "96k",
         ])
-        .output(output_path.to_str().unwrap())
-        .spawn()
-        .map_err(|e| {
-            format_ffmpeg_spawn_error("remove silence", &input_path, Some(&output_path), &e)
-        })?;
-
-    let pid = child.as_inner().id();
-    if let Some((run_id, run_control)) = run_context {
-        run_control.register_pid(run_id, pid)?;
-    }
-
-    child
-        .iter()
-        .map_err(|e| {
-            format!(
-                "Failed while reading FFmpeg output during silence removal for '{}': {}",
-                input_path.display(),
-                e
-            )
-        })?
-        .for_each(|event| match event {
-            FfmpegEvent::Log(_, msg) => {
-                debug!("[FFmpeg Remove Silence] {}", msg);
-            }
-            FfmpegEvent::Error(err) => {
-                last_error = Some(err);
-            }
-            _ => {}
-        });
-
-    if let Some((run_id, run_control)) = run_context {
-        run_control.clear_pid(run_id, pid);
-        if run_control.is_cancelled(run_id) {
-            return Err(RUN_CANCELLED_MESSAGE.to_string());
-        }
-    }
-
-    if !output_path.exists() {
-        let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
-        return Err(format!(
-            "FFmpeg failed to create output file: {:?}. Error: {}",
-            output_path, msg
-        ));
-    }
+        .output(output_path.to_str().unwrap());
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "remove silence",
+            input: &input_path,
+            output: Some(&output_path),
+            run: run_context,
+        },
+        |_| {},
+    )?;
 
     info!("Silence removed. New file: {:?}", output_path);
 

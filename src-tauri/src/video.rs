@@ -1,9 +1,10 @@
-use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
+use crate::run_control::RunControl;
 use crate::time_utils::parse_timestamp_to_seconds_raw;
 use anyhow::Result;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
-use log::{debug, error, info};
+use log::info;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -126,9 +127,8 @@ where
 
     let (filter_complex, _inputs) = build_filter_complex(segments)?;
 
-    let mut last_error = None;
-
-    let mut child = FfmpegCommand::new()
+    let mut command = FfmpegCommand::new();
+    command
         .input(input_path.to_str().unwrap())
         .args([
             "-y",
@@ -139,44 +139,22 @@ where
             "-map",
             "[a]",
         ])
-        .output(output_path.to_str().unwrap())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
-
-    let pid = child.as_inner().id();
-    run_control
-        .register_pid(run_id, pid)
-        .map_err(|error| anyhow::anyhow!(error))?;
-
-    child
-        .iter()
-        .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
-        .for_each(|event| match event {
-            FfmpegEvent::Progress(p) => on_progress(p.time),
-            FfmpegEvent::Log(_level, msg) => {
-                debug!("[FFmpeg Log] {}", msg);
+        .output(output_path.to_str().unwrap());
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "cut the video",
+            input: input_path,
+            output: Some(output_path),
+            run: Some((run_id, run_control)),
+        },
+        |event| {
+            if let FfmpegEvent::Progress(progress) = event {
+                on_progress(progress.time.clone());
             }
-            FfmpegEvent::Error(e) => {
-                error!("[FFmpeg Error] {}", e);
-                last_error = Some(e);
-            }
-            _ => {}
-        });
-
-    run_control.clear_pid(run_id, pid);
-
-    if run_control.is_cancelled(run_id) {
-        return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
-    }
-
-    if !output_path.exists() {
-        let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
-        return Err(anyhow::anyhow!(
-            "FFmpeg failed to create output file: {:?}. Error: {}",
-            output_path,
-            msg
-        ));
-    }
+        },
+    )
+    .map_err(|error| anyhow::anyhow!(error))?;
 
     Ok(())
 }
@@ -280,53 +258,29 @@ where
         // If single segment, use simple cut. If multiple, use cut_video logic (concat).
         if segment.segments.len() == 1 {
             let s = &segment.segments[0];
-            let mut last_error = None;
             let (input_args, output_args) = single_clip_args(s, fast_mode)?;
 
-            let mut cmd = FfmpegCommand::new();
-            cmd.args(input_args);
-            cmd.input(input_path.to_str().unwrap());
-            cmd.args(output_args);
-
-            let mut child = cmd
-                .output(output_path.to_str().unwrap())
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("Failed to spawn ffmpeg: {}", e))?;
-
-            let pid = child.as_inner().id();
-            run_control
-                .register_pid(run_id, pid)
-                .map_err(|error| anyhow::anyhow!(error))?;
-
-            child
-                .iter()
-                .map_err(|e| anyhow::anyhow!("Failed to iterate ffmpeg events: {}", e))?
-                .for_each(|event| match event {
-                    FfmpegEvent::Progress(p) => cb(i, total_clips, p.time),
-                    FfmpegEvent::Log(_level, msg) => {
-                        debug!("[FFmpeg Log] {}", msg);
+            let mut command = FfmpegCommand::new();
+            command
+                .args(input_args)
+                .input(input_path.to_str().unwrap())
+                .args(output_args)
+                .output(output_path.to_str().unwrap());
+            run_ffmpeg(
+                command,
+                FfmpegTask {
+                    operation: &format!("export clip {}", i + 1),
+                    input: input_path,
+                    output: Some(&output_path),
+                    run: Some((run_id, run_control)),
+                },
+                |event| {
+                    if let FfmpegEvent::Progress(progress) = event {
+                        cb(i, total_clips, progress.time.clone());
                     }
-                    FfmpegEvent::Error(e) => {
-                        error!("[FFmpeg Error] {}", e);
-                        last_error = Some(e);
-                    }
-                    _ => {}
-                });
-
-            run_control.clear_pid(run_id, pid);
-
-            if run_control.is_cancelled(run_id) {
-                return Err(anyhow::anyhow!(RUN_CANCELLED_MESSAGE));
-            }
-
-            if !output_path.exists() {
-                let msg = last_error.unwrap_or_else(|| "Unknown error".to_string());
-                return Err(anyhow::anyhow!(
-                    "FFmpeg failed to create output file: {:?}. Error: {}",
-                    output_path,
-                    msg
-                ));
-            }
+                },
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
         } else {
             // Use existing cut_video logic which handles concat
             cut_video(
@@ -475,17 +429,11 @@ mod tests {
         assert!(single_clip_args(&segment("-ss", "00:10"), false).is_err());
     }
 
-    /// Runs real ffmpeg (expected on PATH, like the silence tests): a clip cut
-    /// between keyframes must start on a decodable keyframe and have the exact
-    /// requested length.
-    #[test]
-    fn exported_clip_is_frame_accurate() {
-        use std::process::Command;
-
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source.mp4");
-        // 4 s at 25 fps with a keyframe only every 2 s, so 0.6 s is mid-GOP.
-        let status = Command::new("ffmpeg")
+    /// 4 s of test video at 25 fps plus a tone, with a keyframe only every
+    /// 2 s, so cut points like 0.6 s fall mid-GOP. Needs ffmpeg on PATH.
+    fn make_gop_source(dir: &Path) -> std::path::PathBuf {
+        let source = dir.join("source.mp4");
+        let status = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-y"])
             .args([
                 "-f",
@@ -509,6 +457,62 @@ mod tests {
             .status()
             .expect("ffmpeg must be on PATH for this test");
         assert!(status.success());
+        source
+    }
+
+    /// Duration in seconds of one stream (`v:0` / `a:0`), via ffprobe.
+    fn stream_duration(path: &Path, stream: &str) -> f64 {
+        let output = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", stream])
+            .args(["-show_entries", "stream=duration", "-of", "csv=p=0"])
+            .arg(path)
+            .output()
+            .expect("ffprobe must be on PATH for this test");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn cut_video_keeps_only_the_selected_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = make_gop_source(dir.path());
+        let output = dir.path().join("cut.mp4");
+        let control = RunControl::default();
+        let run_id = control.begin_run();
+
+        cut_video(
+            &source,
+            &[
+                segment("00:00.600", "00:01.600"),
+                segment("00:02.500", "00:03.000"),
+            ],
+            &output,
+            run_id,
+            &control,
+            |_| {},
+        )
+        .unwrap();
+
+        for stream in ["v:0", "a:0"] {
+            let duration = stream_duration(&output, stream);
+            assert!(
+                (duration - 1.5).abs() < 0.08,
+                "{stream} duration {duration}"
+            );
+        }
+    }
+
+    /// Runs real ffmpeg (expected on PATH, like the silence tests): a clip cut
+    /// between keyframes must start on a decodable keyframe and have the exact
+    /// requested length.
+    #[test]
+    fn exported_clip_is_frame_accurate() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let source = make_gop_source(dir.path());
 
         let out_dir = dir.path().join("clips");
         let control = RunControl::default();

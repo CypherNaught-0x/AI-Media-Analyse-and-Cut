@@ -1,12 +1,19 @@
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const RUN_CANCELLED_MESSAGE: &str = "Run cancelled.";
 
-#[derive(Default)]
+/// Tracks the current run and its child process. Cheap to clone: clones share
+/// state, so a handle can move into blocking tasks.
+#[derive(Clone, Default)]
 pub struct RunControl {
+    state: Arc<RunState>,
+}
+
+#[derive(Default)]
+struct RunState {
     current_run_id: AtomicU64,
     cancelled_run_id: AtomicU64,
     active_pid: Mutex<Option<(u64, u32)>>,
@@ -17,9 +24,10 @@ impl RunControl {
     /// (and thereby cancels) the previous one; its child process is killed
     /// rather than left running to completion with its result discarded.
     pub fn begin_run(&self) -> u64 {
-        let run_id = self.current_run_id.fetch_add(1, Ordering::SeqCst) + 1;
-        self.cancelled_run_id.store(0, Ordering::SeqCst);
+        let run_id = self.state.current_run_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.state.cancelled_run_id.store(0, Ordering::SeqCst);
         let superseded = self
+            .state
             .active_pid
             .lock()
             .expect("active pid lock poisoned")
@@ -38,15 +46,18 @@ impl RunControl {
     }
 
     pub fn cancel_current_run(&self) -> Result<(), String> {
-        let run_id = self.current_run_id.load(Ordering::SeqCst);
+        let run_id = self.state.current_run_id.load(Ordering::SeqCst);
         if run_id == 0 {
             return Ok(());
         }
 
-        self.cancelled_run_id.store(run_id, Ordering::SeqCst);
+        self.state.cancelled_run_id.store(run_id, Ordering::SeqCst);
 
-        if let Some((active_run_id, pid)) =
-            *self.active_pid.lock().expect("active pid lock poisoned")
+        if let Some((active_run_id, pid)) = *self
+            .state
+            .active_pid
+            .lock()
+            .expect("active pid lock poisoned")
         {
             if active_run_id == run_id {
                 kill_process(pid)?;
@@ -58,8 +69,8 @@ impl RunControl {
 
     pub fn is_cancelled(&self, run_id: u64) -> bool {
         run_id == 0
-            || self.current_run_id.load(Ordering::SeqCst) != run_id
-            || self.cancelled_run_id.load(Ordering::SeqCst) == run_id
+            || self.state.current_run_id.load(Ordering::SeqCst) != run_id
+            || self.state.cancelled_run_id.load(Ordering::SeqCst) == run_id
     }
 
     pub fn ensure_active(&self, run_id: u64) -> Result<(), String> {
@@ -72,7 +83,11 @@ impl RunControl {
 
     pub fn register_pid(&self, run_id: u64, pid: u32) -> Result<(), String> {
         {
-            let mut active_pid = self.active_pid.lock().expect("active pid lock poisoned");
+            let mut active_pid = self
+                .state
+                .active_pid
+                .lock()
+                .expect("active pid lock poisoned");
             *active_pid = Some((run_id, pid));
         }
 
@@ -85,7 +100,11 @@ impl RunControl {
     }
 
     pub fn clear_pid(&self, run_id: u64, pid: u32) {
-        let mut active_pid = self.active_pid.lock().expect("active pid lock poisoned");
+        let mut active_pid = self
+            .state
+            .active_pid
+            .lock()
+            .expect("active pid lock poisoned");
         if matches!(*active_pid, Some((active_run_id, active_pid_value)) if active_run_id == run_id && active_pid_value == pid)
         {
             *active_pid = None;

@@ -197,8 +197,6 @@ async fn prepare_audio_for_ai(
     run_control: State<'_, RunControl>,
 ) -> Result<AudioInfo, String> {
     run_control.ensure_active(run_id)?;
-    use crate::time_utils::parse_timestamp_to_seconds_raw;
-
     let input = PathBuf::from(&input_path);
     if !input.exists() {
         return Err("Input file does not exist".to_string());
@@ -206,84 +204,30 @@ async fn prepare_audio_for_ai(
 
     let output_path = input.with_extension("ogg");
     let duration = get_media_duration(input.to_str().unwrap());
-    let mut last_error = None;
-
     // Normalize input to OGG/Opus for downstream silence removal and AI upload.
-    let mut child = FfmpegCommand::new()
+    let mut command = FfmpegCommand::new();
+    command
         .input(input.to_str().unwrap())
         .args(["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
-        .output(output_path.to_str().unwrap())
-        .spawn()
-        .map_err(|e| {
-            format_ffmpeg_spawn_error(
-                "prepare audio for AI analysis",
-                &input,
-                Some(&output_path),
-                &e,
-            )
-        })?;
-
-    let pid = child.as_inner().id();
-    run_control.register_pid(run_id, pid)?;
-
-    child
-        .iter()
-        .map_err(|e| {
-            format!(
-                "Failed while reading FFmpeg output during audio preparation for '{}': {}",
-                input.display(),
-                e
-            )
-        })?
-        .for_each(|event| match event {
-            FfmpegEvent::Progress(progress) => {
-                let current_seconds = parse_timestamp_to_seconds_raw(&progress.time).unwrap_or(0.0);
-                let percentage = if let Some(d) = duration {
-                    if d > 0.0 {
-                        Some((current_seconds / d) * 100.0)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
+        .output(output_path.to_str().unwrap());
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "prepare audio for AI analysis",
+            input: &input,
+            output: Some(&output_path),
+            run: Some((run_id, run_control.inner())),
+        },
+        |event| {
+            if let FfmpegEvent::Progress(progress) = event {
                 let payload = serde_json::json!({
                     "time": progress.time,
-                    "percentage": percentage
+                    "percentage": progress_percentage(&progress.time, duration),
                 });
                 let _ = window.emit("progress", payload);
             }
-            FfmpegEvent::Error(err) => {
-                last_error = Some(err);
-            }
-            FfmpegEvent::Log(level, msg) => {
-                if matches!(
-                    level,
-                    ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal
-                ) {
-                    last_error = Some(msg);
-                }
-            }
-            _ => {}
-        });
-
-    run_control.clear_pid(run_id, pid);
-
-    if run_control.is_cancelled(run_id) {
-        return Err(RUN_CANCELLED_MESSAGE.to_string());
-    }
-
-    if !output_path.exists() {
-        let msg = last_error
-            .unwrap_or_else(|| "FFmpeg finished without creating the output file".to_string());
-        return Err(format!(
-            "Audio preparation failed for '{}' -> '{}': {}",
-            input.display(),
-            output_path.display(),
-            msg
-        ));
-    }
+        },
+    )?;
 
     // Check size
     let metadata = std::fs::metadata(&output_path).map_err(|e| {
@@ -344,9 +288,8 @@ async fn prepare_preview_audio(
     }
 
     let duration = get_media_duration(source.to_str().unwrap());
-    let mut last_error = None;
-
-    let mut child = FfmpegCommand::new()
+    let mut command = FfmpegCommand::new();
+    command
         .input(source.to_str().unwrap())
         .args([
             "-y",
@@ -358,73 +301,34 @@ async fn prepare_preview_audio(
             "-movflags",
             "+faststart",
         ])
-        .output(output_path.to_str().unwrap())
-        .spawn()
-        .map_err(|e| {
-            format_ffmpeg_spawn_error("prepare preview audio", &source, Some(&output_path), &e)
-        })?;
-
-    let pid = child.as_inner().id();
-    run_control.register_pid(run_id, pid)?;
-
-    child
-        .iter()
-        .map_err(|e| {
-            format!(
-                "Failed while reading FFmpeg output during preview audio preparation for '{}': {}",
-                source.display(),
-                e
-            )
-        })?
-        .for_each(|event| match event {
-            FfmpegEvent::Progress(progress) => {
-                let current_seconds =
-                    crate::time_utils::parse_timestamp_to_seconds_raw(&progress.time)
-                        .unwrap_or(0.0);
-                let percentage = duration
-                    .filter(|d| *d > 0.0)
-                    .map(|d| (current_seconds / d) * 100.0);
+        .output(output_path.to_str().unwrap());
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "prepare preview audio",
+            input: &source,
+            output: Some(&output_path),
+            run: Some((run_id, run_control.inner())),
+        },
+        |event| {
+            if let FfmpegEvent::Progress(progress) = event {
                 let _ = window.emit(
                     "progress",
-                    serde_json::json!({ "time": progress.time, "percentage": percentage }),
+                    serde_json::json!({
+                        "time": progress.time,
+                        "percentage": progress_percentage(&progress.time, duration),
+                    }),
                 );
             }
-            FfmpegEvent::Error(err) => {
-                last_error = Some(err);
-            }
-            FfmpegEvent::Log(level, msg) => {
-                if matches!(
-                    level,
-                    ffmpeg_sidecar::event::LogLevel::Error | ffmpeg_sidecar::event::LogLevel::Fatal
-                ) {
-                    last_error = Some(msg);
-                }
-            }
-            _ => {}
-        });
-
-    run_control.clear_pid(run_id, pid);
-
-    if run_control.is_cancelled(run_id) {
-        return Err(RUN_CANCELLED_MESSAGE.to_string());
-    }
-
-    if !output_path.exists() {
-        let msg = last_error
-            .unwrap_or_else(|| "FFmpeg finished without creating the preview file".to_string());
-        return Err(format!(
-            "Preview audio preparation failed for '{}' -> '{}': {}",
-            source.display(),
-            output_path.display(),
-            msg
-        ));
-    }
+        },
+    )?;
 
     Ok(output_path.to_string_lossy().to_string())
 }
 
 pub mod chunking;
 pub mod crisper;
+pub(crate) mod ffmpeg;
 pub mod gemini;
 mod local_asr;
 mod parakeet;
@@ -441,13 +345,14 @@ use crate::chunking::split_audio_for_analysis;
 use crate::crisper::{
     crisper_environment_status, install_crisper_environment, transcribe_with_crisper,
 };
+use crate::ffmpeg::{progress_percentage, run_ffmpeg, FfmpegTask};
 use crate::gemini::GeminiClient;
 use crate::parakeet::transcribe_with_parakeet;
 use crate::podcast::{
     calculate_segments_duration as calc_duration, export_podcast as export_podcast_fn,
     export_podcast_clips as export_podcast_clips_fn, PodcastSegment,
 };
-use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use crate::run_control::RunControl;
 use crate::silence::{detect_silence, remove_silence};
 use crate::transcript_merge::merge_transcript_hypotheses_with_progress as merge_transcript_hypotheses_fn;
 use crate::upload::upload_file_and_wait;
