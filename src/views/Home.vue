@@ -260,13 +260,15 @@ async function refreshExtractedAudioPath() {
         extractedAudioPath.value = '';
         return;
     }
-    // The seekable preview audio is written next to the source as
-    // "<name>_preview.m4a" (see prepare_preview_audio). Reuse it if a previous
-    // run already produced it; otherwise it is created during analysis.
-    const candidate = input.replace(/\.[^/.]+$/, '') + '_preview.m4a';
+    // The seekable preview audio lives in the app's media cache (see
+    // prepare_preview_audio). Reuse it if a previous analysis of this exact
+    // file produced it; otherwise it is created during analysis.
     try {
-        const exists = await commands.pathExists(candidate);
-        extractedAudioPath.value = exists ? candidate : '';
+        const cached = await commands.cachedPreviewAudio(input);
+        if (cached) {
+            await grantMediaAccess(cached);
+        }
+        extractedAudioPath.value = cached ?? '';
     } catch (error) {
         console.error('Failed to check preview audio path:', error);
         extractedAudioPath.value = '';

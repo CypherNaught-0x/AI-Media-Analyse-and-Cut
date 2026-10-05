@@ -124,6 +124,9 @@ export function setupDemoMode() {
                 return statusMessage;
             case 'path_exists':
                 return true;
+            case 'cached_preview_audio':
+                // Any path: convertFileSrc maps .m4a to the demo audio.
+                return '/demo/cache/analysis_preview.m4a';
             case 'write_text_file':
             case 'allow_media_access':
                 return null;
