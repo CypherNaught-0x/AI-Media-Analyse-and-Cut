@@ -19,6 +19,7 @@ import type {
     TranscriptionBackend,
 } from '../types';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 const PIPELINE_OPTIONS: { value: TranscriptionBackend; title: string; description: string }[] = [
     {
@@ -179,7 +180,7 @@ async function refreshCrisperStatus() {
     } catch (e) {
         console.error('Failed to probe the CrisperWhisper environment:', e);
         crisperStatus.value = null;
-        showToast(`Could not check the CrisperWhisper environment: ${e}`, 'error');
+        showToast(`Could not check the CrisperWhisper environment: ${errorMessage(e)}`, 'error');
     } finally {
         isCheckingCrisper.value = false;
         crisperProgress.value = '';
@@ -213,7 +214,7 @@ async function setUpCrisperEnvironment() {
         }
     } catch (e) {
         console.error('Failed to set up the CrisperWhisper environment:', e);
-        showToast(`CrisperWhisper setup failed: ${e}`, 'error');
+        showToast(`CrisperWhisper setup failed: ${errorMessage(e)}`, 'error');
     } finally {
         isInstallingCrisper.value = false;
         crisperProgress.value = '';
@@ -295,7 +296,7 @@ async function checkForUpdates() {
                     });
                 } catch (e) {
                     console.error('Failed to download and install update:', e);
-                    updateStatus.value = `Update failed: ${e}`;
+                    updateStatus.value = `Update failed: ${errorMessage(e)}`;
                     showToast('Update failed to download or install.', 'error');
                     return;
                 }
@@ -312,7 +313,7 @@ async function checkForUpdates() {
         }
     } catch (e) {
         console.error('Failed to check for updates:', e);
-        updateStatus.value = `Error checking for updates: ${e}`;
+        updateStatus.value = `Error checking for updates: ${errorMessage(e)}`;
         showToast('Update check failed. Try again later.', 'error');
     } finally {
         isCheckingUpdate.value = false;
@@ -438,7 +439,7 @@ async function fetchModels(silent = false) {
         localModel.value = currentModel;
     } catch (e) {
         if (!silent) {
-            fetchError.value = `Error: ${e}`;
+            fetchError.value = `Error: ${errorMessage(e)}`;
             showManualInput.value = true;
         }
         // On error, set supportsModelFetch to false and provide fallback models
@@ -479,7 +480,10 @@ async function exportLogs() {
             await message('Logs exported successfully!', { title: 'Export Logs' });
         }
     } catch (e) {
-        await message(`Failed to export logs: ${e}`, { title: 'Export Logs', kind: 'error' });
+        await message(`Failed to export logs: ${errorMessage(e)}`, {
+            title: 'Export Logs',
+            kind: 'error',
+        });
     }
 }
 

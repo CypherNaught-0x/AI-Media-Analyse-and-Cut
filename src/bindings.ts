@@ -64,6 +64,12 @@ export const commands = {
 };
 
 /* Types */
+/**  A command failure as the frontend receives it: `{ kind, message }`. */
+export type AppError = {
+	kind: ErrorKind,
+	message: string,
+};
+
 /**
  *  One analysis chunk: a file on disk plus its start time (seconds) relative to
  *  the input audio, used to shift transcript timestamps back onto the original
@@ -140,6 +146,16 @@ export type CrisperOptions = {
 	/**  Honoured by Pro models only; standard weights warn and ignore it. */
 	hotwords?: string[],
 };
+
+/**
+ *  What kind of failure an [`AppError`] is, so the frontend can react to it
+ *  (e.g. stay quiet on cancellation) without matching message text.
+ */
+export type ErrorKind = 
+/**  The user cancelled the run (or a newer run superseded it). */
+"cancelled" | 
+/**  Anything else; `message` says what went wrong. */
+"failed";
 
 /**  Speed/quality trade-off for an export. */
 export type ExportQuality = 

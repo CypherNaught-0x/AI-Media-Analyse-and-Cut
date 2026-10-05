@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use ffmpeg_sidecar::command::ffmpeg_is_installed;
 use ffmpeg_sidecar::download::auto_download;
 use ffmpeg_sidecar::event::FfmpegEvent;
@@ -57,9 +58,11 @@ pub(crate) fn format_path_io_error(operation: &str, path: &Path, err: &std::io::
 
 #[tauri::command]
 #[specta::specta]
-async fn init_ffmpeg() -> Result<String, String> {
+async fn init_ffmpeg() -> Result<String, AppError> {
     // Probing spawns ffmpeg and the fallback downloads a build; both block.
-    run_blocking(init_ffmpeg_blocking).await
+    run_blocking(init_ffmpeg_blocking)
+        .await
+        .map_err(AppError::from)
 }
 
 fn init_ffmpeg_blocking() -> Result<String, String> {
@@ -176,11 +179,11 @@ async fn prepare_audio_for_ai(
     window: tauri::Window,
     input_path: String,
     run_control: State<'_, RunControl>,
-) -> Result<AudioInfo, String> {
+) -> Result<AudioInfo, AppError> {
     run_control.ensure_active(run_id)?;
     let input = PathBuf::from(&input_path);
     if !input.exists() {
-        return Err("Input file does not exist".to_string());
+        return Err(AppError::failed("Input file does not exist"));
     }
 
     let output_path = input.with_extension("ogg");
@@ -227,6 +230,7 @@ async fn prepare_audio_for_ai(
         })
     })
     .await
+    .map_err(AppError::from)
 }
 
 /// Transcode `source_path` into a seekable `<stem>_preview.m4a` sitting next to
@@ -249,12 +253,12 @@ async fn prepare_preview_audio(
     window: tauri::Window,
     source_path: String,
     run_control: State<'_, RunControl>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
 
     let source = PathBuf::from(&source_path);
     if !source.exists() {
-        return Err("Source audio file does not exist".to_string());
+        return Err(AppError::failed("Source audio file does not exist"));
     }
 
     let stem = source
@@ -317,11 +321,13 @@ async fn prepare_preview_audio(
         Ok(output_path.to_string_lossy().to_string())
     })
     .await
+    .map_err(AppError::from)
 }
 
 pub mod chunking;
 pub mod crisper;
 pub(crate) mod encoders;
+pub mod error;
 pub(crate) mod ffmpeg;
 pub mod gemini;
 mod local_asr;
@@ -371,7 +377,7 @@ async fn translate_transcript(
     target_language: String,
     context: String,
     run_control: State<'_, RunControl>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
@@ -380,6 +386,7 @@ async fn translate_transcript(
             client.translate_transcript(transcript, target_language, context),
         )
         .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -390,7 +397,7 @@ async fn upload_file(
     base_url: String,
     path: String,
     run_control: State<'_, RunControl>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, AppError> {
     run_control.ensure_active(run_id)?;
     let path_buf = PathBuf::from(path);
     run_control
@@ -404,6 +411,7 @@ async fn upload_file(
                 e
             )
         })
+        .map_err(AppError::from)
 }
 
 /// The remote LLM a request goes to, as configured in Settings.
@@ -430,7 +438,7 @@ async fn analyze_audio(
     audio_uri: Option<String>,
     audio_base64: Option<String>,
     run_control: State<'_, RunControl>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
     let LlmConfig {
         api_key,
@@ -458,6 +466,7 @@ async fn analyze_audio(
                 base_url, model, e
             )
         })
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -474,7 +483,7 @@ async fn cleanup_local_transcript(
     glossary: String,
     remove_filler_words: bool,
     run_control: State<'_, RunControl>,
-) -> Result<Vec<TranscriptSegment>, String> {
+) -> Result<Vec<TranscriptSegment>, AppError> {
     run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     run_control
@@ -489,6 +498,7 @@ async fn cleanup_local_transcript(
                 base_url, model, e
             )
         })
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -499,7 +509,7 @@ async fn merge_transcript_hypotheses(
     primary_transcript: Vec<TranscriptSegment>,
     reference_transcript: Vec<TranscriptSegment>,
     run_control: State<'_, RunControl>,
-) -> Result<Vec<TranscriptSegment>, String> {
+) -> Result<Vec<TranscriptSegment>, AppError> {
     run_control.ensure_active(run_id)?;
     let run_control = run_control.inner().clone();
     let started_at = std::time::Instant::now();
@@ -530,6 +540,7 @@ async fn merge_transcript_hypotheses(
         ))
     })
     .await
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -542,7 +553,7 @@ async fn cut_video(
     output_path: String,
     quality: ExportQuality,
     run_control: State<'_, RunControl>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     run_control.ensure_active(run_id)?;
     use crate::time_utils::parse_timestamp_to_seconds_raw;
 
@@ -584,6 +595,7 @@ async fn cut_video(
         .map_err(|e| e.to_string())
     })
     .await
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -599,7 +611,7 @@ async fn export_clips(
     fast_mode: bool,
     quality: ExportQuality,
     run_control: State<'_, RunControl>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     run_control.ensure_active(run_id)?;
     use crate::time_utils::parse_timestamp_to_seconds_raw;
 
@@ -659,11 +671,12 @@ async fn export_clips(
         .map_err(|e| e.to_string())
     })
     .await
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn read_file_as_base64(path: String) -> Result<String, String> {
+async fn read_file_as_base64(path: String) -> Result<String, AppError> {
     use base64::{engine::general_purpose, Engine as _};
 
     let content = tokio::fs::read(&path).await.map_err(|e| {
@@ -690,7 +703,7 @@ async fn generate_clips(
     topic: Option<String>,
     splicing: bool,
     run_control: State<'_, RunControl>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(llm.api_key, llm.base_url, llm.model);
     run_control
@@ -706,11 +719,12 @@ async fn generate_clips(
             ),
         )
         .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn open_folder(path: String) -> Result<(), String> {
+async fn open_folder(path: String) -> Result<(), AppError> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
@@ -737,18 +751,18 @@ async fn open_folder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 #[specta::specta]
-async fn write_text_file(path: String, content: String) -> Result<(), String> {
+async fn write_text_file(path: String, content: String) -> Result<(), AppError> {
     tokio::fs::write(path, content)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| AppError::failed(e.to_string()))
 }
 
 #[tauri::command]
 #[specta::specta]
-async fn read_text_file(path: String) -> Result<String, String> {
+async fn read_text_file(path: String) -> Result<String, AppError> {
     tokio::fs::read_to_string(path)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| AppError::failed(e.to_string()))
 }
 
 #[tauri::command]
@@ -764,7 +778,7 @@ fn path_exists(path: String) -> bool {
 /// media and the extracted `.ogg` sidecar written alongside it.
 #[tauri::command]
 #[specta::specta]
-fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), String> {
+fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), AppError> {
     use tauri::Manager;
 
     let target = PathBuf::from(&path);
@@ -793,7 +807,7 @@ fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), String>
 
 #[tauri::command]
 #[specta::specta]
-async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), String> {
+async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), AppError> {
     use std::io::Write;
     use tauri::Manager;
 
@@ -838,7 +852,7 @@ async fn generate_podcast(
     max_duration: u32,
     context: Option<String>,
     run_control: State<'_, RunControl>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
@@ -847,6 +861,7 @@ async fn generate_podcast(
             client.generate_podcast(&transcript, min_duration, max_duration, context),
         )
         .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -864,7 +879,7 @@ async fn refine_podcast(
     target_min: u32,
     target_max: u32,
     run_control: State<'_, RunControl>,
-) -> Result<String, String> {
+) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
@@ -879,6 +894,7 @@ async fn refine_podcast(
             ),
         )
         .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -896,7 +912,7 @@ async fn export_podcast(
     end_padding: f64,
     output_path: String,
     run_control: State<'_, RunControl>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     run_control.ensure_active(run_id)?;
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_path);
@@ -922,6 +938,7 @@ async fn export_podcast(
         .map_err(|e: anyhow::Error| e.to_string())
     })
     .await
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -937,7 +954,7 @@ async fn export_podcast_clips(
     end_padding: f64,
     output_dir: String,
     run_control: State<'_, RunControl>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     run_control.ensure_active(run_id)?;
     let input = PathBuf::from(input_path);
     let output = PathBuf::from(output_dir);
@@ -959,6 +976,7 @@ async fn export_podcast_clips(
         .map_err(|e: anyhow::Error| e.to_string())
     })
     .await
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -975,8 +993,8 @@ fn begin_run(run_control: State<'_, RunControl>) -> u64 {
 
 #[tauri::command]
 #[specta::specta]
-fn cancel_current_run(run_control: State<'_, RunControl>) -> Result<(), String> {
-    run_control.cancel_current_run()
+fn cancel_current_run(run_control: State<'_, RunControl>) -> Result<(), AppError> {
+    run_control.cancel_current_run().map_err(AppError::from)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

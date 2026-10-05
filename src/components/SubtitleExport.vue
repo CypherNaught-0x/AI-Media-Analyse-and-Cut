@@ -11,6 +11,7 @@ import {
 import { formatSubtitleTimeRange } from '../utils/subtitle';
 import { remapSegmentsToCutTimeline } from '../utils/subtitleTimeline';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 const props = defineProps<{
     segments: TranscriptSegment[];
@@ -127,7 +128,7 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
         setTimeout(() => (status.value = ''), 3000);
     } catch (e) {
         console.error(e);
-        status.value = `Error: ${e}`;
+        status.value = `Error: ${errorMessage(e)}`;
     }
 }
 </script>

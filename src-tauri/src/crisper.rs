@@ -28,6 +28,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use parakeet_rs::sortformer::SpeakerSegment;
 
+use crate::error::AppError;
 use crate::local_asr::{
     build_transcript_segments_from_runs, diarize, emit_progress, load_audio_16k_mono,
     resolve_sortformer_file, speaker_label_for_word, write_wav_16k_mono, WordWithSpeaker,
@@ -455,7 +456,7 @@ fn finalize_status(mut status: CrisperEnvironmentStatus) -> CrisperEnvironmentSt
 pub async fn crisper_environment_status(
     window: tauri::Window,
     python_path: String,
-) -> Result<CrisperEnvironmentStatus, String> {
+) -> Result<CrisperEnvironmentStatus, AppError> {
     let script = write_runner_script(&window).map_err(|error| error.to_string())?;
     let environment = environment_dir(&window).map_err(|error| error.to_string())?;
     let managed_exists = venv_python(&environment).exists();
@@ -598,7 +599,7 @@ pub async fn install_crisper_environment(
     window: tauri::Window,
     python_path: String,
     extra: String,
-) -> Result<CrisperEnvironmentStatus, String> {
+) -> Result<CrisperEnvironmentStatus, AppError> {
     let run = async {
         let script = write_runner_script(&window)?;
         let environment = environment_dir(&window)?;
@@ -710,7 +711,7 @@ pub async fn install_crisper_environment(
         Ok::<CrisperEnvironmentStatus, anyhow::Error>(finalize_status(status))
     };
 
-    run.await.map_err(|error| error.to_string())
+    run.await.map_err(AppError::from)
 }
 
 /// Choose the interpreter to transcribe with, preferring one that is ready.
@@ -774,7 +775,7 @@ pub async fn transcribe_with_crisper(
     window: tauri::Window,
     audio_path: String,
     options: CrisperOptions,
-) -> Result<Vec<TranscriptSegment>, String> {
+) -> Result<Vec<TranscriptSegment>, AppError> {
     let run = async {
         let audio_file = PathBuf::from(&audio_path);
         if !audio_file.exists() {
@@ -823,7 +824,7 @@ pub async fn transcribe_with_crisper(
         outcome
     };
 
-    run.await.map_err(|error| error.to_string())
+    run.await.map_err(AppError::from)
 }
 
 #[allow(clippy::too_many_arguments)]

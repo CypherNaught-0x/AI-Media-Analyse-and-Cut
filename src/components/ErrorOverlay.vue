@@ -2,6 +2,7 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { useSettings } from '../composables/useSettings';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 const { settings } = useSettings();
 
@@ -58,7 +59,7 @@ async function exportLogs() {
         emit('update:status', 'Logs exported successfully.');
     } catch (e) {
         console.error('Failed to export logs:', e);
-        emit('update:status', `Failed to export logs: ${e}`);
+        emit('update:status', `Failed to export logs: ${errorMessage(e)}`);
     }
 }
 </script>

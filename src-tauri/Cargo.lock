@@ -81,6 +81,7 @@ dependencies = [
  "tauri-runtime-wry",
  "tauri-specta",
  "tempfile",
+ "thiserror 2.0.19",
  "time",
  "tokio",
  "zip 6.0.0",
