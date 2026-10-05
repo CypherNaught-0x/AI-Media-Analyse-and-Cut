@@ -7,8 +7,8 @@ use ffmpeg_sidecar::paths::{ffmpeg_path, sidecar_path};
 use log::{error, info, warn};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use tauri::Emitter;
 use tauri::State;
+use tauri::{Emitter, Manager};
 
 fn describe_ffmpeg_lookup() -> String {
     let resolved_path = ffmpeg_path();
@@ -186,36 +186,51 @@ async fn prepare_audio_for_ai(
         return Err(AppError::failed("Input file does not exist"));
     }
 
-    let output_path = input.with_extension("ogg");
+    let cache_root = media_cache::cache_root(window.app_handle())?;
     let run_control = run_control.inner().clone();
     run_blocking(move || {
+        // Derived audio lives in the app cache, keyed by the source's path,
+        // size and mtime -- never next to the user's media (where an .ogg
+        // source would even have been its own output).
+        let output_path = media_cache::source_dir(&cache_root, &input)?.join("analysis.ogg");
         let duration = probe_media(&input)
             .ok()
             .and_then(|info| info.duration_seconds);
-        // Normalize input to OGG/Opus for downstream silence removal and AI upload.
-        let mut command = FfmpegCommand::new();
-        command
-            .input(input.to_str().unwrap())
-            .args(["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
-            .output(output_path.to_str().unwrap());
-        run_ffmpeg(
-            command,
-            FfmpegTask {
-                operation: "prepare audio for AI analysis",
-                input: &input,
-                output: Some(&output_path),
-                run: Some((run_id, &run_control)),
-            },
-            |event| {
-                if let FfmpegEvent::Progress(progress) = event {
-                    let payload = serde_json::json!({
-                        "time": progress.time,
-                        "percentage": progress_percentage(&progress.time, duration),
-                    });
-                    let _ = window.emit("progress", payload);
-                }
-            },
-        )?;
+
+        // The cache key covers the source's content, so a finished extraction
+        // can be reused by every re-analysis.
+        if !output_path.exists() {
+            // Encode under a temporary name and rename on success, so a
+            // cancelled run never leaves a truncated file to be reused.
+            let partial = output_path.with_file_name("analysis.partial.ogg");
+            // Normalize input to OGG/Opus for downstream silence removal and AI upload.
+            let mut command = FfmpegCommand::new();
+            command
+                .input(input.to_str().unwrap())
+                .args(["-y", "-vn", "-c:a", "libopus", "-b:a", "96k"])
+                .output(partial.to_str().unwrap());
+            run_ffmpeg(
+                command,
+                FfmpegTask {
+                    operation: "prepare audio for AI analysis",
+                    input: &input,
+                    output: Some(&partial),
+                    run: Some((run_id, &run_control)),
+                },
+                |event| {
+                    if let FfmpegEvent::Progress(progress) = event {
+                        let payload = serde_json::json!({
+                            "time": progress.time,
+                            "percentage": progress_percentage(&progress.time, duration),
+                        });
+                        let _ = window.emit("progress", payload);
+                    }
+                },
+            )?;
+            std::fs::rename(&partial, &output_path).map_err(|e| {
+                format_path_io_error("finalize the extracted audio", &output_path, &e)
+            })?;
+        }
 
         // Check size
         let metadata = std::fs::metadata(&output_path).map_err(|e| {
@@ -332,6 +347,7 @@ pub(crate) mod ffmpeg;
 pub mod gemini;
 mod http;
 mod local_asr;
+mod media_cache;
 pub mod media_probe;
 mod model_download;
 mod parakeet;
@@ -365,6 +381,19 @@ use crate::video::{
     cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
     TranscriptSegment,
 };
+
+/// The seekable preview audio a previous analysis of `input_path` produced,
+/// if it is still cached.
+#[tauri::command]
+#[specta::specta]
+fn cached_preview_audio(app: tauri::AppHandle, input_path: String) -> Option<String> {
+    let root = media_cache::cache_root(&app).ok()?;
+    let dir = media_cache::existing_source_dir(&root, Path::new(&input_path))?;
+    let preview = dir.join("analysis_preview.m4a");
+    preview
+        .exists()
+        .then(|| preview.to_string_lossy().to_string())
+}
 
 #[tauri::command]
 #[specta::specta]
@@ -1014,6 +1043,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             init_ffmpeg,
             prepare_audio_for_ai,
             prepare_preview_audio,
+            cached_preview_audio,
             upload_file,
             split_audio_for_analysis,
             analyze_audio,
@@ -1058,6 +1088,17 @@ pub fn render_ipc_bindings(path: &Path) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // Keep the derived-media cache bounded; best effort, off the
+            // startup path.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                if let Ok(root) = media_cache::cache_root(&handle) {
+                    media_cache::prune(&root);
+                }
+            });
+            Ok(())
+        })
         .manage(RunControl::default())
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_process::init())

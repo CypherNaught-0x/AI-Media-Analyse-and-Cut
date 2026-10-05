@@ -24,6 +24,11 @@ export const commands = {
 	 *  A cached preview is reused when it is at least as new as the source.
 	 */
 	preparePreviewAudio: (runId: number, sourcePath: string) => __TAURI_INVOKE<string>("prepare_preview_audio", { runId, sourcePath }),
+	/**
+	 *  The seekable preview audio a previous analysis of `input_path` produced,
+	 *  if it is still cached.
+	 */
+	cachedPreviewAudio: (inputPath: string) => __TAURI_INVOKE<string | null>("cached_preview_audio", { inputPath }),
 	uploadFile: (runId: number, apiKey: string, baseUrl: string, path: string) => __TAURI_INVOKE<string | null>("upload_file", { runId, apiKey, baseUrl, path }),
 	splitAudioForAnalysis: (runId: number, path: string, maxChunkSeconds: number | null, parakeetModelPath: string) => __TAURI_INVOKE<AudioChunk[]>("split_audio_for_analysis", { runId, path, maxChunkSeconds, parakeetModelPath }),
 	analyzeAudio: (runId: number, llm: LlmConfig, enforceJsonSchema: boolean, context: string, glossary: string, speakerCount: number | null, removeFillerWords: boolean, audioUri: string | null, audioBase64: string | null) => __TAURI_INVOKE<string>("analyze_audio", { runId, llm, enforceJsonSchema, context, glossary, speakerCount, removeFillerWords, audioUri, audioBase64 }),

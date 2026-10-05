@@ -18,7 +18,7 @@ use ffmpeg_sidecar::command::FfmpegCommand;
 #[allow(unused_imports)]
 use log::{info, warn};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{Emitter, State};
 
 /// One analysis chunk: a file on disk plus its start time (seconds) relative to
@@ -205,7 +205,12 @@ pub async fn split_audio_for_analysis(
         .file_stem()
         .map(|stem| stem.to_string_lossy().to_string())
         .unwrap_or_else(|| "audio".to_string());
-    let chunk_dir = std::env::temp_dir().join("ai-media-cutter-chunks");
+    // Next to the analysis audio, i.e. in its media-cache folder, so chunks
+    // are pruned with it instead of piling up in the temp directory.
+    let chunk_dir = input_path
+        .parent()
+        .map_or_else(std::env::temp_dir, Path::to_path_buf)
+        .join("chunks");
     std::fs::create_dir_all(&chunk_dir)
         .map_err(|error| format_path_io_error("create chunk directory", &chunk_dir, &error))?;
     let nonce = fastrand::u64(..);
