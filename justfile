@@ -46,6 +46,10 @@ clippy:
 deny:
     cd src-tauri && cargo deny check
 
+# Regenerate src/bindings.ts from the Tauri commands (tauri-specta)
+bindings:
+    cd src-tauri && UPDATE_IPC_BINDINGS=1 cargo test --lib ipc_bindings_are_up_to_date
+
 # Run the transcript-merge benchmark
 bench:
     cd src-tauri && cargo bench --bench transcript_merge

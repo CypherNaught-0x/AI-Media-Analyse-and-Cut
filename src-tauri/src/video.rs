@@ -8,13 +8,13 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
 pub struct Segment {
     pub start: String,
     pub end: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
 pub struct TranscriptWord {
     pub start: String,
     pub end: String,
@@ -23,7 +23,7 @@ pub struct TranscriptWord {
     pub speaker: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptAlternativeSource {
     /// Whichever local engine produced the timed words (Parakeet or
@@ -35,7 +35,7 @@ pub enum TranscriptAlternativeSource {
     Google,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptAlternative {
     pub source: TranscriptAlternativeSource,
@@ -46,7 +46,7 @@ pub struct TranscriptAlternative {
     pub similarity_score: Option<f32>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptMergeStatus {
     #[default]
@@ -59,7 +59,7 @@ pub enum TranscriptMergeStatus {
     MissingLocal,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
     pub start: String,
@@ -78,7 +78,7 @@ pub struct TranscriptSegment {
     pub similarity_score: Option<f32>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, specta::Type)]
 pub struct ClipSegment {
     pub segments: Vec<Segment>,
     pub label: Option<String>,
