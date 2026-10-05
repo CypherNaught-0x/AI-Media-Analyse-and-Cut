@@ -1138,6 +1138,61 @@ Rules:
         }
     }
 
+    /// Ask for a JSON response that must match `schema` (a JSON Schema).
+    /// OpenAI-compatible APIs get it as a strict `json_schema` response format;
+    /// Gemini as a `responseSchema` (its OpenAPI subset, see
+    /// [`to_gemini_schema`]). Returns the response text.
+    pub(crate) async fn request_structured(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema_name: &str,
+        schema: &Value,
+    ) -> Result<String> {
+        let is_google_api = self.base_url.contains("generativelanguage.googleapis.com");
+        let base_url = self.base_url.trim_end_matches('/');
+        let (url, payload) = if is_google_api {
+            (
+                format!(
+                    "{}/v1beta/models/{}:generateContent?key={}",
+                    base_url, self.model, self.api_key
+                ),
+                json!({
+                    "contents": [{ "role": "user", "parts": [{ "text": user_prompt }] }],
+                    "system_instruction": { "parts": [{ "text": system_prompt }] },
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "responseSchema": to_gemini_schema(schema)
+                    }
+                }),
+            )
+        } else {
+            (
+                format!("{}/v1/chat/completions", base_url),
+                json!({
+                    "model": self.model,
+                    "messages": [
+                        { "role": "system", "content": system_prompt },
+                        { "role": "user", "content": user_prompt }
+                    ],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": { "name": schema_name, "strict": true, "schema": schema }
+                    }
+                }),
+            )
+        };
+
+        self.execute_ai_json_request(
+            &url,
+            &payload,
+            is_google_api,
+            &RetryConfig::ai_request(true),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
     /// Send an AI request, retrying transient failures per `retry`.
     async fn execute_ai_json_request(
         &self,
@@ -1640,5 +1695,95 @@ mod model_list_tests {
             .await
             .unwrap();
         assert!(!list.supported);
+    }
+}
+
+/// Convert a JSON Schema into the OpenAPI subset Gemini's `responseSchema`
+/// accepts: upper-case type names, and only the keywords it knows.
+pub(crate) fn to_gemini_schema(schema: &Value) -> Value {
+    const KEPT: [&str; 9] = [
+        "type",
+        "description",
+        "enum",
+        "properties",
+        "items",
+        "required",
+        "minimum",
+        "maximum",
+        "nullable",
+    ];
+    match schema {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                if !KEPT.contains(&key.as_str()) {
+                    continue;
+                }
+                let converted = match key.as_str() {
+                    "type" => value
+                        .as_str()
+                        .map(|name| Value::String(name.to_ascii_uppercase()))
+                        .unwrap_or_else(|| value.clone()),
+                    "properties" => Value::Object(
+                        value
+                            .as_object()
+                            .map(|props| {
+                                props
+                                    .iter()
+                                    .map(|(name, prop)| (name.clone(), to_gemini_schema(prop)))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    ),
+                    "items" => to_gemini_schema(value),
+                    _ => value.clone(),
+                };
+                out.insert(key.clone(), converted);
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod gemini_schema_tests {
+    use super::*;
+
+    #[test]
+    fn json_schema_becomes_geminis_openapi_subset() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "clips": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": { "score": { "type": "integer", "minimum": 1 } },
+                        "required": ["score"]
+                    }
+                }
+            },
+            "required": ["clips"]
+        });
+        assert_eq!(
+            to_gemini_schema(&schema),
+            json!({
+                "type": "OBJECT",
+                "properties": {
+                    "clips": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": { "score": { "type": "INTEGER", "minimum": 1 } },
+                            "required": ["score"]
+                        }
+                    }
+                },
+                "required": ["clips"]
+            })
+        );
     }
 }
