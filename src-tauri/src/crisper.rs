@@ -33,6 +33,7 @@ use crate::local_asr::{
     build_transcript_segments_from_runs, diarize, emit_progress, load_audio_16k_mono,
     resolve_sortformer_file, speaker_label_for_word, write_wav_16k_mono, WordWithSpeaker,
 };
+use crate::path_guard::looks_like_python;
 #[cfg(test)]
 use crate::run_control::RUN_CANCELLED_MESSAGE;
 use crate::run_control::{run_blocking, RunControl};
@@ -229,7 +230,16 @@ fn system_python_candidates() -> Vec<String> {
 fn python_candidates(window: &tauri::Window, python_path: &str) -> Vec<String> {
     let trimmed = python_path.trim();
     if !trimmed.is_empty() {
-        return vec![trimmed.to_string()];
+        // An override that isn't a Python interpreter is ignored rather than
+        // executed.
+        return if looks_like_python(trimmed) {
+            vec![trimmed.to_string()]
+        } else {
+            log::warn!(
+                "Ignoring Python interpreter override that isn't a Python executable: {trimmed}"
+            );
+            Vec::new()
+        };
     }
 
     let mut candidates = Vec::new();
@@ -640,8 +650,13 @@ pub async fn install_crisper_environment(
             // Deliberately not the managed venv: it is what we are building.
             let candidates = if python_path.trim().is_empty() {
                 system_python_candidates()
-            } else {
+            } else if looks_like_python(&python_path) {
                 vec![python_path.trim().to_string()]
+            } else {
+                return Err(anyhow!(
+                    "'{}' doesn't look like a Python interpreter",
+                    python_path.trim()
+                ));
             };
 
             for candidate in candidates {
