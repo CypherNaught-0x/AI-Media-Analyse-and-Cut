@@ -4,6 +4,7 @@ import {
     clipDuration,
     fromCandidates,
     normalizeShortClips,
+    captionWords,
     playbackStep,
     speakerTurns,
     toExportSegments,
@@ -139,6 +140,37 @@ describe('speakerTurns', () => {
         expect(turns).toEqual([
             { start: 60.5, end: 64, speaker: 'Annette' },
             { start: 3670, end: 3672.25, speaker: 'Bob' },
+        ]);
+    });
+});
+
+describe('captionWords', () => {
+    it('takes timed words inside the clip and spreads untimed segments', () => {
+        const words = captionWords(
+            [
+                {
+                    start: '00:10.000',
+                    end: '00:12.000',
+                    speaker: 'A',
+                    text: 'one two',
+                    words: [
+                        { start: '00:10.000', end: '00:10.900', text: 'one' },
+                        { start: '00:11.000', end: '00:12.000', text: ' two ' },
+                    ],
+                },
+                { start: '00:20.000', end: '00:22.000', speaker: 'B', text: 'three four' },
+                { start: '00:40.000', end: '00:41.000', speaker: 'B', text: 'outside' },
+            ],
+            [
+                { start: 10.5, end: 15 },
+                { start: 20, end: 30 },
+            ],
+        );
+        expect(words).toEqual([
+            { start: 10, end: 10.9, text: 'one' },
+            { start: 11, end: 12, text: 'two' },
+            { start: 20, end: 21, text: 'three' },
+            { start: 21, end: 22, text: 'four' },
         ]);
     });
 });

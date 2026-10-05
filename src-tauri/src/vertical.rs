@@ -7,6 +7,7 @@
 //! for the others.
 
 use crate::camera::{plan_camera, CameraSettings, Frame as CameraFrame};
+use crate::captions::{output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_tracks::{Track, Tracker};
 use crate::faces::FaceDetector;
@@ -344,12 +345,20 @@ pub(crate) fn plan_vertical(
     })
 }
 
+/// How vertical clips are rendered.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RenderOptions<'a> {
+    pub quality: ExportQuality,
+    /// Burned-in captions: transcript words on the source timeline.
+    pub captions: Option<(&'a [TimedWord], CaptionStyle)>,
+}
+
 /// Export `clips` as vertical videos. Blocks; run it on the blocking pool.
 pub(crate) fn export_vertical(
     input: &Path,
     clips: &[VerticalClip],
     turns: &[SpeechTurn],
-    quality: ExportQuality,
+    options: RenderOptions<'_>,
     cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut Progress<'_>,
@@ -380,6 +389,9 @@ pub(crate) fn export_vertical(
     let mut rendered = 0.0;
     for (index, (clip, pieces)) in clips.iter().zip(&plan.clips).enumerate() {
         let clip_seconds: f64 = clip.ranges.iter().map(|(s, e)| e - s).sum();
+        let words = options
+            .captions
+            .map(|(words, style)| (output_words(words, &clip.ranges), style));
         render_vertical(
             &VerticalRender {
                 input,
@@ -389,7 +401,10 @@ pub(crate) fn export_vertical(
                 has_audio: plan.has_audio,
                 output_size: OUTPUT_SIZE,
                 output: &clip.output,
-                quality,
+                quality: options.quality,
+                captions: words
+                    .as_ref()
+                    .map(|(words, style)| (words.as_slice(), *style)),
             },
             run,
             |time| {
@@ -507,6 +522,17 @@ mod evaluation {
                 speaker: segment["speaker"].as_str().unwrap_or("?").to_string(),
             })
             .collect();
+        let words: Vec<TimedWord> = json["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|segment| segment["words"].as_array().cloned().unwrap_or_default())
+            .map(|word| TimedWord {
+                start: crate::time_utils::parse_time(word["start"].as_str().unwrap()),
+                end: crate::time_utils::parse_time(word["end"].as_str().unwrap()),
+                text: word["text"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect();
         let output = PathBuf::from(keep).join("vertical_export.mp4");
         let started = std::time::Instant::now();
         let mut last = String::new();
@@ -517,7 +543,10 @@ mod evaluation {
                 output: output.clone(),
             }],
             &turns,
-            ExportQuality::Balanced,
+            RenderOptions {
+                quality: ExportQuality::Balanced,
+                captions: Some((&words, CaptionStyle::default())),
+            },
             None,
             None,
             &mut |_, message| last = message,

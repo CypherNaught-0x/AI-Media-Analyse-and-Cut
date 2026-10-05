@@ -155,6 +155,7 @@ function buildSession(inputPath = '/tmp/source.mp4'): EditSessionV1 {
             allowSplicing: false,
             looped: false,
             vertical: false,
+            captions: true,
             clips: [],
             lastExportPath: '',
             trimBoundarySilence: false,

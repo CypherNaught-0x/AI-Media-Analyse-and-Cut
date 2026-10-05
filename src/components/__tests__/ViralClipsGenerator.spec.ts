@@ -161,6 +161,11 @@ describe('ViralClipsGenerator', () => {
             quality: 'balanced',
             segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
             turns: [{ start: 10, end: 13, speaker: 'Host' }],
+            captions: [
+                { start: 10, end: 10.8, text: 'one' },
+                { start: 11, end: 11.9, text: 'two' },
+                { start: 12.1, end: 13, text: 'three' },
+            ],
         });
     });
 

@@ -273,6 +273,8 @@ export interface ViralClipsWorkspaceState {
     looped: boolean;
     /** Export 9:16 videos that follow the active speaker. */
     vertical: boolean;
+    /** Burn word-by-word captions into 9:16 exports. */
+    captions: boolean;
     clips: ShortClip[];
     lastExportPath: string;
     trimBoundarySilence: boolean;
