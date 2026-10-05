@@ -340,6 +340,7 @@ async fn prepare_preview_audio(
 }
 
 pub mod chunking;
+pub mod clip_selection;
 pub mod crisper;
 pub(crate) mod encoders;
 pub mod error;
@@ -383,6 +384,36 @@ use crate::video::{
     cut_video as cut_video_fn, export_clips as export_clips_fn, ClipSegment, Segment,
     TranscriptSegment,
 };
+
+/// Pick short-form clip candidates from the transcript (shorts phase S1).
+#[tauri::command]
+#[specta::specta]
+async fn select_clips(
+    run_id: u64,
+    window: tauri::Window,
+    llm: LlmConfig,
+    transcript: Vec<TranscriptSegment>,
+    request: clip_selection::ClipRequest,
+    run_control: State<'_, RunControl>,
+) -> Result<Vec<clip_selection::ClipCandidate>, AppError> {
+    run_control.ensure_active(run_id)?;
+    let client = GeminiClient::new(secrets::api_key().require()?, llm.base_url, llm.model);
+    let on_progress = |done: usize, total: usize| {
+        let _ = window.emit(
+            "progress",
+            serde_json::json!({
+                "percentage": done as f64 * 100.0 / total.max(1) as f64,
+                "message": format!("Finding clips ({done}/{total} parts analysed)..."),
+            }),
+        );
+    };
+    Ok(run_control
+        .run_cancellable(
+            run_id,
+            clip_selection::select_clips(&client, &transcript, &request, &on_progress),
+        )
+        .await?)
+}
 
 /// Models available at `base_url`. Uses `api_key` when given (a key typed in
 /// Settings but not saved yet), otherwise the stored key.
@@ -1070,6 +1101,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             prepare_audio_for_ai,
             prepare_preview_audio,
             cached_preview_audio,
+            select_clips,
             list_models,
             secrets::set_api_key,
             secrets::clear_api_key,

@@ -29,6 +29,8 @@ export const commands = {
 	 *  if it is still cached.
 	 */
 	cachedPreviewAudio: (inputPath: string) => __TAURI_INVOKE<string | null>("cached_preview_audio", { inputPath }),
+	/**  Pick short-form clip candidates from the transcript (shorts phase S1). */
+	selectClips: (runId: number, llm: LlmConfig, transcript: TranscriptSegment_Deserialize[], request: ClipRequest) => __TAURI_INVOKE<ClipCandidate[]>("select_clips", { runId, llm, transcript, request }),
 	/**
 	 *  Models available at `base_url`. Uses `api_key` when given (a key typed in
 	 *  Settings but not saved yet), otherwise the stored key.
@@ -99,10 +101,66 @@ export type AudioInfo = {
 	duration: number,
 };
 
+export type ClipCandidate = {
+	title: string,
+	hookLine: string,
+	reason: string,
+	/**  In playback order. */
+	ranges: ClipRange[],
+	ratings: ClipRatings,
+	signals: ClipSignals,
+	/**  Overall rank score, 0-100. */
+	score: number,
+	duration: number,
+	looped: boolean,
+};
+
+export type ClipRange = {
+	start: number,
+	end: number,
+	role: ClipRole,
+	/**  Index of the first and last transcript segment in the range. */
+	firstSegment: number,
+	lastSegment: number,
+};
+
+/**  The LLM's 1-10 ratings. */
+export type ClipRatings = {
+	hook: number,
+	standalone: number,
+	emotion: number,
+	info: number,
+	/**  How well the closing leads back into the opener (looped clips only). */
+	loopContinuity: number,
+};
+
+export type ClipRequest = {
+	count: number,
+	minSeconds: number | null,
+	maxSeconds: number | null,
+	topic: string | null,
+	/**  Allow clips made of several non-contiguous ranges (e.g. a cold open). */
+	allowSplicing: boolean,
+	/**
+	 *  Looped shorts: the opener is the story's resolution and the closing
+	 *  line leads back into it.
+	 */
+	looped: boolean,
+};
+
+export type ClipRole = "hook" | "body" | "payoff" | "loop_opener" | "closing";
+
 export type ClipSegment = {
 	segments: Segment[],
 	label: string | null,
 	reason: string | null,
+};
+
+/**  Cheap signals measured from the transcript itself. */
+export type ClipSignals = {
+	speakerChanges: number,
+	laughs: number,
+	wordsPerSecond: number,
 };
 
 export type CrisperEnvironmentStatus = {

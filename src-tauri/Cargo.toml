@@ -55,6 +55,7 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 thiserror = "2"
 sha2 = "0.10"
 keyring = "4"
+futures-util = "0.3"
 
 [dev-dependencies]
 dotenvy = "0.15.7"

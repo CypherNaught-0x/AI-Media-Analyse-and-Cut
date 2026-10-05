@@ -69,6 +69,7 @@ dependencies = [
  "dotenvy",
  "fastrand",
  "ffmpeg-sidecar",
+ "futures-util",
  "hound",
  "keyring",
  "log",
