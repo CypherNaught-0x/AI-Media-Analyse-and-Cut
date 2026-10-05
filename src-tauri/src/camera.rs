@@ -27,8 +27,10 @@ pub(crate) struct CameraSettings {
     pub min_hold: f64,
     /// Share of the crop the face may drift before the camera follows.
     pub dead_zone: f64,
-    /// Duration of a follow pan (seconds).
-    pub pan_seconds: f64,
+    /// Smoothing of follow pans (Gaussian sigma, seconds): a pan takes
+    /// about four sigmas, centred on the moment the subject left the dead
+    /// zone, so it starts before the move and eases in and out.
+    pub pan_sigma: f64,
     /// Pauses up to this long (seconds) keep the last speaker as subject.
     pub speech_bridge: f64,
     /// Speaker bindings weaker than this aren't trusted for framing.
@@ -41,7 +43,7 @@ impl Default for CameraSettings {
             face_share: 0.22,
             min_hold: 1.2,
             dead_zone: 0.08,
-            pan_seconds: 0.6,
+            pan_sigma: 0.45,
             speech_bridge: 1.5,
             // Measured on the PODIUM panel: wrong wide-shot bindings scored
             // 0.5-0.7, right ones 1.2-2.8.
@@ -201,27 +203,48 @@ fn target(observation: &Observation, frame: &Frame, settings: &CameraSettings) -
     (f64::from(face.center().0), center_y, height)
 }
 
+/// Zero-phase Gaussian smoothing of a sampled path; the ends are held.
+fn smooth(path: &[(f64, f64)], sigma_samples: f64) -> Vec<(f64, f64)> {
+    if sigma_samples <= 0.0 {
+        return path.to_vec();
+    }
+    let radius = (3.0 * sigma_samples).ceil() as isize;
+    let weights: Vec<f64> = (-radius..=radius)
+        .map(|k| (-(k as f64).powi(2) / (2.0 * sigma_samples * sigma_samples)).exp())
+        .collect();
+    let total: f64 = weights.iter().sum();
+    let last = path.len() as isize - 1;
+    (0..path.len() as isize)
+        .map(|i| {
+            // Offsets from the centre sample, so a still path stays exact.
+            let (cx, cy) = path[i as usize];
+            let (mut dx, mut dy) = (0.0, 0.0);
+            for (k, weight) in (-radius..=radius).zip(&weights) {
+                let (px, py) = path[(i + k).clamp(0, last) as usize];
+                dx += (px - cx) * weight;
+                dy += (py - cy) * weight;
+            }
+            (cx + dx / total, cy + dy / total)
+        })
+        .collect()
+}
+
 /// Crop keys following `track` over `times` (absolute), relative to
 /// `origin`, appended to `keys`.
-#[allow(clippy::too_many_arguments)]
+///
+/// The camera is planned, not reactive: first the positions it holds (a
+/// new hold whenever the face leaves the dead zone), then the whole path is
+/// smoothed. Pans therefore begin before the subject has fully moved, ease in
+/// and out, and nearby moves merge into one.
 fn follow(
     keys: &mut Vec<CropKey>,
     track: &Track,
     times: &[f64],
     origin: f64,
-    end: f64,
     frame: &Frame,
     aspect: f64,
     settings: &CameraSettings,
 ) {
-    let push = |keys: &mut Vec<CropKey>, time: f64, (x, y, h): (f64, f64, f64)| {
-        keys.push(CropKey {
-            time: time - origin,
-            center_x: x,
-            center_y: y,
-            height: h,
-        });
-    };
     let targets: Vec<(f64, f64, f64)> = times
         .iter()
         .map(|&time| target(nearest(track, time), frame, settings))
@@ -237,37 +260,41 @@ fn follow(
         )
     };
 
+    // 1. Holds: piecewise constant.
     let mut current = settle(0);
-    push(keys, times[0], (current.0, current.1, height));
-    let pan_samples = (settings.pan_seconds / STEP).round().max(1.0) as usize;
-    let mut index = 0;
-    while index < targets.len() {
-        let (x, y, _) = targets[index];
-        let outside = (x - current.0).abs() > settings.dead_zone * width
-            || (y - current.1).abs() > settings.dead_zone * height;
-        if !outside {
-            index += 1;
-            continue;
+    let holds: Vec<(f64, f64)> = targets
+        .iter()
+        .enumerate()
+        .map(|(index, &(x, y, _))| {
+            let outside = (x - current.0).abs() > settings.dead_zone * width
+                || (y - current.1).abs() > settings.dead_zone * height;
+            if outside {
+                current = settle(index);
+            }
+            current
+        })
+        .collect();
+
+    // 2. Smooth, and key only where the camera moves (plus where it stops).
+    let path = smooth(&holds, settings.pan_sigma / STEP);
+    const STILL: f64 = 0.05;
+    let mut moving = false;
+    for (index, &(x, y)) in path.iter().enumerate() {
+        let step = index.checked_sub(1).map_or(f64::INFINITY, |previous| {
+            (x - path[previous].0)
+                .abs()
+                .max((y - path[previous].1).abs())
+        });
+        let moves = step > STILL;
+        if index == 0 || moves || moving {
+            keys.push(CropKey {
+                time: times[index] - origin,
+                center_x: x,
+                center_y: y,
+                height,
+            });
         }
-        let next = settle(index);
-        let pan_start = times[index];
-        push(keys, pan_start, (current.0, current.1, height));
-        // Smoothstep ease, sampled at the planner step.
-        for step in 1..=pan_samples {
-            let t = step as f64 / pan_samples as f64;
-            let eased = t * t * (3.0 - 2.0 * t);
-            push(
-                keys,
-                (pan_start + step as f64 * STEP).min(end),
-                (
-                    current.0 + (next.0 - current.0) * eased,
-                    current.1 + (next.1 - current.1) * eased,
-                    height,
-                ),
-            );
-        }
-        current = next;
-        index += pan_samples;
+        moving = moves && index > 0;
     }
 }
 
@@ -348,7 +375,6 @@ pub(crate) fn plan_camera(
                     &tracks[track],
                     &run_times,
                     origin,
-                    end,
                     frame,
                     aspect,
                     settings,
@@ -524,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn small_movement_is_ignored_and_a_move_is_followed_with_a_pan() {
+    fn small_movement_is_ignored_and_a_move_is_followed_with_a_smooth_pan() {
         // Sways by ±5 px, then shifts 200 px right at 5 s.
         let tracks = [track(0, (0.0, 10.0), |t| {
             let sway = if (t * 10.0).round() as i64 % 2 == 0 {
@@ -541,12 +567,33 @@ mod tests {
             &[turn(0.0, 10.0, "A")],
         );
         let xs: Vec<f64> = keys.iter().map(|k| k.center_x).collect();
-        // Static until the move, eased to the new place, then static.
-        assert!(xs.iter().take_while(|&&x| x < 300.0).count() >= 2, "{xs:?}");
+        assert!((xs[0] - xs[1]).abs() < 1.0, "still at first: {xs:?}");
         assert!((xs.last().unwrap() - 460.0).abs() <= 5.0, "{xs:?}");
         assert!(xs.windows(2).all(|w| w[1] >= w[0]), "monotonic pan: {xs:?}");
-        let pan_start = keys.iter().find(|k| k.center_x > 270.0).unwrap().time;
-        assert!((5.0..5.3).contains(&pan_start), "{keys:?}");
+
+        // Planned, not reactive: the pan is under way before the move...
+        let started = keys.iter().find(|k| k.center_x > xs[0] + 1.0).unwrap().time;
+        assert!(
+            (3.8..5.0).contains(&started),
+            "starts at {started}: {keys:?}"
+        );
+        // ...fastest around it, and without jerks: speed changes gradually.
+        let speeds: Vec<(f64, f64)> = keys
+            .windows(2)
+            .map(|w| {
+                let dt = w[1].time - w[0].time;
+                (w[0].time, (w[1].center_x - w[0].center_x) / dt)
+            })
+            .collect();
+        let fastest = speeds.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        assert!((4.7..5.3).contains(&fastest.0), "{speeds:?}");
+        let peak = fastest.1;
+        assert!(
+            speeds
+                .windows(2)
+                .all(|w| (w[1].1 - w[0].1).abs() < 0.35 * peak),
+            "{speeds:?}"
+        );
     }
 
     #[test]
