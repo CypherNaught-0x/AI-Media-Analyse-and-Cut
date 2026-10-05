@@ -342,6 +342,9 @@ async fn prepare_preview_audio(
 pub mod chunking;
 pub mod clip_selection;
 pub mod crisper;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
+#[allow(dead_code)]
+mod camera;
 pub(crate) mod encoders;
 pub mod error;
 pub(crate) mod ffmpeg;
@@ -379,7 +382,10 @@ pub mod silence;
 mod speaker_faces;
 pub mod time_utils;
 pub mod transcript_merge;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
 mod upload;
+#[allow(dead_code)]
+mod vertical;
 pub mod video;
 
 use crate::chunking::split_audio_for_analysis;
