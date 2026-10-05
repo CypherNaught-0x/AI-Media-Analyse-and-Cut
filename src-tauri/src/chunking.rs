@@ -103,9 +103,12 @@ pub async fn split_audio_for_analysis(
     }
 
     // Primary: silence gaps of at least ~1s.
-    let silences =
-        detect_silence_internal(&path, SILENCE_MIN_DURATION, Some((run_id, run_control.inner())))
-            .await?;
+    let silences = detect_silence_internal(
+        &path,
+        SILENCE_MIN_DURATION,
+        Some((run_id, run_control.inner())),
+    )
+    .await?;
     run_control.ensure_active(run_id)?;
     let silence_midpoints: Vec<f64> = silences
         .iter()
@@ -226,7 +229,12 @@ pub async fn split_audio_for_analysis(
             .output(output_path.to_str().unwrap())
             .spawn()
             .map_err(|error| {
-                format_ffmpeg_spawn_error("split audio for analysis", &input_path, Some(&output_path), &error)
+                format_ffmpeg_spawn_error(
+                    "split audio for analysis",
+                    &input_path,
+                    Some(&output_path),
+                    &error,
+                )
             })?;
 
         let pid = child.as_inner().id();

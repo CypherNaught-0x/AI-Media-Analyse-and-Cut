@@ -1,5 +1,5 @@
-use crate::{format_ffmpeg_spawn_error, format_path_io_error};
 use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
+use crate::{format_ffmpeg_spawn_error, format_path_io_error};
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::FfmpegEvent;
 use ffmpeg_sidecar::paths::ffmpeg_path;
@@ -157,15 +157,13 @@ pub(crate) async fn detect_silence_internal(
         run_control.register_pid(run_id, pid)?;
     }
 
-    let events = child
-        .iter()
-        .map_err(|e| {
-            format!(
-                "Failed while reading FFmpeg output during silence detection for '{}': {}",
-                input_path.display(),
-                e
-            )
-        })?;
+    let events = child.iter().map_err(|e| {
+        format!(
+            "Failed while reading FFmpeg output during silence detection for '{}': {}",
+            input_path.display(),
+            e
+        )
+    })?;
 
     let mut intervals = Vec::new();
     let mut current_start = None;
@@ -605,8 +603,8 @@ mod tests {
             Some(0.5),
             None,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
 
         assert!(
             Path::new(&processed.path).exists(),

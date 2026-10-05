@@ -406,7 +406,10 @@ fn removing_fillers_leaves_a_gap_the_export_can_cut() {
         "wordTimestamps": true,
     }));
     let result = result.expect("result");
-    assert_eq!(result["type"], "result", "transcription failed: {result:#?}");
+    assert_eq!(
+        result["type"], "result",
+        "transcription failed: {result:#?}"
+    );
 
     let words: Vec<RunnerWord> =
         serde_json::from_value(result["words"].clone()).expect("words deserialize");
@@ -432,8 +435,8 @@ fn removing_fillers_leaves_a_gap_the_export_can_cut() {
     );
 
     assert!(
-        kept.iter().any(|segment| segment.text.contains("[UH]")
-            || segment.text.contains("[UM]")),
+        kept.iter()
+            .any(|segment| segment.text.contains("[UH]") || segment.text.contains("[UM]")),
         "fillers should be present when they are not removed"
     );
     assert!(
@@ -487,7 +490,10 @@ fn intended_mode_returns_a_clean_transcript() {
         "wordTimestamps": true,
     }));
     let result = result.expect("result");
-    assert_eq!(result["type"], "result", "transcription failed: {result:#?}");
+    assert_eq!(
+        result["type"], "result",
+        "transcription failed: {result:#?}"
+    );
 
     let text = result["text"].as_str().unwrap();
     assert!(!text.trim().is_empty(), "intended mode returned no text");

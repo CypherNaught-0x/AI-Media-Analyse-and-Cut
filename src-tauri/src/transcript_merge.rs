@@ -1606,17 +1606,15 @@ fn apply_inferred_speaker_labels(
         .into_iter()
         .map(|mut segment| {
             let parakeet_speaker =
-                alternative_speaker(&segment, TranscriptAlternativeSource::Local).or_else(
-                    || {
-                        segment.words.as_ref().and_then(|words| {
-                            words.iter().find_map(|word| {
-                                word.speaker
-                                    .clone()
-                                    .filter(|speaker| !speaker.trim().is_empty())
-                            })
+                alternative_speaker(&segment, TranscriptAlternativeSource::Local).or_else(|| {
+                    segment.words.as_ref().and_then(|words| {
+                        words.iter().find_map(|word| {
+                            word.speaker
+                                .clone()
+                                .filter(|speaker| !speaker.trim().is_empty())
                         })
-                    },
-                );
+                    })
+                });
             let speaker_order = parakeet_speaker
                 .as_ref()
                 .and_then(|speaker| speaker_orders.get(speaker).copied());
@@ -2288,7 +2286,10 @@ mod tests {
             ("kitten", "sitting"),
             ("security operations center", "security operations center"),
             ("security operations center", "security operation center"),
-            ("the quick brown fox", "a completely different sentence here"),
+            (
+                "the quick brown fox",
+                "a completely different sentence here",
+            ),
         ];
         for (left, right) in cases {
             let l = chars(left);
@@ -2299,7 +2300,10 @@ mod tests {
             assert_eq!(result, expected, "exact band for {left:?} vs {right:?}");
             // A generous band must also reproduce it exactly.
             let generous = bounded_levenshtein(&l, &r, expected + 5, &mut scratch);
-            assert_eq!(generous, expected, "generous band for {left:?} vs {right:?}");
+            assert_eq!(
+                generous, expected,
+                "generous band for {left:?} vs {right:?}"
+            );
         }
     }
 
@@ -2331,7 +2335,11 @@ mod tests {
         let right_tokens: std::collections::BTreeSet<&str> = right.split_whitespace().collect();
         let intersection = left_tokens.intersection(&right_tokens).count() as f32;
         let union = left_tokens.union(&right_tokens).count() as f32;
-        let token = if union == 0.0 { 0.0 } else { intersection / union };
+        let token = if union == 0.0 {
+            0.0
+        } else {
+            intersection / union
+        };
 
         levenshtein * LEVENSHTEIN_WEIGHT + token * TOKEN_WEIGHT
     }
@@ -2342,7 +2350,10 @@ mod tests {
             ("Hello itemis team", "hello itemis team."),
             ("security operations center", "Security Operation Center."),
             ("totally unrelated phrase", "nothing in common whatsoever"),
-            ("we reviewed the release plan", "We reviewed the release plan."),
+            (
+                "we reviewed the release plan",
+                "We reviewed the release plan.",
+            ),
         ];
         for (left, right) in cases {
             let expected = naive_combined(left, right);
@@ -2361,19 +2372,18 @@ mod tests {
             ("security operations center", "security operations center."),
             ("security operations center", "Security Operation Center."),
             ("alpha beta gamma delta", "alpha beta gamma delta"),
-            ("alpha beta gamma delta", "completely different words entirely"),
+            (
+                "alpha beta gamma delta",
+                "completely different words entirely",
+            ),
         ];
         for threshold in [MIN_MATCH_SIMILARITY, ANCHOR_MATCH_SIMILARITY] {
             for (left, right) in cases {
                 let exact = naive_combined(left, right);
                 let left_norm = NormalizedText::from_text(left);
                 let right_norm = NormalizedText::from_text(right);
-                let pruned = combined_similarity_prepared(
-                    &left_norm,
-                    &right_norm,
-                    threshold,
-                    &mut scratch,
-                );
+                let pruned =
+                    combined_similarity_prepared(&left_norm, &right_norm, threshold, &mut scratch);
                 if exact >= threshold {
                     // Matches must be returned with the exact score.
                     assert!(
@@ -2393,11 +2403,36 @@ mod tests {
 
     fn synth_pair(n: usize) -> (Vec<TranscriptSegment>, Vec<TranscriptSegment>) {
         const VOCAB: &[&str] = &[
-            "team", "release", "roadmap", "security", "operations", "center", "review", "update",
-            "customer", "feedback", "sprint", "deadline", "architecture", "service", "deployment",
-            "pipeline", "incident", "mitigation", "stakeholder", "alignment", "transcript",
-            "analysis", "model", "inference", "latency", "throughput", "benchmark", "optimization",
-            "regression", "coverage",
+            "team",
+            "release",
+            "roadmap",
+            "security",
+            "operations",
+            "center",
+            "review",
+            "update",
+            "customer",
+            "feedback",
+            "sprint",
+            "deadline",
+            "architecture",
+            "service",
+            "deployment",
+            "pipeline",
+            "incident",
+            "mitigation",
+            "stakeholder",
+            "alignment",
+            "transcript",
+            "analysis",
+            "model",
+            "inference",
+            "latency",
+            "throughput",
+            "benchmark",
+            "optimization",
+            "regression",
+            "coverage",
         ];
         let mut state = 0x1234_5678_9abc_def0u64;
         let mut rng = || {
@@ -2512,8 +2547,11 @@ mod tests {
                             pi += 1;
                         }
                         AlignmentStep::MissingLocal => {
-                            assembled
-                                .push(build_missing_local_segment(&primary, pi, &reference[ri]));
+                            assembled.push(build_missing_local_segment(
+                                &primary,
+                                pi,
+                                &reference[ri],
+                            ));
                             ri += 1;
                         }
                     }
@@ -2544,15 +2582,12 @@ mod tests {
             let t = Instant::now();
             let mut acc = 0.0f32;
             for _ in 0..iters {
-                acc += combined_similarity_prepared(
-                    &a,
-                    &b,
-                    ANCHOR_MATCH_SIMILARITY,
-                    &mut scratch,
-                );
+                acc += combined_similarity_prepared(&a, &b, ANCHOR_MATCH_SIMILARITY, &mut scratch);
             }
             let per = t.elapsed() / iters;
-            eprintln!("         per combined_similarity_prepared call (anchor thr): {per:?}  (acc={acc})");
+            eprintln!(
+                "         per combined_similarity_prepared call (anchor thr): {per:?}  (acc={acc})"
+            );
         }
     }
 

@@ -374,10 +374,9 @@ async fn prepare_preview_audio(
         })?
         .for_each(|event| match event {
             FfmpegEvent::Progress(progress) => {
-                let current_seconds = crate::time_utils::parse_timestamp_to_seconds_raw(
-                    &progress.time,
-                )
-                .unwrap_or(0.0);
+                let current_seconds =
+                    crate::time_utils::parse_timestamp_to_seconds_raw(&progress.time)
+                        .unwrap_or(0.0);
                 let percentage = duration
                     .filter(|d| *d > 0.0)
                     .map(|d| (current_seconds / d) * 100.0);
@@ -624,19 +623,26 @@ async fn cut_video(
         })
         .sum();
 
-    cut_video_fn(&input, &segments, &output, run_id, run_control.inner(), move |time| {
-        let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
-        let percentage = if total_duration > 0.0 {
-            (current / total_duration) * 100.0
-        } else {
-            0.0
-        };
-        let payload = serde_json::json!({
-            "time": time,
-            "percentage": percentage
-        });
-        let _ = window.emit("progress", payload);
-    })
+    cut_video_fn(
+        &input,
+        &segments,
+        &output,
+        run_id,
+        run_control.inner(),
+        move |time| {
+            let current = parse_timestamp_to_seconds_raw(&time).unwrap_or(0.0);
+            let percentage = if total_duration > 0.0 {
+                (current / total_duration) * 100.0
+            } else {
+                0.0
+            };
+            let payload = serde_json::json!({
+                "time": time,
+                "percentage": percentage
+            });
+            let _ = window.emit("progress", payload);
+        },
+    )
     .map_err(|e| e.to_string())
 }
 
@@ -809,13 +815,21 @@ fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), String>
     let scope = app.asset_protocol_scope();
 
     if let Some(dir) = target.parent() {
-        scope
-            .allow_directory(dir, false)
-            .map_err(|e| format!("Failed to allow asset access for '{}': {}", dir.display(), e))?;
+        scope.allow_directory(dir, false).map_err(|e| {
+            format!(
+                "Failed to allow asset access for '{}': {}",
+                dir.display(),
+                e
+            )
+        })?;
     } else {
-        scope
-            .allow_file(&target)
-            .map_err(|e| format!("Failed to allow asset access for '{}': {}", target.display(), e))?;
+        scope.allow_file(&target).map_err(|e| {
+            format!(
+                "Failed to allow asset access for '{}': {}",
+                target.display(),
+                e
+            )
+        })?;
     }
 
     Ok(())

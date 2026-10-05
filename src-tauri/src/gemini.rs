@@ -1227,8 +1227,7 @@ fn redact_url(url: &str) -> String {
     let mut rest = url;
     while let Some(idx) = rest.find("key=") {
         // Only treat as a query parameter when preceded by `?` or `&`.
-        let is_param = idx == 0
-            || matches!(rest.as_bytes().get(idx - 1), Some(b'?') | Some(b'&'));
+        let is_param = idx == 0 || matches!(rest.as_bytes().get(idx - 1), Some(b'?') | Some(b'&'));
         result.push_str(&rest[..idx + 4]);
         rest = &rest[idx + 4..];
         if is_param {

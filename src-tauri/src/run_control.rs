@@ -45,7 +45,9 @@ impl RunControl {
 
         self.cancelled_run_id.store(run_id, Ordering::SeqCst);
 
-        if let Some((active_run_id, pid)) = *self.active_pid.lock().expect("active pid lock poisoned") {
+        if let Some((active_run_id, pid)) =
+            *self.active_pid.lock().expect("active pid lock poisoned")
+        {
             if active_run_id == run_id {
                 kill_process(pid)?;
             }
@@ -84,7 +86,8 @@ impl RunControl {
 
     pub fn clear_pid(&self, run_id: u64, pid: u32) {
         let mut active_pid = self.active_pid.lock().expect("active pid lock poisoned");
-        if matches!(*active_pid, Some((active_run_id, active_pid_value)) if active_run_id == run_id && active_pid_value == pid) {
+        if matches!(*active_pid, Some((active_run_id, active_pid_value)) if active_run_id == run_id && active_pid_value == pid)
+        {
             *active_pid = None;
         }
     }
@@ -119,7 +122,10 @@ fn kill_process(pid: u32) -> Result<(), String> {
             return Ok(());
         }
 
-        return Err(format!("Failed to cancel run (taskkill exited with {})", status));
+        return Err(format!(
+            "Failed to cancel run (taskkill exited with {})",
+            status
+        ));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -133,7 +139,10 @@ fn kill_process(pid: u32) -> Result<(), String> {
             return Ok(());
         }
 
-        Err(format!("Failed to cancel run (kill exited with {})", status))
+        Err(format!(
+            "Failed to cancel run (kill exited with {})",
+            status
+        ))
     }
 }
 
