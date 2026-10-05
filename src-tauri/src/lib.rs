@@ -347,6 +347,9 @@ pub mod error;
 pub(crate) mod ffmpeg;
 // Shorts S2 building blocks; wired to commands once the camera path exists.
 #[allow(dead_code)]
+mod faces;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
+#[allow(dead_code)]
 mod frames;
 pub mod gemini;
 mod http;

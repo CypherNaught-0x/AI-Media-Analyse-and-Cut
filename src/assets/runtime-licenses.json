@@ -26,7 +26,7 @@
       "id": "onnxruntime",
       "name": "ONNX Runtime",
       "kind": "library",
-      "usedBy": "Parakeet and Sortformer inference",
+      "usedBy": "Parakeet, Sortformer and face detection inference",
       "source": "Microsoft release binaries, fetched at build time by the ort crate",
       "license": "MIT",
       "licenseUrl": "https://github.com/microsoft/onnxruntime/blob/main/LICENSE"
@@ -40,6 +40,16 @@
       "license": "CC-BY-4.0",
       "licenseUrl": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
       "notice": "Parakeet TDT 0.6B v3 by NVIDIA, licensed under CC BY 4.0. Converted to ONNX by the parakeet-rs project."
+    },
+    {
+      "id": "yunet",
+      "name": "YuNet face detector (face_detection_yunet_2026may.onnx)",
+      "kind": "model-weights",
+      "usedBy": "Face detection for vertical shorts",
+      "source": "Bundled in the app; github.com/opencv/opencv_zoo at 26cc381e (from ShiqiYu/libfacedetection.train)",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE",
+      "notice": "YuNet, Copyright (c) 2020 Shiqi Yu, licensed under the MIT License."
     },
     {
       "id": "sortformer",

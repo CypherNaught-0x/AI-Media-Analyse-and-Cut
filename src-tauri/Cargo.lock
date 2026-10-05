@@ -74,6 +74,7 @@ dependencies = [
  "keyring",
  "log",
  "mockito",
+ "ort",
  "parakeet-rs",
  "regex",
  "reqwest",

@@ -46,6 +46,8 @@ log = "0.4.29"
 zip = "6.0.0"
 fastrand = "2.3"
 parakeet-rs = { version = "0.3.4", features = ["sortformer"] }
+# Same version and features parakeet-rs uses; for face detection.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray"] }
 hound = "3.5.1"
 # Transitive dep (via tauri -> cookie 0.18.1). time 0.3.52 changed the
 # `Parsable::parse` signature and breaks cookie 0.18.1's build, so pin it.
