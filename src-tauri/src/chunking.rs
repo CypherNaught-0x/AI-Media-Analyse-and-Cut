@@ -23,7 +23,7 @@ use tauri::{Emitter, State};
 /// One analysis chunk: a file on disk plus its start time (seconds) relative to
 /// the input audio, used to shift transcript timestamps back onto the original
 /// timeline.
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct AudioChunk {
     pub path: String,
     pub start_offset: f64,
@@ -56,6 +56,7 @@ where
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn split_audio_for_analysis(
     run_id: u64,
     window: tauri::Window,

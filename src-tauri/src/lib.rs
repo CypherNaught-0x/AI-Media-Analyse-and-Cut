@@ -56,6 +56,7 @@ pub(crate) fn format_path_io_error(operation: &str, path: &Path, err: &std::io::
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn init_ffmpeg() -> Result<String, String> {
     if ffmpeg_is_installed() {
         info!("FFmpeg is already installed.");
@@ -155,7 +156,7 @@ async fn init_ffmpeg() -> Result<String, String> {
 use ffmpeg_sidecar::command::FfmpegCommand;
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 struct AudioInfo {
     path: String,
     size: u64,
@@ -187,6 +188,7 @@ fn get_media_duration(input_path: &str) -> Option<f64> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn prepare_audio_for_ai(
     run_id: u64,
     window: tauri::Window,
@@ -309,6 +311,7 @@ async fn prepare_audio_for_ai(
 /// and on the same original timeline), but any decodable audio/video file works.
 /// A cached preview is reused when it is at least as new as the source.
 #[tauri::command]
+#[specta::specta]
 async fn prepare_preview_audio(
     run_id: u64,
     window: tauri::Window,
@@ -453,6 +456,7 @@ use crate::video::{
 };
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn translate_transcript(
@@ -476,6 +480,7 @@ async fn translate_transcript(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn upload_file(
     run_id: u64,
     api_key: String,
@@ -498,14 +503,22 @@ async fn upload_file(
         })
 }
 
+/// The remote LLM a request goes to, as configured in Settings.
+#[derive(serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmConfig {
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn analyze_audio(
     run_id: u64,
-    api_key: String,
-    base_url: String,
-    model: String,
+    llm: LlmConfig,
     enforce_json_schema: bool,
     context: String,
     glossary: String,
@@ -516,6 +529,11 @@ async fn analyze_audio(
     run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
     run_control.ensure_active(run_id)?;
+    let LlmConfig {
+        api_key,
+        base_url,
+        model,
+    } = llm;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     run_control
         .run_cancellable(
@@ -540,6 +558,7 @@ async fn analyze_audio(
 }
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn cleanup_local_transcript(
@@ -570,6 +589,7 @@ async fn cleanup_local_transcript(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn merge_transcript_hypotheses(
     run_id: u64,
     window: tauri::Window,
@@ -606,6 +626,7 @@ async fn merge_transcript_hypotheses(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn cut_video(
     run_id: u64,
     window: tauri::Window,
@@ -653,6 +674,7 @@ async fn cut_video(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn export_clips(
     run_id: u64,
     window: tauri::Window,
@@ -719,6 +741,7 @@ async fn export_clips(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn read_file_as_base64(path: String) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
 
@@ -733,13 +756,12 @@ async fn read_file_as_base64(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn generate_clips(
     run_id: u64,
-    api_key: String,
-    base_url: String,
-    model: String,
+    llm: LlmConfig,
     transcript: String,
     count: u32,
     min_duration: u32,
@@ -749,7 +771,7 @@ async fn generate_clips(
     run_control: State<'_, RunControl>,
 ) -> Result<String, String> {
     run_control.ensure_active(run_id)?;
-    let client = GeminiClient::new(api_key, base_url, model);
+    let client = GeminiClient::new(llm.api_key, llm.base_url, llm.model);
     run_control
         .run_cancellable(
             run_id,
@@ -766,6 +788,7 @@ async fn generate_clips(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn open_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -792,6 +815,7 @@ async fn open_folder(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn write_text_file(path: String, content: String) -> Result<(), String> {
     tokio::fs::write(path, content)
         .await
@@ -799,6 +823,7 @@ async fn write_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn read_text_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(path)
         .await
@@ -806,6 +831,7 @@ async fn read_text_file(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 fn path_exists(path: String) -> bool {
     Path::new(&path).exists()
 }
@@ -816,6 +842,7 @@ fn path_exists(path: String) -> bool {
 /// picks them (e.g. external volumes) so `convertFileSrc` can load the source
 /// media and the extracted `.ogg` sidecar written alongside it.
 #[tauri::command]
+#[specta::specta]
 fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), String> {
     use tauri::Manager;
 
@@ -844,6 +871,7 @@ fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), String>
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), String> {
     use std::io::Write;
     use tauri::Manager;
@@ -876,6 +904,7 @@ async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), Stri
 }
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn generate_podcast(
@@ -900,6 +929,7 @@ async fn generate_podcast(
 }
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn refine_podcast(
@@ -931,6 +961,7 @@ async fn refine_podcast(
 }
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn export_podcast(
@@ -969,6 +1000,7 @@ async fn export_podcast(
 }
 
 #[tauri::command]
+#[specta::specta]
 // Parameters mirror the IPC payload the frontend sends.
 #[allow(clippy::too_many_arguments)]
 async fn export_podcast_clips(
@@ -1001,30 +1033,33 @@ async fn export_podcast_clips(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn calculate_segments_duration(segments: Vec<PodcastSegment>) -> f64 {
     calc_duration(&segments)
 }
 
 #[tauri::command]
+#[specta::specta]
 fn begin_run(run_control: State<'_, RunControl>) -> u64 {
     run_control.begin_run()
 }
 
 #[tauri::command]
+#[specta::specta]
 fn cancel_current_run(run_control: State<'_, RunControl>) -> Result<(), String> {
     run_control.cancel_current_run()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .manage(RunControl::default())
-        .plugin(tauri_plugin_log::Builder::default().build())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![
+/// Where the generated TypeScript bindings live, relative to `src-tauri/`.
+pub const IPC_BINDINGS_PATH: &str = "../src/bindings.ts";
+
+/// The typed IPC surface: every command the frontend may call. The frontend's
+/// `src/bindings.ts` is generated from it (`just bindings`), and the
+/// `ipc_bindings_are_up_to_date` test fails when the two drift apart.
+pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
+    tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(tauri_specta::collect_commands![
             begin_run,
             cancel_current_run,
             init_ffmpeg,
@@ -1058,6 +1093,53 @@ pub fn run() {
             export_podcast_clips,
             calculate_segments_duration
         ])
+        // Keep the frontend's try/catch error handling: failed commands throw.
+        .error_handling(tauri_specta::ErrorHandlingMode::Throw)
+        // Run ids and sizes are far below 2^53; plain numbers keep the
+        // frontend free of BigInt.
+        .dangerously_cast_bigints_to_number()
+}
+
+/// Render the TypeScript bindings for [`specta_builder`].
+pub fn render_ipc_bindings(path: &Path) -> Result<(), String> {
+    specta_builder()
+        .export(specta_typescript::Typescript::default(), path)
+        .map_err(|error| format!("Failed to export TypeScript bindings: {error}"))
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .manage(RunControl::default())
+        .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(specta_builder().invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod ipc_binding_tests {
+    use super::*;
+
+    /// Regenerate with `just bindings` (sets UPDATE_IPC_BINDINGS=1).
+    #[test]
+    fn ipc_bindings_are_up_to_date() {
+        let committed = Path::new(env!("CARGO_MANIFEST_DIR")).join(IPC_BINDINGS_PATH);
+        if std::env::var_os("UPDATE_IPC_BINDINGS").is_some() {
+            render_ipc_bindings(&committed).unwrap();
+            return;
+        }
+
+        let fresh = tempfile::tempdir().unwrap().keep().join("bindings.ts");
+        render_ipc_bindings(&fresh).unwrap();
+        let expected = std::fs::read_to_string(&fresh).unwrap();
+        let actual = std::fs::read_to_string(&committed).unwrap_or_default();
+        assert!(
+            expected == actual,
+            "src/bindings.ts is out of date with the Tauri commands; run `just bindings`"
+        );
+    }
 }

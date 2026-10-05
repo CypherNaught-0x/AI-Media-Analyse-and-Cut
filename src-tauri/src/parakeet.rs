@@ -174,6 +174,7 @@ pub(crate) async fn parakeet_word_boundaries(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn transcribe_with_parakeet(
     window: tauri::Window,
     audio_path: String,

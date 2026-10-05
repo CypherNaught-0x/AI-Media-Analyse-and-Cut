@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::time_utils::parse_time;
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum PodcastSegmentType {
     #[default]
@@ -16,7 +16,7 @@ pub enum PodcastSegmentType {
     Voiceover,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
 pub struct PodcastSegment {
     pub start: String,
     pub end: String,

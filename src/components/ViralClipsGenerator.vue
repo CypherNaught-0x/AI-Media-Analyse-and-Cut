@@ -103,9 +103,11 @@ async function generateClips() {
 
         const response = await invoke<string>('generate_clips', {
             runId,
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            model: settings.value.model,
+            llm: {
+                apiKey: settings.value.apiKey,
+                baseUrl: settings.value.baseUrl,
+                model: settings.value.model,
+            },
             transcript,
             count: clipCount.value,
             minDuration: clipMinDuration.value,

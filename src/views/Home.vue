@@ -923,9 +923,11 @@ async function requestLlmTranscriptForChunk(
 
     const response = await invoke<string>('analyze_audio', {
         runId,
-        apiKey: settings.value.apiKey,
-        baseUrl: settings.value.baseUrl,
-        model: settings.value.model,
+        llm: {
+            apiKey: settings.value.apiKey,
+            baseUrl: settings.value.baseUrl,
+            model: settings.value.model,
+        },
         enforceJsonSchema: settings.value.enforceJsonSchema,
         context: context.value,
         glossary: workspaceSettings.value.glossary,

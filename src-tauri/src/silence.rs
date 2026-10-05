@@ -9,20 +9,20 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tauri::State;
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct SilenceInterval {
     pub start: f64,
     pub end: f64,
     pub duration: f64,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct SegmentOffset {
     pub min_time: f64,
     pub offset: f64,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct ProcessedAudio {
     pub path: String,
     pub silence_intervals: Vec<SilenceInterval>,
@@ -101,6 +101,7 @@ fn build_offsets(keep_segments: &[(f64, f64)]) -> Vec<SegmentOffset> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn detect_silence(
     run_id: Option<u64>,
     path: String,
@@ -227,6 +228,7 @@ pub(crate) async fn detect_silence_internal(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn remove_silence(
     run_id: Option<u64>,
     path: String,

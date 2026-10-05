@@ -51,7 +51,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CrisperOptions {
     /// Explicit interpreter to use. Empty means: managed environment, then a
@@ -111,7 +111,7 @@ impl CrisperOptions {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CrisperEnvironmentStatus {
     /// Interpreter that was probed, if one could be found at all.
@@ -439,6 +439,7 @@ fn finalize_status(mut status: CrisperEnvironmentStatus) -> CrisperEnvironmentSt
 
 /// Report whether CrisperWhisper can run, and on what.
 #[tauri::command]
+#[specta::specta]
 pub async fn crisper_environment_status(
     window: tauri::Window,
     python_path: String,
@@ -580,6 +581,7 @@ fn resolve_extra(requested: &str) -> &'static str {
 
 /// Create the managed virtual environment and install `crisperwhisper` into it.
 #[tauri::command]
+#[specta::specta]
 pub async fn install_crisper_environment(
     window: tauri::Window,
     python_path: String,
@@ -755,6 +757,7 @@ fn partition_words(words: Vec<WordWithSpeaker>, drop: &[bool]) -> Vec<Vec<WordWi
 
 /// Transcribe with CrisperWhisper 2.0 and return editor-ready segments.
 #[tauri::command]
+#[specta::specta]
 pub async fn transcribe_with_crisper(
     window: tauri::Window,
     audio_path: String,
