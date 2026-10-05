@@ -49,6 +49,7 @@ import {
 import { adjustSegmentsWithOffsets } from '../utils/transcriptOffsets';
 import { appendFileNameSuffix } from '../utils/filePath';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
@@ -557,7 +558,7 @@ onMounted(async () => {
             status.value = res;
             ffmpegInitialized = true;
         } catch (e) {
-            status.value = `Error initializing FFmpeg: ${e}`;
+            status.value = `Error initializing FFmpeg: ${errorMessage(e)}`;
         }
     }
 });
@@ -754,7 +755,7 @@ async function cancelCurrentRun() {
         await commands.cancelCurrentRun();
         status.value = 'Run cancelled.';
     } catch (error) {
-        status.value = `Failed to cancel run: ${error}`;
+        status.value = `Failed to cancel run: ${errorMessage(error)}`;
     } finally {
         isProcessing.value = false;
         isCancelling.value = false;
@@ -801,7 +802,7 @@ async function translateTranscript() {
                 showError(
                     'Failed to parse translation from AI response.',
                     response,
-                    e instanceof Error ? e.message : String(e),
+                    errorMessage(e),
                 );
             }
         } else {
@@ -814,7 +815,7 @@ async function translateTranscript() {
             return;
         }
         console.error('Translation failed:', e);
-        status.value = `Translation failed: ${e}`;
+        status.value = `Translation failed: ${errorMessage(e)}`;
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
@@ -945,7 +946,7 @@ const MAX_RESPLIT_DEPTH = 4;
 // (the 504 case) and length-driven truncation that breaks transcript parsing.
 function isResplittableError(error: unknown): boolean {
     if (isRunCancelled(error)) return false;
-    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    const message = errorMessage(error).toLowerCase();
     return /\b50[234]\b|gateway timeout|timed out|timeout|deadline exceeded|failed to (parse|find) (transcript|json)|json/.test(
         message,
     );
@@ -991,7 +992,7 @@ async function transcribeChunkWithResplit(
         }
 
         console.warn(
-            `Chunk ${label} failed (${error}); re-splitting into smaller parts and retrying.`,
+            `Chunk ${label} failed (${errorMessage(error)}); re-splitting into smaller parts and retrying.`,
         );
         status.value = `Part ${label} timed out; splitting it into smaller parts and retrying...`;
         const subChunks = await commands.splitAudioForAnalysis(
@@ -1164,7 +1165,7 @@ async function processFile() {
             if (isRunCancelled(error)) {
                 throw new Error('Run cancelled.');
             }
-            const details = error instanceof Error ? error.message : String(error);
+            const details = errorMessage(error);
             const message = `${stage} failed.`;
             showError(message, details);
             status.value = `${message} ${details}`;
@@ -1368,7 +1369,7 @@ async function processFile() {
             status.value = 'Run cancelled.';
             return;
         }
-        const message = e instanceof Error ? e.message : String(e);
+        const message = errorMessage(e);
         if (!showErrorOverlay.value) {
             showError('Analysis failed before transcription completed.', message);
         }
@@ -1418,7 +1419,7 @@ async function cutVideo() {
             status.value = 'Run cancelled.';
             return;
         }
-        status.value = `Error cutting media: ${e}`;
+        status.value = `Error cutting media: ${errorMessage(e)}`;
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;

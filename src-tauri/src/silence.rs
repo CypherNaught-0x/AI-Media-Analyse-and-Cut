@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
 use crate::media_probe::probe_media;
 use crate::run_control::{run_blocking, RunControl};
@@ -112,7 +113,7 @@ pub async fn detect_silence(
     path: String,
     min_duration: Option<f64>,
     run_control: State<'_, RunControl>,
-) -> Result<Vec<SilenceInterval>, String> {
+) -> Result<Vec<SilenceInterval>, AppError> {
     let requested_run_id = run_id.unwrap_or(0);
     detect_silence_internal(
         &path,
@@ -124,6 +125,7 @@ pub async fn detect_silence(
         },
     )
     .await
+    .map_err(AppError::from)
 }
 
 pub(crate) async fn detect_silence_internal(
@@ -235,7 +237,7 @@ pub async fn remove_silence(
     path: String,
     min_duration: Option<f64>,
     run_control: State<'_, RunControl>,
-) -> Result<ProcessedAudio, String> {
+) -> Result<ProcessedAudio, AppError> {
     let requested_run_id = run_id.unwrap_or(0);
     remove_silence_internal(
         path,
@@ -247,6 +249,7 @@ pub async fn remove_silence(
         },
     )
     .await
+    .map_err(AppError::from)
 }
 
 async fn remove_silence_internal(

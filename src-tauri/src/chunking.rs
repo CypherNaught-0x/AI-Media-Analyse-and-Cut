@@ -8,6 +8,7 @@
 //!      diarization) when no suitable silence exists in the window.
 //!   3. Last resort: a hard cut at the exact target time.
 
+use crate::error::AppError;
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
 use crate::format_path_io_error;
 use crate::parakeet::parakeet_word_boundaries;
@@ -65,7 +66,7 @@ pub async fn split_audio_for_analysis(
     max_chunk_seconds: f64,
     parakeet_model_path: String,
     run_control: State<'_, RunControl>,
-) -> Result<Vec<AudioChunk>, String> {
+) -> Result<Vec<AudioChunk>, AppError> {
     run_control.ensure_active(run_id)?;
 
     let single_chunk = vec![AudioChunk {

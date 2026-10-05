@@ -8,6 +8,7 @@ import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -130,11 +131,7 @@ async function generateClips() {
                 emit('update:status', `Found ${parsed.length} clips.`);
             } catch (e) {
                 console.error('JSON Parse Error', e);
-                showError(
-                    'Failed to parse clips from AI response.',
-                    response,
-                    e instanceof Error ? e.message : String(e),
-                );
+                showError('Failed to parse clips from AI response.', response, errorMessage(e));
             }
         } else {
             console.error(response);
@@ -145,7 +142,7 @@ async function generateClips() {
             emit('update:status', 'Run cancelled.');
             return;
         }
-        emit('update:status', `Error generating clips: ${e}`);
+        emit('update:status', `Error generating clips: ${errorMessage(e)}`);
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
@@ -236,7 +233,7 @@ async function exportClips() {
             emit('update:status', 'Run cancelled.');
             return;
         }
-        emit('update:status', `Error exporting clips: ${e}`);
+        emit('update:status', `Error exporting clips: ${errorMessage(e)}`);
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;

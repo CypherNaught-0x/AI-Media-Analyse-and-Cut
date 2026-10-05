@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use parakeet_rs::{ParakeetTDT, TimedToken, TimestampMode, Transcriber};
 use std::path::{Path, PathBuf};
 
+use crate::error::AppError;
 use crate::local_asr::{
     build_transcript_segments, diarize, download_file_if_missing, emit_progress,
     load_audio_16k_mono, model_root, onnx_execution_config, resolve_sortformer_file,
@@ -196,7 +197,7 @@ pub async fn transcribe_with_parakeet(
     audio_path: String,
     parakeet_model_path: String,
     sortformer_model_path: String,
-) -> Result<Vec<TranscriptSegment>, String> {
+) -> Result<Vec<TranscriptSegment>, AppError> {
     let (resolved_parakeet_dir, resolved_sortformer_file) =
         resolve_model_paths(&window, &parakeet_model_path, &sortformer_model_path)
             .await
@@ -251,7 +252,9 @@ pub async fn transcribe_with_parakeet(
         Ok(build_transcript_segments(&speaker_words))
     };
 
-    run_blocking(move || run().map_err(|error| error.to_string())).await
+    run_blocking(move || run().map_err(|error| format!("{error:#}")))
+        .await
+        .map_err(AppError::from)
 }
 
 #[cfg(test)]

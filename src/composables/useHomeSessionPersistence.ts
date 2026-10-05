@@ -9,6 +9,7 @@ import type {
     ViralClipsWorkspaceState,
 } from '../types';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 export const SESSION_STORAGE_KEY = 'home-edit-session-v1';
 const SESSION_FILE_EXTENSION = 'aimc-session.json';
@@ -202,7 +203,7 @@ export function useHomeSessionPersistence(options: UseHomeSessionPersistenceOpti
             await saveSessionToFile();
         } catch (error) {
             console.error('Failed to save session:', error);
-            options.status.value = `Failed to save session: ${error}`;
+            options.status.value = `Failed to save session: ${errorMessage(error)}`;
         }
     }
 
@@ -211,7 +212,7 @@ export function useHomeSessionPersistence(options: UseHomeSessionPersistenceOpti
             await loadSessionFromFile();
         } catch (error) {
             console.error('Failed to load session:', error);
-            options.status.value = `Failed to load session: ${error}`;
+            options.status.value = `Failed to load session: ${errorMessage(error)}`;
         }
     }
 

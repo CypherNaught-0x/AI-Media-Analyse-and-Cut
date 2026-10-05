@@ -15,6 +15,7 @@ import { exportFolderOf } from '../utils/filePath';
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
 import { commands } from '../bindings';
+import { errorMessage } from '../utils/appError';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -216,7 +217,7 @@ async function generatePodcast() {
             }
             script = parsedScript;
         } catch (e) {
-            emit('update:status', e instanceof Error ? e.message : String(e));
+            emit('update:status', errorMessage(e));
             return;
         }
 
@@ -278,7 +279,7 @@ async function generatePodcast() {
             emit('update:status', 'Run cancelled.');
             return;
         }
-        emit('update:status', `Error generating podcast: ${e}`);
+        emit('update:status', `Error generating podcast: ${errorMessage(e)}`);
         console.error('Podcast generation error:', e);
     } finally {
         if (activeRunId.value === runId) {
@@ -509,7 +510,7 @@ async function exportPodcast() {
             emit('update:status', 'Run cancelled.');
             return;
         }
-        emit('update:status', `Error exporting podcast: ${e}`);
+        emit('update:status', `Error exporting podcast: ${errorMessage(e)}`);
         console.error('Export error:', e);
     } finally {
         if (activeRunId.value === runId) {
@@ -568,7 +569,7 @@ async function exportClips() {
             emit('update:status', 'Run cancelled.');
             return;
         }
-        emit('update:status', `Error exporting clips: ${e}`);
+        emit('update:status', `Error exporting clips: ${errorMessage(e)}`);
         console.error('Export clips error:', e);
     } finally {
         if (activeRunId.value === runId) {
