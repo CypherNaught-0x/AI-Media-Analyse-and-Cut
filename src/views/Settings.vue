@@ -9,6 +9,8 @@ import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { listen } from '@tauri-apps/api/event';
 import Toast from '../components/Toast.vue';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { runtimeDownload, runtimeLicenses } from '../utils/runtimeLicenses';
 import { CRISPER_LANGUAGES, CRISPER_MODELS } from '../types';
 import type {
     CrisperEnvironmentStatus,
@@ -178,11 +180,14 @@ async function refreshCrisperStatus() {
     }
 }
 
+/** The licence notice the runtime licence register requires for the weights. */
+const crisperWeightsNotice = runtimeDownload('crisperwhisper-weights').notice;
+
 async function setUpCrisperEnvironment() {
     const confirmed = await ask(
         'This downloads PyTorch and the CrisperWhisper package into a private ' +
             'environment inside the app data directory (several GB, a few minutes).\n\n' +
-            'The model weights are licensed for non-commercial research use only.\n\n' +
+            `${crisperWeightsNotice}\n\n` +
             'Continue?',
         { title: 'Set up CrisperWhisper', kind: 'info' },
     );
@@ -688,10 +693,7 @@ function cancel() {
                             Only pipeline for those.
                         </p>
                         <p class="text-xs text-amber-100/80 mt-2">
-                            The published weights are licensed for
-                            <strong>non-commercial research use</strong> only; commercial use
-                            requires a license from Nyra Health. The app installs the model on first
-                            use.
+                            {{ crisperWeightsNotice }} The app installs the model on first use.
                         </p>
                     </div>
 
@@ -1230,6 +1232,42 @@ function cancel() {
                             </p>
                         </div>
                     </div>
+                </div>
+
+                <!-- Licences of what the app downloads or bundles at runtime
+                     (src/assets/runtime-licenses.json). -->
+                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
+                    >
+                        Third-Party Models &amp; Tools
+                    </label>
+                    <ul
+                        data-testid="runtime-licenses"
+                        class="divide-y divide-white/5 rounded-2xl border border-white/10 bg-black/20"
+                    >
+                        <li
+                            v-for="download in runtimeLicenses.downloads"
+                            :key="download.id"
+                            class="px-4 py-3"
+                        >
+                            <div class="flex items-baseline justify-between gap-3">
+                                <span class="text-sm text-gray-200">{{ download.name }}</span>
+                                <button
+                                    type="button"
+                                    class="shrink-0 text-xs text-blue-300 hover:text-blue-200 hover:underline"
+                                    :title="download.licenseUrl"
+                                    @click="openUrl(download.licenseUrl)"
+                                >
+                                    {{ download.license.replace('LicenseRef-', '') }}
+                                </button>
+                            </div>
+                            <p class="text-xs text-gray-400">{{ download.usedBy }}</p>
+                            <p v-if="download.notice" class="mt-1 text-xs text-gray-300">
+                                {{ download.notice }}
+                            </p>
+                        </li>
+                    </ul>
                 </div>
 
                 <!-- Application Info -->

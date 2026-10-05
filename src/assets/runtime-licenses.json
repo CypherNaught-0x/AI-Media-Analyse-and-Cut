@@ -1,0 +1,92 @@
+{
+  "$comment": "Licences of everything the app downloads or bundles that cargo-deny can't see (model weights, Python packages, executables). Policy is enforced by src/utils/__tests__/runtimeLicenses.spec.ts; notices are shown in the app.",
+  "policy": {
+    "allowed": ["MIT", "Apache-2.0", "BSD-3-Clause", "CC-BY-4.0", "GPL-3.0-or-later"],
+    "requiresNotice": ["CC-BY-4.0", "GPL-3.0-or-later"],
+    "exceptions": [
+      {
+        "license": "LicenseRef-Nyra-Health-Non-Commercial-Research",
+        "appliesTo": ["crisperwhisper-weights"],
+        "reason": "Optional engine the user installs on request. The runner code is MIT; only the downloaded weights are non-commercial. Accepted as long as the app shows the licence notice wherever the model is used."
+      }
+    ]
+  },
+  "downloads": [
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg (static build)",
+      "kind": "executable",
+      "usedBy": "All media processing",
+      "source": "gyan.dev (Windows), evermeet.cx / osxexperts.net (macOS), johnvansickle.com (Linux), via ffmpeg-sidecar",
+      "license": "GPL-3.0-or-later",
+      "licenseUrl": "https://ffmpeg.org/legal.html",
+      "notice": "FFmpeg is a separate program that the app runs as a child process. These builds are licensed under the GNU GPL v3 or later; source code is available from ffmpeg.org."
+    },
+    {
+      "id": "onnxruntime",
+      "name": "ONNX Runtime",
+      "kind": "library",
+      "usedBy": "Parakeet and Sortformer inference",
+      "source": "Microsoft release binaries, fetched at build time by the ort crate",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/microsoft/onnxruntime/blob/main/LICENSE"
+    },
+    {
+      "id": "parakeet-tdt",
+      "name": "Parakeet TDT 0.6B v3 (int8 ONNX export)",
+      "kind": "model-weights",
+      "usedBy": "Parakeet engine",
+      "source": "huggingface.co/altunenes/parakeet-rs (export of nvidia/parakeet-tdt-0.6b-v3)",
+      "license": "CC-BY-4.0",
+      "licenseUrl": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+      "notice": "Parakeet TDT 0.6B v3 by NVIDIA, licensed under CC BY 4.0. Converted to ONNX by the parakeet-rs project."
+    },
+    {
+      "id": "sortformer",
+      "name": "Streaming Sortformer 4spk v2 (ONNX export)",
+      "kind": "model-weights",
+      "usedBy": "Speaker diarization",
+      "source": "huggingface.co/altunenes/parakeet-rs (export of nvidia/diar_streaming_sortformer_4spk-v2)",
+      "license": "CC-BY-4.0",
+      "licenseUrl": "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2",
+      "notice": "Streaming Sortformer 4spk v2 by NVIDIA, licensed under CC BY 4.0. Converted to ONNX by the parakeet-rs project."
+    },
+    {
+      "id": "crisperwhisper-package",
+      "name": "crisperwhisper (Python package)",
+      "kind": "python-package",
+      "usedBy": "CrisperWhisper engine",
+      "source": "PyPI, installed into the app's private environment on request",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/nyrahealth/CrisperWhisper"
+    },
+    {
+      "id": "pytorch",
+      "name": "PyTorch",
+      "kind": "python-package",
+      "usedBy": "CrisperWhisper engine",
+      "source": "PyPI, installed with crisperwhisper",
+      "license": "BSD-3-Clause",
+      "licenseUrl": "https://github.com/pytorch/pytorch/blob/main/LICENSE"
+    },
+    {
+      "id": "transformers",
+      "name": "Hugging Face Transformers",
+      "kind": "python-package",
+      "usedBy": "CrisperWhisper engine",
+      "source": "PyPI, installed with crisperwhisper",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/huggingface/transformers/blob/main/LICENSE"
+    },
+    {
+      "id": "crisperwhisper-weights",
+      "name": "CrisperWhisper 2.0 model weights",
+      "kind": "model-weights",
+      "usedBy": "CrisperWhisper engine",
+      "source": "huggingface.co/nyralabs (downloaded on first use)",
+      "license": "LicenseRef-Nyra-Health-Non-Commercial-Research",
+      "licenseUrl": "https://huggingface.co/nyralabs/CrisperWhisper2.0_large/blob/main/LICENSE.md",
+      "notice": "CrisperWhisper 2.0 weights by Nyra Health are licensed for non-commercial research use only. Commercial use requires a licence from Nyra Health."
+    }
+  ]
+}

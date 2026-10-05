@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
 import AnalysisSettings from '../AnalysisSettings.vue';
 import type { LocalEngine, TranscriptionBackend } from '../../types';
+import { runtimeDownload } from '../../utils/runtimeLicenses';
 
 type Overrides = {
     transcriptionBackend?: TranscriptionBackend;
@@ -106,8 +107,8 @@ describe('AnalysisSettings.vue', () => {
             localEngine: 'crisper',
         }).text();
         expect(selected).toContain('Non-commercial use only');
-        expect(selected).toContain('Non-Commercial Research License');
-        expect(selected).toContain('commercial use requires a license');
+        // The notice comes from the runtime licence register.
+        expect(selected).toContain(runtimeDownload('crisperwhisper-weights').notice);
 
         // The warning follows the engine, and applies to the hybrids as well.
         expect(
