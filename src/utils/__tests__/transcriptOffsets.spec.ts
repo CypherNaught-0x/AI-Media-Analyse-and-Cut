@@ -53,7 +53,7 @@ describe('adjustSegmentsWithOffsets — hybrid-merge output', () => {
       { start: '00:13.000', end: '00:20.000', text: 'reference', speaker: 'Speaker 1' },
     ],
     alternatives: [
-      { source: 'parakeet', text: 'reconciled reference text', speaker: 'Speaker 1', similarityScore: 0.9 },
+      { source: 'local', text: 'reconciled reference text', speaker: 'Speaker 1', similarityScore: 0.9 },
       { source: 'google', text: 'Reconciled reference text.', speaker: 'Speaker 1', similarityScore: 0.9 },
     ],
     mergeStatus: 'matched',

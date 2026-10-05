@@ -9,6 +9,7 @@
     "build": "node scripts/check-tauri-versions.js && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest",
+    "typecheck": "vue-tsc --noEmit && vue-tsc --noEmit -p tsconfig.test.json",
     "check:tauri-versions": "node scripts/check-tauri-versions.js",
     "version:bump": "node scripts/bump-version.js",
     "publish:tag": "git tag app-v$npm_package_version && git push --follow-tags"
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.17",
     "@tauri-apps/cli": "^2",
+    "@types/node": "^22",
     "@vitejs/plugin-vue": "^6.0.2",
     "@vue/test-utils": "^2.4.6",
     "jsdom": "^27.2.0",

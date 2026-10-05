@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
-import { ref, nextTick } from 'vue';
+import { nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import SubtitleExport from '../SubtitleExport.vue';
 import * as subtitleValidation from '../../utils/subtitleValidation';
@@ -53,7 +53,6 @@ describe('SubtitleExport', () => {
     expect(wrapper.find('.mt-2').exists()).toBe(false);
 
     // Click validate button
-    const validateButton = wrapper.find('button');
     // Find the Validate button specifically
     const buttons = wrapper.findAll('button');
     const validateBtn = buttons.find(b => b.text() === 'Validate');
@@ -315,6 +314,5 @@ describe('SubtitleExport', () => {
     });
 
     expect(wrapper.find('.mt-2').exists()).toBe(false);
-    expect(wrapper.vm.showValidationPanel).toBe(false);
   });
 });
