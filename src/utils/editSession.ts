@@ -54,6 +54,7 @@ export function createDefaultViralClipsWorkspaceState(): ViralClipsWorkspaceStat
         allowSplicing: false,
         looped: false,
         vertical: false,
+        captions: true,
         clips: [],
         lastExportPath: '',
         trimBoundarySilence: false,

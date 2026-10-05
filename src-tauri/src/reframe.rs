@@ -9,6 +9,7 @@
 //! for 720p → 1080x1920), at the same speed: decoding and encoding dominate
 //! (`profiling::sendcmd_crop_render`). Clips that zoom crop the source first.
 
+use crate::captions::{write_overlay, CaptionStyle, TimedWord};
 use crate::encoders::{encode_args, preferred_h264_encoder, ExportQuality};
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
 use crate::run_control::RunControl;
@@ -141,6 +142,8 @@ pub(crate) struct VerticalRender<'a> {
     pub output_size: (u32, u32),
     pub output: &'a Path,
     pub quality: ExportQuality,
+    /// Burned-in captions: words on the output timeline, and their style.
+    pub captions: Option<(&'a [TimedWord], CaptionStyle)>,
 }
 
 /// The video filter chain and `sendcmd` script applying the virtual camera.
@@ -207,7 +210,12 @@ fn camera_filter(
 
 /// The `-filter_complex` graph for `render` (trims relative to the input
 /// seek) and the `sendcmd` scripts it reads, by file name.
-fn render_graph(render: &VerticalRender<'_>, seek: f64) -> (String, Vec<(String, String)>) {
+/// `caption_y`: top of the caption band if captions are laid over (input 1).
+fn render_graph(
+    render: &VerticalRender<'_>,
+    seek: f64,
+    caption_y: Option<u32>,
+) -> (String, Vec<(String, String)>) {
     let mut graph = String::new();
     let mut scripts = Vec::new();
     let mut concat_inputs = String::new();
@@ -256,11 +264,19 @@ fn render_graph(render: &VerticalRender<'_>, seek: f64) -> (String, Vec<(String,
     }
     let _ = write!(
         graph,
-        "{concat_inputs}concat=n={}:v=1:a={}[v]{}",
+        "{concat_inputs}concat=n={}:v=1:a={}[{}]{}",
         render.ranges.len(),
         u8::from(render.has_audio),
+        if caption_y.is_some() { "vc" } else { "v" },
         if render.has_audio { "[a]" } else { "" }
     );
+    if let Some(y) = caption_y {
+        // The caption stream ends on a blank frame; keep the video going.
+        let _ = write!(
+            graph,
+            ";[vc][1:v]overlay=x=0:y={y}:eof_action=pass:format=auto,setsar=1[v]"
+        );
+    }
     (graph, scripts)
 }
 
@@ -279,12 +295,22 @@ pub(crate) fn render_vertical(
         .iter()
         .map(|range| range.start)
         .fold(f64::INFINITY, f64::min);
-    let (graph, scripts) = render_graph(render, seek);
-
-    // sendcmd reads files; keep their paths free of characters that need
-    // escaping in a filtergraph (e.g. ':' in Windows paths) by running in
-    // their directory.
+    // sendcmd and the caption list read files; keep their paths free of
+    // characters that need escaping (e.g. ':' in Windows paths) by running
+    // in their directory.
     let dir = tempfile::tempdir().map_err(|e| format!("Failed to create a temp folder: {e}"))?;
+    let duration: f64 = render.ranges.iter().map(|r| r.end - r.start).sum();
+    let overlay = match render.captions {
+        Some((words, style)) if !words.is_empty() => Some(write_overlay(
+            dir.path(),
+            words,
+            duration,
+            render.output_size,
+            &style,
+        )?),
+        _ => None,
+    };
+    let (graph, scripts) = render_graph(render, seek, overlay.as_ref().map(|o| o.y));
     for (name, script) in &scripts {
         std::fs::write(dir.path().join(name), script)
             .map_err(|e| format!("Failed to write the crop script: {e}"))?;
@@ -293,8 +319,13 @@ pub(crate) fn render_vertical(
     let mut command = FfmpegCommand::new();
     command
         .args(["-y", "-ss", &format!("{seek:.6}")])
-        .input(render.input.to_string_lossy())
-        .args(["-filter_complex", &graph, "-map", "[v]"]);
+        .input(render.input.to_string_lossy());
+    if let Some(overlay) = &overlay {
+        command
+            .args(["-f", "concat", "-safe", "0"])
+            .input(&overlay.list);
+    }
+    command.args(["-filter_complex", &graph, "-map", "[v]"]);
     if render.has_audio {
         command.args(["-map", "[a]"]);
     }
@@ -464,6 +495,7 @@ mod tests {
                 output_size: (360, 640),
                 output: &output,
                 quality: ExportQuality::Draft,
+                captions: None,
             },
             None,
             |time| progress.push(time),
@@ -503,6 +535,91 @@ mod tests {
             b > 150 && r < 80 && g < 80,
             "and pans to blue ({r},{g},{b})"
         );
+    }
+}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::*;
+
+    /// Burns a caption into a real (generated) clip: the highlighted word
+    /// shows up in the caption band, and the clip keeps its length and audio.
+    #[test]
+    fn captions_are_burned_in_over_the_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("grey.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=2"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let words = [TimedWord {
+            start: 0.2,
+            end: 1.8,
+            text: "Hello".to_string(),
+        }];
+        let style = CaptionStyle::default();
+        let output = dir.path().join("captioned.mp4");
+        render_vertical(
+            &VerticalRender {
+                input: &source,
+                ranges: &[VerticalRange {
+                    start: 0.0,
+                    end: 2.0,
+                    framing: Framing::Fit,
+                }],
+                source_size: (640, 360),
+                fps: 25.0,
+                has_audio: true,
+                output_size: (360, 640),
+                output: &output,
+                quality: ExportQuality::Draft,
+                captions: Some((
+                    &words,
+                    CaptionStyle {
+                        font_px: 40.0,
+                        ..style
+                    },
+                )),
+            },
+            None,
+            |_| {},
+        )
+        .unwrap();
+
+        let info = crate::media_probe::probe_media(&output).unwrap();
+        assert!(info.audio.is_some());
+        assert!((info.duration_seconds.unwrap() - 2.0).abs() < 0.15);
+        let yellow_pixels = |time: &str| {
+            let frame = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
+                .arg(&output)
+                .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout;
+            frame
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .filter(|p| p[0] > 200 && p[1] > 150 && p[2] < 90)
+                .count()
+        };
+        assert!(yellow_pixels("1.0") > 100, "the spoken word is highlighted");
+        assert_eq!(yellow_pixels("0.05"), 0, "nothing before the word");
     }
 }
 
@@ -581,6 +698,7 @@ mod profiling {
                     output_size: size,
                     output: &output,
                     quality,
+                    captions: None,
                 },
                 None,
                 |_| {},

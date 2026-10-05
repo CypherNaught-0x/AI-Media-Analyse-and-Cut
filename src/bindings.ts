@@ -57,7 +57,7 @@ export const commands = {
 	 *  Export clips as vertical (9:16) videos that follow the active speaker
 	 *  (shorts phase S2). `turns` say who speaks when; faces are bound to them.
 	 */
-	exportVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[], outputDir: string, quality: ExportQuality) => __TAURI_INVOKE<null>("export_vertical_clips", { runId, inputPath, segments, turns, outputDir, quality }),
+	exportVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[], outputDir: string, quality: ExportQuality, captions: CaptionWord[] | null) => __TAURI_INVOKE<null>("export_vertical_clips", { runId, inputPath, segments, turns, outputDir, quality, captions }),
 	/**
 	 *  Plan the vertical framing of clips without rendering, for the live 9:16
 	 *  preview. The analysis is cached, so a following export reuses it.
@@ -108,6 +108,13 @@ export type AudioInfo = {
 	path: string,
 	size: number,
 	duration: number,
+};
+
+/**  A transcript word on the source timeline, for burned-in captions. */
+export type CaptionWord = {
+	start: number,
+	end: number,
+	text: string,
 };
 
 export type ClipCandidate = {

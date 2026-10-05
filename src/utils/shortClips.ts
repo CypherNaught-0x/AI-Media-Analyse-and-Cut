@@ -1,4 +1,4 @@
-import type { SpeakerTurn } from '../bindings';
+import type { CaptionWord, SpeakerTurn } from '../bindings';
 import type { ClipCandidate, ShortClip, ShortClipRange, TranscriptSegment } from '../types';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
 
@@ -190,4 +190,43 @@ export function speakerTurns(segments: TranscriptSegment[]): SpeakerTurn[] {
         turns.push({ start, end, speaker });
     }
     return turns;
+}
+
+/**
+ * Transcript words overlapping `ranges` (source seconds), for burned-in
+ * captions. Segments without word timings spread their words evenly.
+ */
+export function captionWords(
+    segments: TranscriptSegment[],
+    ranges: { start: number; end: number }[],
+): CaptionWord[] {
+    const overlaps = (start: number, end: number) =>
+        ranges.some((range) => start < range.end && end > range.start);
+    const words: CaptionWord[] = [];
+    for (const segment of segments) {
+        const start = seconds(segment.start);
+        const end = seconds(segment.end);
+        if (start === null || end === null || !overlaps(start, end)) continue;
+        const timed = (segment.words ?? [])
+            .map((word) => ({
+                start: seconds(word.start),
+                end: seconds(word.end),
+                text: word.text.trim(),
+            }))
+            .filter(
+                (word): word is CaptionWord =>
+                    word.start !== null && word.end !== null && word.text !== '',
+            );
+        if (timed.length > 0) {
+            words.push(...timed.filter((word) => overlaps(word.start, word.end)));
+            continue;
+        }
+        const texts = segment.text.split(/\s+/).filter(Boolean);
+        const step = (end - start) / Math.max(texts.length, 1);
+        texts.forEach((text, index) => {
+            const word = { start: start + index * step, end: start + (index + 1) * step, text };
+            if (overlaps(word.start, word.end)) words.push(word);
+        });
+    }
+    return words;
 }

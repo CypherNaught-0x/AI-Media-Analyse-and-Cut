@@ -1,8 +1,8 @@
 {
   "$comment": "Licences of everything the app downloads or bundles that cargo-deny can't see (model weights, Python packages, executables). Policy is enforced by src/utils/__tests__/runtimeLicenses.spec.ts; notices are shown in the app.",
   "policy": {
-    "allowed": ["MIT", "Apache-2.0", "BSD-3-Clause", "CC-BY-4.0", "GPL-3.0-or-later"],
-    "requiresNotice": ["CC-BY-4.0", "GPL-3.0-or-later"],
+    "allowed": ["MIT", "Apache-2.0", "BSD-3-Clause", "CC-BY-4.0", "GPL-3.0-or-later", "OFL-1.1"],
+    "requiresNotice": ["CC-BY-4.0", "GPL-3.0-or-later", "OFL-1.1"],
     "exceptions": [
       {
         "license": "LicenseRef-Nyra-Health-Non-Commercial-Research",
@@ -40,6 +40,16 @@
       "license": "CC-BY-4.0",
       "licenseUrl": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
       "notice": "Parakeet TDT 0.6B v3 by NVIDIA, licensed under CC BY 4.0. Converted to ONNX by the parakeet-rs project."
+    },
+    {
+      "id": "poppins",
+      "name": "Poppins ExtraBold (font)",
+      "kind": "font",
+      "usedBy": "Burned-in captions on vertical shorts",
+      "source": "Bundled in the app; github.com/google/fonts at 7dc16b7d (ofl/poppins)",
+      "license": "OFL-1.1",
+      "licenseUrl": "https://openfontlicense.org",
+      "notice": "Poppins, Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins), licensed under the SIL Open Font License 1.1."
     },
     {
       "id": "yunet",

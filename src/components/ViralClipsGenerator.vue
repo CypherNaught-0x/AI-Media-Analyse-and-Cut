@@ -14,6 +14,7 @@ import { padClipSegments } from '../utils/clips';
 import {
     clipDuration,
     fromCandidates,
+    captionWords,
     playbackStep,
     speakerTurns,
     toExportSegments,
@@ -108,6 +109,11 @@ const TOGGLES = [
         key: 'vertical',
         title: 'Vertical 9:16',
         text: 'Export portrait videos that follow whoever is speaking.',
+    },
+    {
+        key: 'captions',
+        title: 'Captions',
+        text: 'Burn word-by-word captions into 9:16 exports.',
     },
 ] as const;
 
@@ -398,6 +404,12 @@ async function exportClips(toExport: ShortClip[]) {
                 speakerTurns(props.segments),
                 outputDir,
                 settings.value.exportQuality,
+                props.state.captions
+                    ? captionWords(
+                          props.segments,
+                          toExport.flatMap((clip) => clip.ranges),
+                      )
+                    : null,
             );
         } else {
             await commands.exportClips(

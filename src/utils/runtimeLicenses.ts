@@ -1,6 +1,7 @@
 import register from '../assets/runtime-licenses.json';
 
-export type RuntimeDownloadKind = 'executable' | 'library' | 'model-weights' | 'python-package';
+export type RuntimeDownloadKind =
+    'executable' | 'library' | 'model-weights' | 'python-package' | 'font';
 
 export interface RuntimeDownload {
     id: string;

@@ -340,6 +340,7 @@ async fn prepare_preview_audio(
 }
 
 mod camera;
+mod captions;
 pub mod chunking;
 pub mod clip_selection;
 pub mod crisper;
@@ -771,6 +772,16 @@ pub struct SpeakerTurn {
     pub speaker: String,
 }
 
+/// A transcript word on the source timeline, for burned-in captions.
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+pub struct CaptionWord {
+    #[specta(type = specta_typescript::Number)]
+    pub start: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub end: f64,
+    pub text: String,
+}
+
 /// The source ranges of each clip, in seconds.
 fn clip_ranges(segments: &[ClipSegment]) -> Result<Vec<Vec<(f64, f64)>>, String> {
     use crate::time_utils::parse_timestamp_to_seconds_raw;
@@ -816,6 +827,8 @@ async fn export_vertical_clips(
     turns: Vec<SpeakerTurn>,
     output_dir: String,
     quality: ExportQuality,
+    // Burn these words in as captions; `None` for none.
+    captions: Option<Vec<CaptionWord>>,
     run_control: State<'_, RunControl>,
     analysis: State<'_, std::sync::Arc<vertical::AnalysisCache>>,
 ) -> Result<(), AppError> {
@@ -840,6 +853,16 @@ async fn export_vertical_clips(
         clips.push(vertical::VerticalClip { ranges, output });
     }
     let turns = speech_turns(turns);
+    let words: Option<Vec<captions::TimedWord>> = captions.map(|words| {
+        words
+            .into_iter()
+            .map(|word| captions::TimedWord {
+                start: word.start,
+                end: word.end,
+                text: word.text,
+            })
+            .collect()
+    });
 
     let run_control = run_control.inner().clone();
     let analysis = analysis.inner().clone();
@@ -848,7 +871,12 @@ async fn export_vertical_clips(
             &input,
             &clips,
             &turns,
-            quality,
+            vertical::RenderOptions {
+                quality,
+                captions: words
+                    .as_deref()
+                    .map(|words| (words, captions::CaptionStyle::default())),
+            },
             Some(&analysis),
             Some((run_id, &run_control)),
             &mut |fraction, message| {
