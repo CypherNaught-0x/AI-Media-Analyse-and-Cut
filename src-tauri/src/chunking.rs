@@ -142,7 +142,14 @@ pub async fn split_audio_for_analysis(
             &window,
             "No silence near some boundaries; locating word boundaries with Parakeet...",
         );
-        match parakeet_word_boundaries(&window, &path, &parakeet_model_path).await {
+        match parakeet_word_boundaries(
+            &window,
+            &path,
+            &parakeet_model_path,
+            (run_id, run_control.inner()),
+        )
+        .await
+        {
             Ok(boundaries) => {
                 for &index in &unresolved {
                     if let Some(cut) =

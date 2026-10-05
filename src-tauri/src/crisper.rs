@@ -33,8 +33,11 @@ use crate::local_asr::{
     build_transcript_segments_from_runs, diarize, emit_progress, load_audio_16k_mono,
     resolve_sortformer_file, speaker_label_for_word, write_wav_16k_mono, WordWithSpeaker,
 };
-use crate::run_control::run_blocking;
+#[cfg(test)]
+use crate::run_control::RUN_CANCELLED_MESSAGE;
+use crate::run_control::{run_blocking, RunControl};
 use crate::video::TranscriptSegment;
+use tauri::State;
 
 /// The bridge script is embedded in the binary rather than shipped as a Tauri
 /// resource: it removes any chance of the script and the binary disagreeing,
@@ -278,6 +281,9 @@ fn command_for(python: &str, script: &Path) -> tokio::process::Command {
         // Unbuffered so progress lines arrive while the model is running.
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8")
+        // A dropped run (e.g. the command future is abandoned) must not leave
+        // a model running in the background.
+        .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -286,15 +292,24 @@ fn command_for(python: &str, script: &Path) -> tokio::process::Command {
 
 /// Run the bridge script with a JSON request, forwarding `progress` lines to
 /// the UI and returning the final `result` object.
+/// Run one request through the bridge script. With `run`, the Python process
+/// belongs to that run: cancelling the run kills it.
 async fn run_runner(
-    window: &tauri::Window,
+    on_progress: &(dyn Fn(&str) + Sync),
     python: &str,
     script: &Path,
     request: serde_json::Value,
+    run: Option<(u64, &RunControl)>,
 ) -> Result<serde_json::Value> {
     let mut child = command_for(python, script)
         .spawn()
         .with_context(|| format!("Failed to start Python interpreter '{python}'"))?;
+    if let (Some((run_id, run_control)), Some(pid)) = (run, child.id()) {
+        if let Err(error) = run_control.register_pid(run_id, pid) {
+            let _ = child.kill().await;
+            return Err(anyhow!(error));
+        }
+    }
 
     let payload = serde_json::to_vec(&request)?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -344,7 +359,7 @@ async fn run_runner(
         match message.get("type").and_then(|value| value.as_str()) {
             Some("progress") => {
                 if let Some(text) = message.get("message").and_then(|value| value.as_str()) {
-                    emit_progress(window, text)?;
+                    on_progress(text);
                 }
             }
             Some("error") => {
@@ -365,6 +380,14 @@ async fn run_runner(
 
     let status = child.wait().await?;
     let stderr_tail = stderr_task.await.unwrap_or_default();
+    if let Some((run_id, run_control)) = run {
+        if let Some(pid) = child.id() {
+            run_control.clear_pid(run_id, pid);
+        }
+        run_control
+            .ensure_active(run_id)
+            .map_err(|error| anyhow!(error))?;
+    }
 
     if let Some(failure) = failure {
         return Err(anyhow!(failure));
@@ -396,10 +419,13 @@ async fn probe_python(
     script: &Path,
 ) -> Result<CrisperEnvironmentStatus> {
     let response = run_runner(
-        window,
+        &|text| {
+            let _ = emit_progress(window, text);
+        },
         python,
         script,
         serde_json::json!({ "action": "probe" }),
+        None,
     )
     .await?;
 
@@ -772,11 +798,20 @@ fn partition_words(words: Vec<WordWithSpeaker>, drop: &[bool]) -> Vec<Vec<WordWi
 #[tauri::command]
 #[specta::specta]
 pub async fn transcribe_with_crisper(
+    run_id: u64,
     window: tauri::Window,
     audio_path: String,
     options: CrisperOptions,
+    run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, AppError> {
+    let run_control = run_control.inner();
+    let check = || {
+        run_control
+            .ensure_active(run_id)
+            .map_err(|error| anyhow!(error))
+    };
     let run = async {
+        check()?;
         let audio_file = PathBuf::from(&audio_path);
         if !audio_file.exists() {
             return Err(anyhow!("Audio file not found: {}", audio_file.display()));
@@ -800,6 +835,7 @@ pub async fn transcribe_with_crisper(
         let script = write_runner_script(&window)?;
         emit_progress(&window, "Checking the CrisperWhisper environment...")?;
         let python = resolve_ready_python(&window, &options.python_path, &script).await?;
+        check()?;
 
         // Diarization needs the samples; the bridge script needs a file. One
         // FFmpeg pass produces the 16 kHz mono WAV both can use.
@@ -815,10 +851,22 @@ pub async fn transcribe_with_crisper(
             .map_err(|error| anyhow!(error))?;
         }
 
-        let outcome = transcribe_and_build(
-            &window, &python, &script, &wav_path, &language, &mode, &options,
-        )
-        .await;
+        let outcome = match check() {
+            Ok(()) => {
+                transcribe_and_build(
+                    &window,
+                    &python,
+                    &script,
+                    &wav_path,
+                    &language,
+                    &mode,
+                    &options,
+                    (run_id, run_control),
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
 
         let _ = std::fs::remove_file(&wav_path);
         outcome
@@ -836,6 +884,7 @@ async fn transcribe_and_build(
     language: &str,
     mode: &str,
     options: &CrisperOptions,
+    run: (u64, &RunControl),
 ) -> Result<Vec<TranscriptSegment>> {
     // Resolve the diarization model before the long transcription so a missing
     // download fails fast rather than after minutes of inference.
@@ -858,7 +907,16 @@ async fn transcribe_and_build(
         "hotwords": options.hotwords,
     });
 
-    let response = run_runner(window, python, script, request).await?;
+    let response = run_runner(
+        &|text| {
+            let _ = emit_progress(window, text);
+        },
+        python,
+        script,
+        request,
+        Some(run),
+    )
+    .await?;
     let result: RunnerResult =
         serde_json::from_value(response).context("Failed to parse the CrisperWhisper result")?;
 
@@ -885,6 +943,10 @@ async fn transcribe_and_build(
 
     let diarization = match sortformer_file {
         Some(file) => {
+            let (run_id, run_control) = run;
+            run_control
+                .ensure_active(run_id)
+                .map_err(|error| anyhow!(error))?;
             emit_progress(window, "Running Sortformer diarization...")?;
             // Decoding and Sortformer are CPU-bound; keep them off the async
             // runtime threads.
@@ -1291,5 +1353,45 @@ mod tests {
         assert!(status.installed);
         assert!(status.backends.is_empty());
         assert_eq!(status.message, None);
+    }
+
+    /// Cancelling the run must kill the Python process, not just stop waiting
+    /// for it. Uses a stand-in script that never answers.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_the_run_kills_the_python_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("runner.py");
+        std::fs::write(
+            &script,
+            "import json, time\n\
+             print(json.dumps({'type': 'progress', 'message': 'loading'}), flush=True)\n\
+             time.sleep(60)\n",
+        )
+        .unwrap();
+
+        let control = RunControl::default();
+        let run_id = control.begin_run();
+        let canceller = control.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            canceller.cancel_current_run().unwrap();
+        });
+
+        let progress = std::sync::Mutex::new(Vec::new());
+        let started = std::time::Instant::now();
+        let error = run_runner(
+            &|text| progress.lock().unwrap().push(text.to_string()),
+            "python3",
+            &script,
+            serde_json::json!({ "action": "transcribe" }),
+            Some((run_id, &control)),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), RUN_CANCELLED_MESSAGE);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(*progress.lock().unwrap(), ["loading"]);
     }
 }
