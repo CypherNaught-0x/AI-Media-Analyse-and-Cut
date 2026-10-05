@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 use crate::local_asr::{
-    build_transcript_segments, diarize, download_file_if_missing, emit_progress,
-    load_audio_16k_mono, model_root, onnx_execution_config, resolve_sortformer_file,
-    speaker_label_for_word, WordWithSpeaker, HF_RESOLVE_BASE, SAMPLE_RATE,
+    build_transcript_segments, diarize, emit_progress, load_audio_16k_mono, model_root,
+    onnx_execution_config, resolve_sortformer_file, speaker_label_for_word, WordWithSpeaker,
+    SAMPLE_RATE,
 };
+use crate::model_download::{ensure_pinned_file, HUGGING_FACE, PARAKEET_TDT_INT8};
 use crate::run_control::{run_blocking, RunControl};
 use crate::video::TranscriptSegment;
 use tauri::State;
@@ -16,17 +17,6 @@ const CHUNK_SECONDS: usize = 240;
 const CHUNK_SAMPLES: usize = CHUNK_SECONDS * SAMPLE_RATE;
 const CHUNK_OVERLAP_SAMPLES: usize = 2 * SAMPLE_RATE;
 const DEFAULT_TDT_DIR_NAME: &str = "parakeet-tdt-int8";
-const DEFAULT_TDT_FILES: [(&str, &str); 3] = [
-    (
-        "encoder-model.int8.onnx",
-        "tdt/encoder-model.int8.onnx?download=1",
-    ),
-    (
-        "decoder_joint-model.int8.onnx",
-        "tdt/decoder_joint-model.int8.onnx?download=1",
-    ),
-    ("vocab.txt", "tdt/vocab.txt?download=1"),
-];
 
 /// Transcribe `audio` in overlapping chunks. `check` runs before each chunk
 /// and aborts with its error, so a cancelled run stops within one chunk.
@@ -114,13 +104,15 @@ async fn resolve_parakeet_dir(
     let parakeet_dir = model_root(window, "parakeet-rs")?.join(DEFAULT_TDT_DIR_NAME);
     tokio::fs::create_dir_all(&parakeet_dir).await?;
     let client = reqwest::Client::new();
-    for (file_name, relative_url) in DEFAULT_TDT_FILES {
-        download_file_if_missing(
-            window,
+    for file in &PARAKEET_TDT_INT8 {
+        ensure_pinned_file(
             &client,
-            &parakeet_dir.join(file_name),
-            &format!("{HF_RESOLVE_BASE}/{relative_url}"),
-            file_name,
+            HUGGING_FACE,
+            file,
+            &parakeet_dir.join(file.file_name()),
+            &|message| {
+                let _ = emit_progress(window, message);
+            },
         )
         .await?;
     }

@@ -332,6 +332,7 @@ pub(crate) mod ffmpeg;
 pub mod gemini;
 mod local_asr;
 pub mod media_probe;
+mod model_download;
 mod parakeet;
 pub mod podcast;
 pub mod retry;
