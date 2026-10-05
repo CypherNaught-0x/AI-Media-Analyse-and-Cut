@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 import type { LocalEngine, TranscriptionBackend } from '../types';
 import { usesLocalEngine, usesRemoteModel } from '../types';
+import { runtimeDownload } from '../utils/runtimeLicenses';
 
 const props = defineProps<{
     transcriptionBackend: TranscriptionBackend;
@@ -39,6 +40,8 @@ const supportsFillerRemoval = computed(
     () => usesLlmAssist.value || props.localEngine === 'crisper',
 );
 const isCrisperEngine = computed(() => showsLocalEngine.value && props.localEngine === 'crisper');
+/** The licence notice the runtime licence register requires for the weights. */
+const crisperWeightsNotice = runtimeDownload('crisperwhisper-weights').notice;
 
 const PIPELINES: { value: TranscriptionBackend; title: string; description: string }[] = [
     {
@@ -172,11 +175,8 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
                     Non-commercial use only &middot; English and German only
                 </p>
                 <p class="text-xs leading-relaxed text-amber-100/80">
-                    The CrisperWhisper 2.0 weights are released under the Nyra Health
-                    <strong>Non-Commercial Research License</strong>. Research and other
-                    non-commercial use is free;
-                    <strong>commercial use requires a license from Nyra Health</strong>. The model
-                    card is published for English and German only.
+                    {{ crisperWeightsNotice }} The model card is published for English and German
+                    only.
                 </p>
             </div>
         </div>

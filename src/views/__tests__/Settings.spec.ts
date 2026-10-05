@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { ref } from 'vue';
 import Settings from '../Settings.vue';
 import { createRouter, createWebHistory } from 'vue-router';
+import { runtimeLicenses } from '../../utils/runtimeLicenses';
 
 // Mock Tauri APIs
 vi.mock('@tauri-apps/api/app', () => ({
@@ -135,6 +136,21 @@ describe('Settings.vue', () => {
 
         expect(wrapper.text()).toContain('AI Settings');
         expect(wrapper.find('input[type="password"]').exists()).toBe(true);
+    });
+
+    it('lists every runtime download with its licence and notice', () => {
+        const wrapper = mount(Settings, {
+            global: {
+                plugins: [router],
+            },
+        });
+
+        const list = wrapper.get('[data-testid="runtime-licenses"]');
+        expect(list.findAll('li')).toHaveLength(runtimeLicenses.downloads.length);
+        for (const download of runtimeLicenses.downloads) {
+            expect(list.text()).toContain(download.name);
+            if (download.notice) expect(list.text()).toContain(download.notice);
+        }
     });
 
     it('fetches models correctly', async () => {
