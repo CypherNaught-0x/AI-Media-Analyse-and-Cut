@@ -13,10 +13,27 @@ pub struct RunControl {
 }
 
 impl RunControl {
+    /// Start a new run. Only one run is current at a time, so this supersedes
+    /// (and thereby cancels) the previous one; its child process is killed
+    /// rather than left running to completion with its result discarded.
     pub fn begin_run(&self) -> u64 {
         let run_id = self.current_run_id.fetch_add(1, Ordering::SeqCst) + 1;
         self.cancelled_run_id.store(0, Ordering::SeqCst);
-        *self.active_pid.lock().expect("active pid lock poisoned") = None;
+        let superseded = self
+            .active_pid
+            .lock()
+            .expect("active pid lock poisoned")
+            .take();
+        if let Some((superseded_run_id, pid)) = superseded {
+            if let Err(error) = kill_process(pid) {
+                log::warn!(
+                    "Failed to stop process {} of superseded run {}: {}",
+                    pid,
+                    superseded_run_id,
+                    error
+                );
+            }
+        }
         run_id
     }
 
@@ -117,5 +134,36 @@ fn kill_process(pid: u32) -> Result<(), String> {
         }
 
         Err(format!("Failed to cancel run (kill exited with {})", status))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::Instant;
+
+    #[test]
+    fn beginning_a_run_kills_the_superseded_runs_process() {
+        let control = RunControl::default();
+        let first = control.begin_run();
+        let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+        control.register_pid(first, child.id()).unwrap();
+
+        let second = control.begin_run();
+
+        assert!(control.is_cancelled(first));
+        assert!(!control.is_cancelled(second));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "superseded process is still running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

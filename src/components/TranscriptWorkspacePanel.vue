@@ -388,7 +388,7 @@ function onTimeUpdate() {
 
             <button
               @click="$emit('translate')"
-              :disabled="isTranslating || !targetLanguage || !!translations[targetLanguage]"
+              :disabled="isTranslating || isProcessing || !targetLanguage || !!translations[targetLanguage]"
               class="p-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/20"
               title="Translate"
             >

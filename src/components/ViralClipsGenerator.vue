@@ -15,6 +15,8 @@ interface Props {
   hasMediaFile: boolean;
   state: ViralClipsWorkspaceState;
   cancelGeneration: number;
+  /** Another job (analysis, translation, export, ...) is running app-wide. */
+  busy: boolean;
 }
 
 const props = defineProps<Props>();
@@ -86,7 +88,7 @@ function showError(message: string, rawResponse: string, parseError: string = ""
 }
 
 async function generateClips() {
-  if (props.segments.length === 0) return;
+  if (props.busy || props.segments.length === 0) return;
 
   const runId = await beginRun();
   activeRunId.value = runId;
@@ -155,7 +157,7 @@ async function generateClips() {
 }
 
 async function exportClips() {
-  if (clips.value.length === 0) return;
+  if (props.busy || clips.value.length === 0) return;
   if (!props.hasMediaFile) {
     emit('update:status', "Select a valid media file before exporting clips.");
     return;
@@ -283,7 +285,7 @@ async function openExportFolder() {
       </button>
     </div>
 
-    <button @click="generateClips" :disabled="isProcessing"
+    <button @click="generateClips" :disabled="isProcessing || busy"
       class="w-full mb-8 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed">
       {{ isProcessing ? 'Processing...' : 'Generate Clips' }}
     </button>
@@ -309,7 +311,7 @@ async function openExportFolder() {
       </div>
 
       <div class="flex gap-4 mt-6">
-        <button @click="exportClips" :disabled="isProcessing || !hasMediaFile"
+        <button @click="exportClips" :disabled="isProcessing || busy || !hasMediaFile"
           class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
           Export All Clips
         </button>
