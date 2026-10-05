@@ -15,7 +15,8 @@
     "format:check": "prettier --check .",
     "check:tauri-versions": "node scripts/check-tauri-versions.js",
     "version:bump": "node scripts/bump-version.js",
-    "publish:tag": "git tag app-v$npm_package_version && git push --follow-tags"
+    "publish:tag": "git tag app-v$npm_package_version && git push --follow-tags",
+    "prepare": "lefthook install"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.10.0",
@@ -40,6 +41,7 @@
     "eslint-plugin-vue": "^10.11.1",
     "globals": "^17.13.0",
     "jsdom": "^27.2.0",
+    "lefthook": "^2.1.17",
     "playwright": "^1.61.1",
     "postcss": "^8.5.6",
     "prettier": "^3.9.9",
