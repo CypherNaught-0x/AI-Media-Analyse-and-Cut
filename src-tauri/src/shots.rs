@@ -29,10 +29,13 @@ pub(crate) fn detect_cuts(
         return Ok(Vec::new());
     }
     let mut command = FfmpegCommand::new();
+    // `-t` as an input option: only cut frames reach the output, so an
+    // output-side limit would only stop at the first cut after `end`,
+    // decoding up to the end of the file.
     command
         .args(["-ss", &format!("{start:.6}")])
-        .input(path.to_string_lossy())
         .args(["-t", &format!("{:.6}", end - start)])
+        .input(path.to_string_lossy())
         .args(["-an", "-sn"])
         .filter(format!(
             "scale={ANALYSIS_WIDTH}:-2,scdet=threshold={SCENE_THRESHOLD}:sc_pass=1,\
@@ -56,7 +59,10 @@ pub(crate) fn detect_cuts(
                     .and_then(|captures| captures[1].parse::<f64>().ok())
                 {
                     // Times are relative to the input seek.
-                    cuts.push(start + time);
+                    let time = start + time;
+                    if time < end {
+                        cuts.push(time);
+                    }
                 }
             }
         },
@@ -87,5 +93,9 @@ mod tests {
         let cuts = detect_cuts(&video, 1.5, 4.0, None).unwrap();
         assert_eq!(cuts.len(), 2, "{cuts:?}");
         assert!((cuts[0] - 2.0).abs() < 0.05, "{cuts:?}");
+
+        // A range that ends before a cut doesn't report it.
+        let cuts = detect_cuts(&video, 0.0, 1.5, None).unwrap();
+        assert_eq!(cuts.len(), 1, "{cuts:?}");
     }
 }
