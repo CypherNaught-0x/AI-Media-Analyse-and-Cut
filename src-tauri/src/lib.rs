@@ -347,6 +347,9 @@ pub mod error;
 pub(crate) mod ffmpeg;
 // Shorts S2 building blocks; wired to commands once the camera path exists.
 #[allow(dead_code)]
+mod face_tracks;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
+#[allow(dead_code)]
 mod faces;
 // Shorts S2 building blocks; wired to commands once the camera path exists.
 #[allow(dead_code)]
@@ -370,7 +373,10 @@ mod secrets;
 // Shorts S2 building blocks; wired to commands once the camera path exists.
 #[allow(dead_code)]
 mod shots;
+// Shorts S2 building blocks; wired to commands once the camera path exists.
 pub mod silence;
+#[allow(dead_code)]
+mod speaker_faces;
 pub mod time_utils;
 pub mod transcript_merge;
 mod upload;
