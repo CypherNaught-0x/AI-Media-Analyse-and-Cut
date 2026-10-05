@@ -91,7 +91,13 @@ onMounted(async () => {
 </script>
 
 <template>
-  <router-view />
+  <!-- Home owns the running analysis/export state; keep it alive while the
+       user visits Settings so an in-flight run and its result aren't lost. -->
+  <router-view v-slot="{ Component }">
+    <keep-alive include="Home">
+      <component :is="Component" />
+    </keep-alive>
+  </router-view>
   <Toast
     :show="toastVisible"
     :message="toastMessage"

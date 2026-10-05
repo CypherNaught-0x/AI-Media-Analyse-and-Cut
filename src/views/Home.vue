@@ -2,6 +2,9 @@
 // Module-scoped guard so FFmpeg is initialized only once per app session
 // rather than on every remount of the Home view (e.g. Home -> Settings -> Home).
 let ffmpegInitialized = false;
+
+// App.vue keeps this view alive by name (<keep-alive include="Home">).
+export default { name: 'Home' };
 </script>
 
 <script setup lang="ts">
