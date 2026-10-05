@@ -380,7 +380,7 @@ pub(crate) async fn resolve_sortformer_file(
     }
 
     ensure_pinned_file(
-        &reqwest::Client::new(),
+        &crate::http::http_client(),
         HUGGING_FACE,
         &SORTFORMER_V2,
         &sortformer_file,

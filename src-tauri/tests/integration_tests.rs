@@ -700,3 +700,78 @@ fn calculate_similarity(s1: &str, s2: &str) -> f64 {
 
     intersection as f64 / union as f64
 }
+
+#[tokio::test]
+async fn test_rate_limited_analysis_waits_and_retries() {
+    if !ensure_loopback_access("test_rate_limited_analysis_waits_and_retries").await {
+        return;
+    }
+
+    let mut server = Server::new_async().await;
+    let limited = server
+        .mock("POST", "/v1/chat/completions")
+        .match_query(mockito::Matcher::Any)
+        .with_status(429)
+        .with_header("retry-after", "1")
+        .with_body("{\"error\":\"slow down\"}")
+        .expect(1)
+        .create_async()
+        .await;
+    let succeeded = server
+        .mock("POST", "/v1/chat/completions")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            json!({
+                "choices": [{ "message": { "content": "[{\"start\":\"00:00\",\"end\":\"00:02\",\"speaker\":\"Speaker 1\",\"text\":\"Hi\"}]" } }]
+            })
+            .to_string(),
+        )
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = GeminiClient::new("fake_key".to_string(), server.url(), "model".to_string());
+    let started = std::time::Instant::now();
+    let result = client
+        .analyze_audio("", "", None, false, false, None, None)
+        .await
+        .unwrap();
+
+    assert!(result.contains("Hi"));
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(1),
+        "the Retry-After wait was not honoured"
+    );
+    limited.assert_async().await;
+    succeeded.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_analysis_gateway_timeout_is_not_retried() {
+    if !ensure_loopback_access("test_analysis_gateway_timeout_is_not_retried").await {
+        return;
+    }
+
+    // The frontend answers a 504 by splitting the audio into smaller chunks;
+    // the backend must hand it back at once instead of retrying.
+    let mut server = Server::new_async().await;
+    let timeout = server
+        .mock("POST", "/v1/chat/completions")
+        .match_query(mockito::Matcher::Any)
+        .with_status(504)
+        .with_body("upstream timed out")
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = GeminiClient::new("fake_key".to_string(), server.url(), "model".to_string());
+    let error = client
+        .analyze_audio("", "", None, false, false, None, None)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("504"), "{error}");
+    timeout.assert_async().await;
+}

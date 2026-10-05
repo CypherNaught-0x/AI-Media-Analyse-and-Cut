@@ -1,4 +1,4 @@
-use crate::retry::{retry_with_backoff, RetryConfig, RetryableError};
+use crate::retry::{rate_limit_wait, retry_with_backoff, RetryConfig, RetryableError};
 use crate::video::TranscriptSegment;
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -234,10 +234,13 @@ pub struct GeminiClient {
     model: String,
 }
 
+/// Translation requests in flight at once.
+const MAX_PARALLEL_TRANSLATIONS: usize = 4;
+
 impl GeminiClient {
     pub fn new(api_key: String, base_url: String, model: String) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::http::http_client(),
             api_key,
             base_url,
             model,
@@ -260,13 +263,18 @@ impl GeminiClient {
             transcript.chunks(chunk_size).map(|c| c.to_vec()).collect();
 
         let mut handles = vec![];
+        // A long transcript has hundreds of chunks; firing them all at once
+        // trips provider rate limits.
+        let in_flight = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_TRANSLATIONS));
 
         for (i, chunk) in chunks.into_iter().enumerate() {
             let client = self.clone();
             let target_language = target_language.clone();
             let context = context.clone();
+            let in_flight = in_flight.clone();
 
             handles.push(tokio::spawn(async move {
+                let _permit = in_flight.acquire_owned().await?;
                 match client
                     .translate_chunk(chunk, target_language, context, i)
                     .await
@@ -438,7 +446,12 @@ SPEAKER LABEL GUIDANCE (IMPORTANT):
         };
 
         match self
-            .execute_ai_json_request(&url, &payload, is_google_api)
+            .execute_ai_json_request(
+                &url,
+                &payload,
+                is_google_api,
+                &RetryConfig::ai_request(false),
+            )
             .await
         {
             Ok(text) => Ok(text),
@@ -463,8 +476,13 @@ SPEAKER LABEL GUIDANCE (IMPORTANT):
                     false,
                 );
 
-                self.execute_ai_json_request(&url, &fallback_payload, is_google_api)
-                    .await
+                self.execute_ai_json_request(
+                    &url,
+                    &fallback_payload,
+                    is_google_api,
+                    &RetryConfig::ai_request(false),
+                )
+                .await
                     .map_err(|fallback_err| {
                         anyhow::anyhow!(
                             "Structured transcript request failed and fallback without json_schema also failed: {}",
@@ -585,7 +603,12 @@ Rules:
         };
 
         let response = self
-            .execute_ai_json_request(&url, &payload, is_google_api)
+            .execute_ai_json_request(
+                &url,
+                &payload,
+                is_google_api,
+                &RetryConfig::ai_request(true),
+            )
             .await
             .map_err(|error| anyhow::anyhow!("{}", error))?;
 
@@ -744,7 +767,12 @@ Rules:
         };
 
         let response = self
-            .execute_ai_json_request(&url, &payload, is_google_api)
+            .execute_ai_json_request(
+                &url,
+                &payload,
+                is_google_api,
+                &RetryConfig::ai_request(true),
+            )
             .await
             .map_err(|error| anyhow::anyhow!("{}", error))?;
 
@@ -1110,20 +1138,27 @@ Rules:
         }
     }
 
+    /// Send an AI request, retrying transient failures per `retry`.
     async fn execute_ai_json_request(
         &self,
         url: &str,
         payload: &Value,
         is_google_api: bool,
+        retry: &RetryConfig,
     ) -> std::result::Result<String, RetryableError> {
-        let mut request = self.client.post(url).json(payload);
-
-        if !is_google_api {
-            request = request.header("Authorization", format!("Bearer {}", self.api_key));
-        }
-
-        let res_json = execute_json_request(request, url).await?;
-        extract_text_from_response(&res_json, is_google_api)
+        retry_with_backoff(
+            || async {
+                let mut request = self.client.post(url).json(payload);
+                if !is_google_api {
+                    request = request.header("Authorization", format!("Bearer {}", self.api_key));
+                }
+                let res_json = execute_json_request(request, url).await?;
+                extract_text_from_response(&res_json, is_google_api)
+            },
+            retry,
+            "AI request",
+        )
+        .await
     }
 }
 
@@ -1260,6 +1295,11 @@ async fn execute_json_request(
 
     let status = response.status();
     let headers = format!("{:?}", response.headers());
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let safe_url = redact_url(url);
 
     debug!("AI response status from '{}': {}", safe_url, status);
@@ -1275,6 +1315,16 @@ async fn execute_json_request(
 
     let raw_body = String::from_utf8_lossy(&body).into_owned();
     debug!("Raw AI response body from '{}': {}", safe_url, raw_body);
+
+    if status.as_u16() == 429 {
+        warn!(
+            "AI request to '{}' was rate limited: {}",
+            safe_url, raw_body
+        );
+        return Err(RetryableError::RateLimited {
+            retry_after: rate_limit_wait(retry_after.as_deref(), &raw_body),
+        });
+    }
 
     if !status.is_success() {
         error!(

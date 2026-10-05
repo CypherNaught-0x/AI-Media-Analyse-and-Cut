@@ -15,6 +15,9 @@ pub struct RetryConfig {
     pub backoff_multiplier: f64,
     /// HTTP status codes that should trigger a retry
     pub retryable_status_codes: Vec<u16>,
+    /// Whether uncategorised server/transport errors (e.g. a response body
+    /// that fails to decode) are retried.
+    pub retry_server_errors: bool,
 }
 
 impl Default for RetryConfig {
@@ -25,11 +28,36 @@ impl Default for RetryConfig {
             max_delay: Duration::from_secs(30),
             backoff_multiplier: 2.0,
             retryable_status_codes: vec![429, 500, 502, 503, 504],
+            retry_server_errors: true,
         }
     }
 }
 
+/// Longest server-requested back-off honoured before retrying.
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(120);
+
 impl RetryConfig {
+    /// Policy for AI requests: retry network failures, rate limits and 5xx
+    /// statuses. Undecodable bodies are not retried (the transcript request
+    /// falls back to a schema-less request instead). Gateway timeouts are only
+    /// retried when `retry_gateway_timeout` is set: for audio analysis the
+    /// frontend reacts to a 504 by splitting the audio into smaller chunks,
+    /// which retrying the same oversized request would only delay.
+    pub fn ai_request(retry_gateway_timeout: bool) -> Self {
+        let mut retryable_status_codes = vec![429, 500, 502, 503];
+        if retry_gateway_timeout {
+            retryable_status_codes.push(504);
+        }
+        Self {
+            max_attempts: 3,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+            retryable_status_codes,
+            retry_server_errors: false,
+        }
+    }
+
     /// Create a conservative retry config for important operations
     pub fn conservative() -> Self {
         Self {
@@ -38,6 +66,7 @@ impl RetryConfig {
             max_delay: Duration::from_secs(60),
             backoff_multiplier: 2.0,
             retryable_status_codes: vec![429, 500, 502, 503, 504],
+            retry_server_errors: true,
         }
     }
 
@@ -49,6 +78,7 @@ impl RetryConfig {
             max_delay: Duration::from_secs(5),
             backoff_multiplier: 1.5,
             retryable_status_codes: vec![429, 500, 502, 503, 504],
+            retry_server_errors: true,
         }
     }
 }
@@ -76,7 +106,7 @@ impl RetryableError {
             RetryableError::Network(_) => true,
             RetryableError::Http { status, .. } => config.retryable_status_codes.contains(status),
             RetryableError::RateLimited { .. } => true,
-            RetryableError::Server(_) => true,
+            RetryableError::Server(_) => config.retry_server_errors,
             RetryableError::Permanent(_) => false,
         }
     }
@@ -84,9 +114,9 @@ impl RetryableError {
     /// Get the recommended delay before retrying
     pub fn retry_delay(&self, attempt: u32, config: &RetryConfig) -> Duration {
         let base_delay = match self {
-            RetryableError::RateLimited { retry_after } => {
-                retry_after.unwrap_or(config.initial_delay)
-            }
+            RetryableError::RateLimited { retry_after } => retry_after
+                .map(|wait| wait.min(MAX_RATE_LIMIT_WAIT))
+                .unwrap_or(config.initial_delay),
             _ => {
                 let exponential = config.initial_delay.as_millis() as f64
                     * config.backoff_multiplier.powi(attempt as i32 - 1);
@@ -215,9 +245,64 @@ impl From<reqwest::Error> for RetryableError {
     }
 }
 
+/// How long a rate-limited response asks to wait: the `Retry-After` header
+/// (seconds), or the `retryDelay` Gemini puts in its error body (e.g. "17s").
+pub fn rate_limit_wait(retry_after_header: Option<&str>, body: &str) -> Option<Duration> {
+    if let Some(seconds) = retry_after_header.and_then(|value| value.trim().parse::<f64>().ok()) {
+        return Some(Duration::from_secs_f64(seconds.max(0.0)));
+    }
+    let start = body.find("\"retryDelay\"")?;
+    let rest = &body[start..];
+    let value_start = rest.find(':')? + 1;
+    let value = rest[value_start..].trim_start().trim_start_matches('"');
+    let digits: String = value
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let seconds: f64 = digits.parse().ok()?;
+    Some(Duration::from_secs_f64(seconds))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limit_wait_reads_the_header_or_gemini_retry_delay() {
+        assert_eq!(rate_limit_wait(Some("7"), ""), Some(Duration::from_secs(7)));
+        let gemini = r#"{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"17s"}]}}"#;
+        assert_eq!(rate_limit_wait(None, gemini), Some(Duration::from_secs(17)));
+        assert_eq!(rate_limit_wait(None, "{}"), None);
+    }
+
+    #[test]
+    fn server_requested_waits_are_honoured_but_capped() {
+        let config = RetryConfig::ai_request(false);
+        let wait = |seconds| {
+            RetryableError::RateLimited {
+                retry_after: Some(Duration::from_secs(seconds)),
+            }
+            .retry_delay(1, &config)
+        };
+        assert!(wait(17) >= Duration::from_secs(17));
+        assert!(wait(3600) <= MAX_RATE_LIMIT_WAIT + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn ai_requests_leave_decode_errors_and_optionally_504_to_the_caller() {
+        let analysis = RetryConfig::ai_request(false);
+        let gateway_timeout = RetryableError::Http {
+            status: 504,
+            message: String::new(),
+        };
+        assert!(!gateway_timeout.is_retryable(&analysis));
+        assert!(gateway_timeout.is_retryable(&RetryConfig::ai_request(true)));
+        assert!(
+            !RetryableError::Server("error decoding response body".into()).is_retryable(&analysis)
+        );
+        assert!(RetryableError::Network("reset".into()).is_retryable(&analysis));
+        assert!(RetryableError::RateLimited { retry_after: None }.is_retryable(&analysis));
+    }
 
     #[test]
     fn test_retry_config_default() {
@@ -341,6 +426,7 @@ mod tests {
             max_delay: Duration::from_millis(100),
             backoff_multiplier: 1.0,
             retryable_status_codes: vec![500],
+            retry_server_errors: true,
         };
 
         let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));

@@ -330,6 +330,7 @@ pub(crate) mod encoders;
 pub mod error;
 pub(crate) mod ffmpeg;
 pub mod gemini;
+mod http;
 mod local_asr;
 pub mod media_probe;
 mod model_download;
