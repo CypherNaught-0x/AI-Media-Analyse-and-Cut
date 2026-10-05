@@ -105,7 +105,6 @@ pub(crate) fn export_vertical(
     let analysis_w = (source_w.min(ANALYSIS_WIDTH)) & !1;
     let scale = f64::from(source_w) / f64::from(analysis_w);
     let camera_frame = CameraFrame {
-        width: f64::from(analysis_w),
         height: f64::from(source_h) / scale,
         min_crop_height: f64::from(OUTPUT_SIZE.1) / MAX_UPSCALE / scale,
         fps,

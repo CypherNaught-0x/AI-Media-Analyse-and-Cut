@@ -13,6 +13,7 @@ pub(crate) enum PixelFormat {
     /// 3 bytes per pixel.
     Rgb24,
     /// 1 byte per pixel (luma); enough for motion and shot analysis.
+    #[cfg_attr(not(test), allow(dead_code))] // for motion analysis (S4)
     Gray,
 }
 

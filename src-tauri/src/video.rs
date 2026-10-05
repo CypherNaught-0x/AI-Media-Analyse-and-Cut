@@ -426,6 +426,11 @@ fn build_clip_output_filename(i: usize, segment: &ClipSegment) -> String {
     }
 }
 
+/// `clip_001_Title_9x16.mp4`: the vertical export of clip `i`.
+pub(crate) fn vertical_output_filename(i: usize, segment: &ClipSegment) -> String {
+    build_clip_output_filename(i, segment).replace(".mp4", "_9x16.mp4")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

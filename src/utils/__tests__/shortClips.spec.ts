@@ -5,6 +5,7 @@ import {
     fromCandidates,
     normalizeShortClips,
     playbackStep,
+    speakerTurns,
     toExportSegments,
     trimClip,
     wordBoundaries,
@@ -123,5 +124,21 @@ describe('short clips', () => {
         expect(playbackStep(95.1, ranges, 0)).toEqual({ action: 'seek', to: 20, rangeIndex: 1 });
         expect(playbackStep(30, ranges, 1)).toEqual({ action: 'continue' });
         expect(playbackStep(40, ranges, 1)).toEqual({ action: 'stop' });
+    });
+});
+
+describe('speakerTurns', () => {
+    it('turns transcript segments into timed speaker turns', () => {
+        const turns = speakerTurns([
+            { start: '01:00.500', end: '01:04.000', speaker: 'Annette', text: 'Hi' },
+            { start: '01:04.000', end: '01:03.000', speaker: 'Bob', text: 'backwards' },
+            { start: '01:05.000', end: '01:06.000', speaker: '  ', text: 'nobody' },
+            { start: 'later', end: '01:09.000', speaker: 'Bob', text: 'bad time' },
+            { start: '1:01:10.000', end: '1:01:12.250', speaker: 'Bob', text: 'Hello' },
+        ]);
+        expect(turns).toEqual([
+            { start: 60.5, end: 64, speaker: 'Annette' },
+            { start: 3670, end: 3672.25, speaker: 'Bob' },
+        ]);
     });
 });

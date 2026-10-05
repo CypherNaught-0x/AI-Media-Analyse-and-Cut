@@ -53,7 +53,6 @@ impl Default for CameraSettings {
 /// The frame the camera works in (analysis pixels).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Frame {
-    pub width: f64,
     pub height: f64,
     /// Smallest crop height allowed (limits upscaling).
     pub min_crop_height: f64,
@@ -372,7 +371,6 @@ mod tests {
     use crate::faces::Face;
 
     const FRAME: Frame = Frame {
-        width: 1280.0,
         height: 720.0,
         min_crop_height: 480.0,
         fps: 25.0,

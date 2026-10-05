@@ -142,6 +142,28 @@ describe('ViralClipsGenerator', () => {
         expect((call?.[1] as { segments: unknown[] }).segments).toHaveLength(1);
     });
 
+    it("exports vertical clips with the speakers' turns when 9:16 is on", async () => {
+        const [clip] = fromCandidates([candidate]);
+        const wrapper = mountWith({ clips: [clip], vertical: true });
+
+        await wrapper.get('[data-testid="clips-export-selected"]').trigger('click');
+        await flushPromises();
+
+        const commandsCalled = vi.mocked(invoke).mock.calls.map(([command]) => command);
+        expect(commandsCalled).toContain('export_vertical_clips');
+        expect(commandsCalled).not.toContain('export_clips');
+        const call = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'export_vertical_clips');
+        expect(call?.[1]).toMatchObject({
+            inputPath: '/tmp/source.mp4',
+            outputDir: '/tmp/source_clips',
+            quality: 'balanced',
+            segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
+            turns: [{ start: 10, end: 13, speaker: 'Host' }],
+        });
+    });
+
     it('does not start while another job is running', async () => {
         const wrapper = mountWith({}, true);
         expect(wrapper.get('[data-testid="clips-generate"]').attributes('disabled')).toBeDefined();

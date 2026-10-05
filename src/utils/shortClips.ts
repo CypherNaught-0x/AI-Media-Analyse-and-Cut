@@ -1,3 +1,4 @@
+import type { SpeakerTurn } from '../bindings';
 import type { ClipCandidate, ShortClip, ShortClipRange, TranscriptSegment } from '../types';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
 
@@ -173,4 +174,20 @@ export function playbackStep(
     const next = rangeIndex + 1;
     if (next >= ranges.length) return { action: 'stop' };
     return { action: 'seek', to: ranges[next].start, rangeIndex: next };
+}
+
+/**
+ * Who speaks when, for framing vertical clips: one turn per transcript
+ * segment with a speaker and valid times.
+ */
+export function speakerTurns(segments: TranscriptSegment[]): SpeakerTurn[] {
+    const turns: SpeakerTurn[] = [];
+    for (const segment of segments) {
+        const start = seconds(segment.start);
+        const end = seconds(segment.end);
+        const speaker = segment.speaker?.trim();
+        if (start === null || end === null || end <= start || !speaker) continue;
+        turns.push({ start, end, speaker });
+    }
+    return turns;
 }
