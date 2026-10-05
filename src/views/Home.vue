@@ -39,6 +39,7 @@ import { useHomeSessionPersistence } from "../composables/useHomeSessionPersiste
 import { adjustTimestamp, formatTime, parseTime } from "../composables/useTimeFormat";
 import { beginRun, isRunCancelled } from "../composables/useRunCancellation";
 import { parseTranscriptResponse } from "../utils/transcriptParsing";
+import { realignTranslation } from "../utils/translationAlignment";
 import { buildTranscriptSidecar, parseTranscriptSidecar } from "../utils/transcriptSidecar";
 import {
     createDefaultClipWorkspaceState,
@@ -301,8 +302,23 @@ const displaySegments = computed({
     set: (newSegments) => {
         if (currentLanguage.value === "Original") {
             segments.value = newSegments;
+            // Splits, merges and deletes shift indexes; refit every translation
+            // onto the new structure by time so they stay aligned.
+            translations.value = Object.fromEntries(
+                Object.entries(translations.value).map(([lang, translated]) => [
+                    lang,
+                    realignTranslation(newSegments, translated),
+                ])
+            );
         } else {
-            translations.value[currentLanguage.value] = newSegments;
+            // The translated view only edits wording (structure is locked in the
+            // editor); timing and speakers always follow the original.
+            translations.value[currentLanguage.value] = newSegments.map((segment, index) => ({
+                ...segment,
+                start: segments.value[index]?.start ?? segment.start,
+                end: segments.value[index]?.end ?? segment.end,
+                speaker: segments.value[index]?.speaker ?? segment.speaker,
+            }));
         }
     }
 });

@@ -679,4 +679,26 @@ describe('Editor.vue', () => {
     expect(wrapper.text()).not.toContain('Hello world');
     expect(wrapper.text()).toContain('How are you?');
   });
+  it('only allows wording edits when the structure is locked', async () => {
+    const wrapper = mount(Editor, {
+      props: {
+        segments: mockSegments,
+        lockStructure: true,
+      },
+    });
+
+    expect(wrapper.find('[data-testid="segment-split-0"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="segment-delete-0"]').exists()).toBe(false);
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Merge ↓')).toBe(false);
+
+    const editButton = wrapper.findAll('button').find((button) => button.text() === 'Edit');
+    await editButton!.trigger('click');
+    expect(wrapper.find('input[placeholder="MM:SS"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="edit-speaker-select"]').exists()).toBe(false);
+
+    await wrapper.find('textarea').setValue('Hola mundo');
+    await wrapper.findAll('button').find((button) => button.text() === 'Save Changes')!.trigger('click');
+    const emitted = wrapper.emitted('update:segments')!.at(-1)![0] as TranscriptSegment[];
+    expect(emitted.map((segment) => segment.text)).toEqual(['Hola mundo', 'How are you?']);
+  });
 });
