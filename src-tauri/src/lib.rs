@@ -351,6 +351,7 @@ mod media_cache;
 pub mod media_probe;
 mod model_download;
 mod parakeet;
+mod path_guard;
 pub mod podcast;
 pub mod retry;
 mod run_control;
@@ -707,13 +708,17 @@ async fn export_clips(
 
 #[tauri::command]
 #[specta::specta]
-async fn read_file_as_base64(path: String) -> Result<String, AppError> {
+async fn read_file_as_base64(app: tauri::AppHandle, path: String) -> Result<String, AppError> {
     use base64::{engine::general_purpose, Engine as _};
 
+    // Only the analysis audio the app extracted itself is ever sent this way.
+    let root = media_cache::cache_root(&app)?;
+    let path = path_guard::require_within(Path::new(&path), &root, "read audio")?;
     let content = tokio::fs::read(&path).await.map_err(|e| {
         format!(
             "Failed to read audio file '{}' for base64 encoding: {}",
-            path, e
+            path.display(),
+            e
         )
     })?;
 
@@ -756,6 +761,7 @@ async fn generate_clips(
 #[tauri::command]
 #[specta::specta]
 async fn open_folder(path: String) -> Result<(), AppError> {
+    path_guard::require_directory(Path::new(&path))?;
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("explorer")
@@ -783,6 +789,8 @@ async fn open_folder(path: String) -> Result<(), AppError> {
 #[tauri::command]
 #[specta::specta]
 async fn write_text_file(path: String, content: String) -> Result<(), AppError> {
+    // Sessions and transcript sidecars (.json) and subtitles.
+    path_guard::require_extension(Path::new(&path), &["json", "srt", "vtt", "txt"], "write")?;
     tokio::fs::write(path, content)
         .await
         .map_err(|e| AppError::failed(e.to_string()))
@@ -791,6 +799,8 @@ async fn write_text_file(path: String, content: String) -> Result<(), AppError> 
 #[tauri::command]
 #[specta::specta]
 async fn read_text_file(path: String) -> Result<String, AppError> {
+    // Sessions and transcript sidecars.
+    path_guard::require_extension(Path::new(&path), &["json"], "read")?;
     tokio::fs::read_to_string(path)
         .await
         .map_err(|e| AppError::failed(e.to_string()))
@@ -839,6 +849,7 @@ fn allow_media_access(app: tauri::AppHandle, path: String) -> Result<(), AppErro
 #[tauri::command]
 #[specta::specta]
 async fn zip_logs(app: tauri::AppHandle, target_path: String) -> Result<(), AppError> {
+    path_guard::require_extension(Path::new(&target_path), &["zip"], "write logs to")?;
     use std::io::Write;
     use tauri::Manager;
 
