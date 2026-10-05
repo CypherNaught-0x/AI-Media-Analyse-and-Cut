@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { mediaUrl } from '../utils/mediaUrl';
 import type {
     ClipRole,
@@ -24,7 +24,8 @@ import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 import { formatTime } from '../composables/useTimeFormat';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
-import { commands } from '../bindings';
+import { commands, type VerticalPreview } from '../bindings';
+import { videoBox, type VideoBox } from '../utils/verticalFraming';
 import { errorMessage } from '../utils/appError';
 
 interface Props {
@@ -151,21 +152,118 @@ const player = ref<HTMLVideoElement | null>(null);
 const previewing = ref<{ id: string; rangeIndex: number } | null>(null);
 const mediaSrc = computed(() => (props.hasMediaFile ? mediaUrl(props.inputPath) : ''));
 
-function preview(clip: ShortClip) {
+// ---- 9:16 preview: the planned framing applied to the source player. ----
+/** CSS size of the 9:16 preview frame. */
+const VERTICAL_FRAME = { width: 270, height: 480 };
+/** Planned framing per clip id, valid for the ranges it was planned for. */
+const verticalPlans = ref(new Map<string, { signature: string; plan: VerticalPreview }>());
+const verticalBox = ref<VideoBox | null>(null);
+let frameRequest: number | null = null;
+
+function rangeSignature(clip: ShortClip): string {
+    return clip.ranges.map((range) => `${range.start}-${range.end}`).join(',');
+}
+
+const verticalPlan = computed(() => {
+    const current = previewing.value;
+    if (!props.state.vertical || !current) return null;
+    const clip = clips.value.find((candidate) => candidate.id === current.id);
+    const entry = verticalPlans.value.get(current.id);
+    return clip && entry?.signature === rangeSignature(clip) ? entry.plan : null;
+});
+
+function updateVerticalBox() {
     const video = player.value;
-    if (!video) return;
+    const plan = verticalPlan.value;
+    verticalBox.value =
+        video && plan ? videoBox(plan, plan.clips[0], video.currentTime, VERTICAL_FRAME) : null;
+}
+
+function followFrames() {
+    const video = player.value as
+        | (HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number })
+        | null;
+    if (!video || !verticalPlan.value) return;
+    updateVerticalBox();
+    // Per decoded frame where supported, so the crop moves with the picture.
+    frameRequest = video.requestVideoFrameCallback
+        ? video.requestVideoFrameCallback(followFrames)
+        : requestAnimationFrame(followFrames);
+}
+
+function stopFollowingFrames() {
+    const video = player.value as
+        (HTMLVideoElement & { cancelVideoFrameCallback?: (handle: number) => void }) | null;
+    if (frameRequest !== null) {
+        if (video?.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameRequest);
+        else cancelAnimationFrame(frameRequest);
+        frameRequest = null;
+    }
+}
+
+onBeforeUnmount(stopFollowingFrames);
+
+/** Plan the clip's vertical framing unless a plan for its ranges exists. */
+async function ensureVerticalPlan(clip: ShortClip): Promise<boolean> {
+    const signature = rangeSignature(clip);
+    if (verticalPlans.value.get(clip.id)?.signature === signature) return true;
+    if (props.busy || isProcessing.value) return false;
+
+    const runId = await beginRun();
+    activeRunId.value = runId;
+    isProcessing.value = true;
+    emit('update:processing', true);
+    emit('update:status', 'Planning the 9:16 framing...');
+    try {
+        const plan = await commands.planVerticalClips(
+            runId,
+            props.inputPath,
+            [{ segments: toExportSegments(clip), label: clip.title, reason: clip.reason }],
+            speakerTurns(props.segments),
+        );
+        assertActiveRun(runId);
+        const plans = new Map(verticalPlans.value);
+        plans.set(clip.id, { signature, plan });
+        verticalPlans.value = plans;
+        emit('update:status', 'Previewing the 9:16 framing.');
+        return true;
+    } catch (e) {
+        if (isRunCancelled(e)) {
+            emit('update:status', 'Run cancelled.');
+        } else {
+            emit('update:status', `Error planning the 9:16 framing: ${errorMessage(e)}`);
+        }
+        return false;
+    } finally {
+        if (activeRunId.value === runId) {
+            activeRunId.value = null;
+            isProcessing.value = false;
+            emit('update:processing', false);
+        }
+    }
+}
+
+async function preview(clip: ShortClip) {
+    if (!player.value) return;
     if (previewing.value?.id === clip.id) {
         stopPreview();
         return;
     }
+    if (props.state.vertical && !(await ensureVerticalPlan(clip))) return;
+    const video = player.value;
+    if (!video) return;
     previewing.value = { id: clip.id, rangeIndex: 0 };
     video.currentTime = clip.ranges[0].start;
     void video.play();
+    stopFollowingFrames();
+    followFrames();
 }
 
 function stopPreview() {
     previewing.value = null;
     player.value?.pause();
+    stopFollowingFrames();
+    verticalBox.value = null;
 }
 
 function onTimeUpdate() {
@@ -448,20 +546,47 @@ async function openExportFolder() {
         </button>
 
         <div v-if="clips.length > 0">
-            <!-- Preview player -->
+            <!-- Preview player; in 9:16 mode it shows the planned framing. -->
             <div
                 v-if="hasMediaFile"
                 class="mb-6 overflow-hidden rounded-2xl border border-white/10 bg-black"
             >
-                <video
-                    ref="player"
-                    :src="mediaSrc"
-                    class="mx-auto max-h-80 w-full"
-                    preload="metadata"
-                    controls
-                    data-testid="clips-player"
-                    @timeupdate="onTimeUpdate"
-                />
+                <div
+                    :class="
+                        verticalBox
+                            ? 'relative mx-auto my-4 overflow-hidden rounded-lg ring-1 ring-white/20'
+                            : ''
+                    "
+                    :style="
+                        verticalBox
+                            ? {
+                                  width: `${VERTICAL_FRAME.width}px`,
+                                  height: `${VERTICAL_FRAME.height}px`,
+                              }
+                            : undefined
+                    "
+                    data-testid="clips-player-frame"
+                >
+                    <video
+                        ref="player"
+                        :src="mediaSrc"
+                        :class="verticalBox ? 'absolute max-w-none' : 'mx-auto max-h-80 w-full'"
+                        :style="
+                            verticalBox
+                                ? {
+                                      width: `${verticalBox.width}px`,
+                                      height: `${verticalBox.height}px`,
+                                      left: `${verticalBox.left}px`,
+                                      top: `${verticalBox.top}px`,
+                                  }
+                                : undefined
+                        "
+                        preload="metadata"
+                        :controls="!verticalBox"
+                        data-testid="clips-player"
+                        @timeupdate="onTimeUpdate"
+                    />
+                </div>
             </div>
 
             <!-- Clip cards -->

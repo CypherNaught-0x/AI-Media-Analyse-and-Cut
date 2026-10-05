@@ -771,6 +771,37 @@ pub struct SpeakerTurn {
     pub speaker: String,
 }
 
+/// The source ranges of each clip, in seconds.
+fn clip_ranges(segments: &[ClipSegment]) -> Result<Vec<Vec<(f64, f64)>>, String> {
+    use crate::time_utils::parse_timestamp_to_seconds_raw;
+    segments
+        .iter()
+        .map(|clip| {
+            clip.segments
+                .iter()
+                .map(|segment| {
+                    let start = parse_timestamp_to_seconds_raw(&segment.start)
+                        .map_err(|e| format!("Invalid clip start '{}': {e}", segment.start))?;
+                    let end = parse_timestamp_to_seconds_raw(&segment.end)
+                        .map_err(|e| format!("Invalid clip end '{}': {e}", segment.end))?;
+                    Ok((start.max(0.0), end))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn speech_turns(turns: Vec<SpeakerTurn>) -> Vec<speaker_faces::SpeechTurn> {
+    turns
+        .into_iter()
+        .map(|turn| speaker_faces::SpeechTurn {
+            start: turn.start,
+            end: turn.end,
+            speaker: turn.speaker,
+        })
+        .collect()
+}
+
 /// Export clips as vertical (9:16) videos that follow the active speaker
 /// (shorts phase S2). `turns` say who speaks when; faces are bound to them.
 #[tauri::command]
@@ -786,8 +817,8 @@ async fn export_vertical_clips(
     output_dir: String,
     quality: ExportQuality,
     run_control: State<'_, RunControl>,
+    analysis: State<'_, std::sync::Arc<vertical::AnalysisCache>>,
 ) -> Result<(), AppError> {
-    use crate::time_utils::parse_timestamp_to_seconds_raw;
     run_control.ensure_active(run_id)?;
 
     let input = PathBuf::from(input_path);
@@ -795,18 +826,7 @@ async fn export_vertical_clips(
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format_path_io_error("create the output folder", &output_dir, &e))?;
     let mut clips = Vec::with_capacity(segments.len());
-    for (index, clip) in segments.iter().enumerate() {
-        let ranges = clip
-            .segments
-            .iter()
-            .map(|segment| {
-                let start = parse_timestamp_to_seconds_raw(&segment.start)
-                    .map_err(|e| format!("Invalid clip start '{}': {e}", segment.start))?;
-                let end = parse_timestamp_to_seconds_raw(&segment.end)
-                    .map_err(|e| format!("Invalid clip end '{}': {e}", segment.end))?;
-                Ok((start.max(0.0), end))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+    for (index, (clip, ranges)) in segments.iter().zip(clip_ranges(&segments)?).enumerate() {
         let output = output_dir.join(video::vertical_output_filename(index, clip));
         let metadata = serde_json::json!({
             "title": clip.label,
@@ -819,22 +839,17 @@ async fn export_vertical_clips(
         }
         clips.push(vertical::VerticalClip { ranges, output });
     }
-    let turns: Vec<speaker_faces::SpeechTurn> = turns
-        .into_iter()
-        .map(|turn| speaker_faces::SpeechTurn {
-            start: turn.start,
-            end: turn.end,
-            speaker: turn.speaker,
-        })
-        .collect();
+    let turns = speech_turns(turns);
 
     let run_control = run_control.inner().clone();
+    let analysis = analysis.inner().clone();
     run_blocking(move || {
         vertical::export_vertical(
             &input,
             &clips,
             &turns,
             quality,
+            Some(&analysis),
             Some((run_id, &run_control)),
             &mut |fraction, message| {
                 let _ = window.emit(
@@ -847,6 +862,48 @@ async fn export_vertical_clips(
             },
         )
         .map(|_| ())
+    })
+    .await
+    .map_err(AppError::from)
+}
+
+/// Plan the vertical framing of clips without rendering, for the live 9:16
+/// preview. The analysis is cached, so a following export reuses it.
+#[tauri::command]
+#[specta::specta]
+async fn plan_vertical_clips(
+    run_id: u64,
+    window: tauri::Window,
+    input_path: String,
+    segments: Vec<ClipSegment>,
+    turns: Vec<SpeakerTurn>,
+    run_control: State<'_, RunControl>,
+    analysis: State<'_, std::sync::Arc<vertical::AnalysisCache>>,
+) -> Result<vertical::VerticalPreview, AppError> {
+    run_control.ensure_active(run_id)?;
+    let input = PathBuf::from(input_path);
+    let ranges = clip_ranges(&segments)?;
+    let turns = speech_turns(turns);
+    let run_control = run_control.inner().clone();
+    let analysis = analysis.inner().clone();
+    run_blocking(move || {
+        vertical::plan_vertical(
+            &input,
+            &ranges,
+            &turns,
+            Some(&analysis),
+            Some((run_id, &run_control)),
+            &mut |fraction| {
+                let _ = window.emit(
+                    "progress",
+                    serde_json::json!({
+                        "percentage": fraction * 100.0,
+                        "message": format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
+                    }),
+                );
+            },
+        )
+        .map(|plan| vertical::VerticalPreview::from(&plan))
     })
     .await
     .map_err(AppError::from)
@@ -1189,6 +1246,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             cut_video,
             export_clips,
             export_vertical_clips,
+            plan_vertical_clips,
             read_file_as_base64,
             open_folder,
             write_text_file,
@@ -1222,6 +1280,7 @@ pub fn render_ipc_bindings(path: &Path) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(media_protocol::MediaScope::default())
+        .manage(std::sync::Arc::new(vertical::AnalysisCache::default()))
         .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn(async move {
