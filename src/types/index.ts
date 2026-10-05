@@ -241,7 +241,6 @@ export interface TranscriptWorkspaceState {
   speakerCount: number | null;
   removeFillerWords: boolean;
   trimSilence: boolean;
-  useAdvancedAlignment: boolean;
   speakerOrder: string[];
   lastAnalyzedSettings: LastAnalyzedSettings;
   rawParakeetSegments: TranscriptSegment[];

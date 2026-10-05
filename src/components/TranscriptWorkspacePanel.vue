@@ -22,8 +22,6 @@ const props = defineProps<{
   currentLanguage: string;
   targetLanguage: string;
   isTranslating: boolean;
-  isLlmOnlyBackend: boolean;
-  useAdvancedAlignment: boolean;
   uniqueSpeakers: string[];
   isProcessing: boolean;
 }>();
@@ -33,7 +31,6 @@ const emit = defineEmits<{
   (e: 'update:targetLanguage', value: string): void;
   (e: 'translate'): void;
   (e: 'export-video'): void;
-  (e: 'update:useAdvancedAlignment', value: boolean): void;
   (e: 'rename-speaker', payload: { oldName: string; newName: string; inputElement: HTMLInputElement }): void;
   (e: 'update:segments', value: TranscriptSegment[]): void;
 }>();
@@ -511,21 +508,6 @@ function onTimeUpdate() {
           </label>
         </div>
       </div>
-    </div>
-
-    <div v-if="isLlmOnlyBackend" class="mb-4 p-4 bg-black/20 rounded-xl border border-white/5 flex items-center justify-between">
-      <div>
-        <h3 class="text-sm font-semibold text-gray-300">Advanced Alignment</h3>
-        <p class="text-xs text-gray-500">Align AI transcript with local timestamps (Coming Soon)</p>
-      </div>
-      <button
-        @click="$emit('update:useAdvancedAlignment', !useAdvancedAlignment)"
-        class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-900"
-        :class="useAdvancedAlignment ? 'bg-blue-600' : 'bg-gray-700'"
-      >
-        <span class="sr-only">Enable advanced alignment</span>
-        <span class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform" :class="useAdvancedAlignment ? 'translate-x-6' : 'translate-x-1'" />
-      </button>
     </div>
 
     <div v-if="uniqueSpeakers.length > 0" class="mb-6 p-4 bg-black/20 rounded-xl border border-white/5">

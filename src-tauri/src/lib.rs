@@ -420,7 +420,6 @@ async fn prepare_preview_audio(
     Ok(output_path.to_string_lossy().to_string())
 }
 
-mod alignment;
 pub mod chunking;
 pub mod crisper;
 pub mod gemini;
@@ -435,7 +434,6 @@ pub mod transcript_merge;
 mod upload;
 pub mod video;
 
-use crate::alignment::align_transcript;
 use crate::chunking::split_audio_for_analysis;
 use crate::crisper::{
     crisper_environment_status, install_crisper_environment, transcribe_with_crisper,
@@ -1020,7 +1018,6 @@ pub fn run() {
             read_text_file,
             path_exists,
             allow_media_access,
-            align_transcript,
             detect_silence,
             remove_silence,
             translate_transcript,

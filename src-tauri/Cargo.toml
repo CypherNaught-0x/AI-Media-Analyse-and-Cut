@@ -30,9 +30,6 @@ anyhow = "1.0"
 reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "json", "multipart", "native-tls", "system-proxy"] }
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22.1"
-ort = { version = "2.0.0-rc.12", features = ["download-binaries", "ndarray"] }
-hf-hub = "0.4"
-ndarray = "0.17"
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.16"
 regex = "1.12.2"

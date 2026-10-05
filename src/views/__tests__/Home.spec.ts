@@ -100,7 +100,6 @@ function buildSession(inputPath = '/tmp/source.mp4'): EditSessionV1 {
       speakerCount: 2,
       removeFillerWords: true,
       trimSilence: false,
-      useAdvancedAlignment: false,
       speakerOrder: ['Speaker 1'],
       lastAnalyzedSettings: {
         context: 'saved context',

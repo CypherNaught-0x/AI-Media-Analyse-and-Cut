@@ -17,7 +17,6 @@ export interface ParsedTranscriptSidecar {
   speakerCount?: number | null;
   removeFillerWords?: boolean;
   trimSilence?: boolean;
-  useAdvancedAlignment?: boolean;
   speakerOrder?: string[];
   lastAnalyzedSettings?: LastAnalyzedSettings;
   rawParakeetSegments?: TranscriptSegment[];
@@ -60,8 +59,6 @@ export function parseTranscriptSidecar(
     removeFillerWords:
       typeof sidecar.removeFillerWords === 'boolean' ? sidecar.removeFillerWords : undefined,
     trimSilence: typeof sidecar.trimSilence === 'boolean' ? sidecar.trimSilence : undefined,
-    useAdvancedAlignment:
-      typeof sidecar.useAdvancedAlignment === 'boolean' ? sidecar.useAdvancedAlignment : undefined,
     speakerOrder: Array.isArray(sidecar.speakerOrder) ? (sidecar.speakerOrder as string[]) : undefined,
     lastAnalyzedSettings:
       sidecar.lastAnalyzedSettings && typeof sidecar.lastAnalyzedSettings === 'object'
@@ -97,7 +94,6 @@ export function buildTranscriptSidecar(transcriptWorkspace: TranscriptWorkspaceS
     speakerCount: transcriptWorkspace.speakerCount,
     removeFillerWords: transcriptWorkspace.removeFillerWords,
     trimSilence: transcriptWorkspace.trimSilence,
-    useAdvancedAlignment: transcriptWorkspace.useAdvancedAlignment,
     speakerOrder: transcriptWorkspace.speakerOrder,
     lastAnalyzedSettings: transcriptWorkspace.lastAnalyzedSettings,
     rawParakeetSegments: transcriptWorkspace.rawParakeetSegments,
