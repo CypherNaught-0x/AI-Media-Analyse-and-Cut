@@ -311,7 +311,8 @@ function parseScriptResponse(response: string): PodcastScript | null {
       start: s.start,
       end: s.end,
       text: s.text || "",
-      speaker: s.speaker,
+      // The export commands require a speaker string.
+      speaker: s.speaker ?? "",
       type,
       includeReason: s.include_reason || s.includeReason,
       transitionNote: s.transition_note || s.transitionNote
