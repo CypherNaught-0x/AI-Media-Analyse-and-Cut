@@ -13,6 +13,7 @@ use crate::encoders::{encode_args, preferred_h264_encoder, ExportQuality};
 use crate::ffmpeg::{run_ffmpeg, FfmpegTask};
 use crate::run_control::RunControl;
 use ffmpeg_sidecar::command::FfmpegCommand;
+use ffmpeg_sidecar::event::FfmpegEvent;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -77,14 +78,16 @@ pub(crate) fn crop_at(keys: &[CropKey], time: f64, source: (u32, u32), aspect: f
     }
 }
 
-/// A `sendcmd` script setting the crop for every output frame of a clip of
-/// `duration` seconds at `fps`. Only changes are written.
+/// A `sendcmd` script setting the crop filter `target` (e.g. `crop@r0`) for
+/// every output frame of a clip of `duration` seconds at `fps`. Only changes
+/// are written.
 pub(crate) fn sendcmd_script(
     keys: &[CropKey],
     source: (u32, u32),
     aspect: f64,
     fps: f64,
     duration: f64,
+    target: &str,
 ) -> String {
     let mut script = String::new();
     let mut previous: Option<CropRect> = None;
@@ -97,7 +100,7 @@ pub(crate) fn sendcmd_script(
         }
         let _ = writeln!(
             script,
-            "{time:.4} crop w {w}, crop h {h}, crop x {x}, crop y {y};",
+            "{time:.4} {target} w {w}, {target} h {h}, {target} x {x}, {target} y {y};",
             w = crop.width,
             h = crop.height,
             x = crop.x,
@@ -108,28 +111,49 @@ pub(crate) fn sendcmd_script(
     script
 }
 
-pub(crate) struct VerticalRender<'a> {
-    pub input: &'a Path,
+/// How a stretch of the source is put into the vertical frame.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Framing {
+    /// A crop following these keys (times relative to the stretch start).
+    Follow(Vec<CropKey>),
+    /// The whole picture, fitted to the width over a blurred, darkened copy
+    /// of itself.
+    Fit,
+}
+
+/// One stretch of the source in a vertical clip.
+#[derive(Debug, Clone)]
+pub(crate) struct VerticalRange {
     /// Source range (seconds).
     pub start: f64,
     pub end: f64,
+    pub framing: Framing,
+}
+
+pub(crate) struct VerticalRender<'a> {
+    pub input: &'a Path,
+    /// Played in order and joined.
+    pub ranges: &'a [VerticalRange],
     pub source_size: (u32, u32),
     pub fps: f64,
-    pub keys: &'a [CropKey],
+    pub has_audio: bool,
     /// Output size, e.g. 1080x1920.
     pub output_size: (u32, u32),
     pub output: &'a Path,
     pub quality: ExportQuality,
 }
 
-/// The video filter and `sendcmd` script applying the virtual camera.
+/// The video filter chain and `sendcmd` script applying the virtual camera.
+/// The script is read from `<name>.cmd` and drives the crop `crop@<name>`.
 fn camera_filter(
     keys: &[CropKey],
     source: (u32, u32),
     output: (u32, u32),
     fps: f64,
     duration: f64,
+    name: &str,
 ) -> (String, String) {
+    let target = format!("crop@{name}");
     let (out_w, out_h) = output;
     let aspect = f64::from(out_w) / f64::from(out_h);
     let first = crop_at(keys, 0.0, source, aspect);
@@ -156,11 +180,11 @@ fn camera_filter(
                 height: f64::from(out_h),
             })
             .collect();
-        let script = sendcmd_script(&scaled_keys, scaled, aspect, fps, duration);
+        let script = sendcmd_script(&scaled_keys, scaled, aspect, fps, duration, &target);
         let start = crop_at(&scaled_keys, 0.0, scaled, aspect);
         let filter = format!(
-            "scale={sw}:{sh}:flags=lanczos,sendcmd=f=crop.cmd,\
-             crop=w={out_w}:h={out_h}:x={x}:y={y}:exact=1,setsar=1",
+            "scale={sw}:{sh}:flags=lanczos,sendcmd=f={name}.cmd,\
+             {target}=w={out_w}:h={out_h}:x={x}:y={y}:exact=1,setsar=1",
             sw = scaled.0,
             sh = scaled.1,
             x = start.x,
@@ -169,9 +193,9 @@ fn camera_filter(
         return (filter, script);
     }
 
-    let script = sendcmd_script(keys, source, aspect, fps, duration);
+    let script = sendcmd_script(keys, source, aspect, fps, duration, &target);
     let filter = format!(
-        "sendcmd=f=crop.cmd,crop=w={w}:h={h}:x={x}:y={y}:exact=1,\
+        "sendcmd=f={name}.cmd,{target}=w={w}:h={h}:x={x}:y={y}:exact=1,\
          scale={out_w}:{out_h}:flags=lanczos,setsar=1",
         w = first.width,
         h = first.height,
@@ -181,36 +205,100 @@ fn camera_filter(
     (filter, script)
 }
 
-/// Render one source range through the virtual camera. Blocks.
+/// The `-filter_complex` graph for `render` (trims relative to the input
+/// seek) and the `sendcmd` scripts it reads, by file name.
+fn render_graph(render: &VerticalRender<'_>, seek: f64) -> (String, Vec<(String, String)>) {
+    let mut graph = String::new();
+    let mut scripts = Vec::new();
+    let mut concat_inputs = String::new();
+    let (out_w, out_h) = render.output_size;
+    for (i, range) in render.ranges.iter().enumerate() {
+        let (start, end) = (range.start - seek, range.end - seek);
+        let trim = format!("[0:v]trim=start={start:.6}:end={end:.6},setpts=PTS-STARTPTS");
+        match &range.framing {
+            Framing::Follow(keys) => {
+                let name = format!("r{i}");
+                let (camera, script) = camera_filter(
+                    keys,
+                    render.source_size,
+                    render.output_size,
+                    render.fps,
+                    range.end - range.start,
+                    &name,
+                );
+                let _ = write!(graph, "{trim},{camera}[v{i}];");
+                scripts.push((format!("{name}.cmd"), script));
+            }
+            Framing::Fit => {
+                // The background is blurred at quarter size: much cheaper
+                // than blurring 1080x1920, and it's a blur anyway.
+                let (bg_w, bg_h) = ((out_w / 4) & !1, (out_h / 4) & !1);
+                let _ = write!(
+                    graph,
+                    "{trim},split=2[bg{i}][fg{i}];\
+                     [bg{i}]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,\
+                     crop={bg_w}:{bg_h},boxblur=8:2,scale={out_w}:{out_h},\
+                     eq=brightness=-0.08[bgb{i}];\
+                     [fg{i}]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:\
+                     flags=lanczos[fgs{i}];\
+                     [bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{i}];"
+                );
+            }
+        }
+        concat_inputs.push_str(&format!("[v{i}]"));
+        if render.has_audio {
+            let _ = write!(
+                graph,
+                "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS[a{i}];"
+            );
+            concat_inputs.push_str(&format!("[a{i}]"));
+        }
+    }
+    let _ = write!(
+        graph,
+        "{concat_inputs}concat=n={}:v=1:a={}[v]{}",
+        render.ranges.len(),
+        u8::from(render.has_audio),
+        if render.has_audio { "[a]" } else { "" }
+    );
+    (graph, scripts)
+}
+
+/// Render source ranges through the virtual camera into one clip. Blocks.
+/// `on_progress` gets the output time written so far (seconds).
 pub(crate) fn render_vertical(
     render: &VerticalRender<'_>,
     run: Option<(u64, &RunControl)>,
+    mut on_progress: impl FnMut(f64),
 ) -> Result<(), String> {
-    let duration = render.end - render.start;
-    let (filter, script) = camera_filter(
-        render.keys,
-        render.source_size,
-        render.output_size,
-        render.fps,
-        duration,
-    );
+    if render.ranges.is_empty() || render.ranges.iter().any(|r| r.end <= r.start) {
+        return Err("A vertical clip needs non-empty source ranges".to_string());
+    }
+    let seek = render
+        .ranges
+        .iter()
+        .map(|range| range.start)
+        .fold(f64::INFINITY, f64::min);
+    let (graph, scripts) = render_graph(render, seek);
 
-    // sendcmd reads a file; keep its path free of characters that need
-    // escaping in a filtergraph (e.g. ':' in Windows paths) by running in its
-    // directory.
+    // sendcmd reads files; keep their paths free of characters that need
+    // escaping in a filtergraph (e.g. ':' in Windows paths) by running in
+    // their directory.
     let dir = tempfile::tempdir().map_err(|e| format!("Failed to create a temp folder: {e}"))?;
-    std::fs::write(dir.path().join("crop.cmd"), script)
-        .map_err(|e| format!("Failed to write the crop script: {e}"))?;
+    for (name, script) in &scripts {
+        std::fs::write(dir.path().join(name), script)
+            .map_err(|e| format!("Failed to write the crop script: {e}"))?;
+    }
 
     let mut command = FfmpegCommand::new();
     command
-        .args(["-y", "-ss", &format!("{:.6}", render.start)])
+        .args(["-y", "-ss", &format!("{seek:.6}")])
         .input(render.input.to_string_lossy())
-        .args(["-t", &format!("{duration:.6}")])
-        // `-filter:v`, not ffmpeg-sidecar's `.filter()`: a bare `-filter`
-        // also applies to the audio stream and fails.
-        .arg("-filter:v")
-        .arg(filter)
+        .args(["-filter_complex", &graph, "-map", "[v]"]);
+    if render.has_audio {
+        command.args(["-map", "[a]"]);
+    }
+    command
         .args(encode_args(preferred_h264_encoder(), render.quality))
         .output(render.output.to_string_lossy());
     command.as_inner_mut().current_dir(dir.path());
@@ -223,7 +311,14 @@ pub(crate) fn render_vertical(
             output: Some(render.output),
             run,
         },
-        |_| {},
+        |event| {
+            if let FfmpegEvent::Progress(progress) = event {
+                if let Ok(time) = crate::time_utils::parse_timestamp_to_seconds_raw(&progress.time)
+                {
+                    on_progress(time);
+                }
+            }
+        },
     )
 }
 
@@ -258,7 +353,7 @@ mod tests {
 
     #[test]
     fn script_only_lists_changes() {
-        let still = sendcmd_script(&[key(0.0, 640.0)], SOURCE, PORTRAIT, 30.0, 2.0);
+        let still = sendcmd_script(&[key(0.0, 640.0)], SOURCE, PORTRAIT, 30.0, 2.0, "crop");
         assert_eq!(still.lines().count(), 1);
         assert!(still.starts_with("0.0000 crop w 404, crop h 720, crop x 438, crop y 0;"));
 
@@ -268,7 +363,9 @@ mod tests {
             PORTRAIT,
             30.0,
             1.0,
+            "crop@r0",
         );
+        assert!(pan.starts_with("0.0000 crop@r0 w 404, crop@r0 h 720,"));
         // 30 px over 30 frames: one change per frame.
         assert_eq!(pan.lines().count(), 30);
     }
@@ -277,86 +374,109 @@ mod tests {
     fn a_single_zoom_level_is_cropped_in_output_pixels() {
         // Slow pan on 720p: 0.5 source px per frame.
         let keys = [key(0.0, 500.0), key(2.0, 530.0)];
-        let (filter, script) = camera_filter(&keys, SOURCE, (1080, 1920), 30.0, 2.0);
+        let (filter, script) = camera_filter(&keys, SOURCE, (1080, 1920), 30.0, 2.0, "r0");
         assert!(filter.starts_with("scale=3412:1920:"), "{filter}");
-        assert!(filter.contains("crop=w=1080:h=1920:"), "{filter}");
+        assert!(
+            filter.contains("sendcmd=f=r0.cmd,crop@r0=w=1080:h=1920:"),
+            "{filter}"
+        );
         // 80 output px over 60 frames: the crop moves on (nearly) every frame
         // instead of every second one by 2.7 px.
         assert!(script.lines().count() >= 55, "{script}");
         assert!(script
             .lines()
-            .all(|line| line.contains("crop w 1080, crop h 1920")));
+            .all(|line| line.contains("crop@r0 w 1080, crop@r0 h 1920")));
     }
 
     #[test]
     fn zooming_crops_the_source_first() {
         let mut keys = [key(0.0, 640.0), key(2.0, 640.0)];
         keys[1].height = 360.0;
-        let (filter, _) = camera_filter(&keys, SOURCE, (1080, 1920), 30.0, 2.0);
+        let (filter, _) = camera_filter(&keys, SOURCE, (1080, 1920), 30.0, 2.0, "r1");
         assert!(
-            filter.starts_with("sendcmd=f=crop.cmd,crop=w=404:h=720:"),
+            filter.starts_with("sendcmd=f=r1.cmd,crop@r1=w=404:h=720:"),
             "{filter}"
         );
         assert!(filter.contains("scale=1080:1920:"), "{filter}");
     }
 
-    /// Renders a real (generated) clip and checks the output is portrait and
-    /// shows the panned-to side of the source. Needs ffmpeg on PATH.
+    /// Renders three ranges of a real (generated) clip out of order and
+    /// checks the output is portrait, joined in order, and follows each
+    /// range's framing. Needs ffmpeg on PATH.
     #[test]
-    fn renders_a_portrait_clip_following_the_keys() {
+    fn renders_ranges_in_order_following_their_keys() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("wide.mp4");
-        // Left half red, right half blue.
+        // 0-2 s: left half red, right half blue. 2-4 s: green | yellow.
         let status = std::process::Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"])
-            .args(["-i", "color=c=red:s=640x360:r=25:d=2"])
-            .args(["-f", "lavfi", "-i", "color=c=blue:s=640x360:r=25:d=2"])
-            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
-            // With an audio stream: the video filter must not touch it.
-            .args(["-filter_complex", "[0][1]hstack,format=yuv420p[v]"])
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
             .args([
-                "-map", "[v]", "-map", "2:a", "-c:v", "libx264", "-c:a", "aac",
+                "-filter_complex",
+                "color=c=red:s=640x360:r=25:d=2[a];color=c=blue:s=640x360:r=25:d=2[b];\
+                 color=c=green:s=640x360:r=25:d=2[c];color=c=yellow:s=640x360:r=25:d=2[d];\
+                 [a][b]hstack[ab];[c][d]hstack[cd];[ab][cd]concat=n=2,format=yuv420p[v]",
             ])
-            .arg("-shortest")
+            // With an audio stream: the graph must carry it through.
+            .args([
+                "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-c:a", "aac",
+            ])
             .arg(&source)
             .status()
             .unwrap();
         assert!(status.success());
 
-        let output = dir.path().join("vertical.mp4");
-        let keys = [
-            CropKey {
-                time: 0.0,
-                center_x: 200.0,
-                center_y: 180.0,
-                height: 360.0,
+        let key = |time: f64, center_x: f64| CropKey {
+            time,
+            center_x,
+            center_y: 180.0,
+            height: 360.0,
+        };
+        let ranges = [
+            // Hold on the left (green) side.
+            VerticalRange {
+                start: 2.0,
+                end: 4.0,
+                framing: Framing::Follow(vec![key(0.0, 200.0)]),
             },
-            CropKey {
-                time: 2.0,
-                center_x: 1100.0,
-                center_y: 180.0,
-                height: 360.0,
+            // Pan from red to blue.
+            VerticalRange {
+                start: 0.0,
+                end: 2.0,
+                framing: Framing::Follow(vec![key(0.0, 200.0), key(2.0, 1100.0)]),
+            },
+            // The whole picture: red | blue across the middle.
+            VerticalRange {
+                start: 0.0,
+                end: 1.0,
+                framing: Framing::Fit,
             },
         ];
+        let output = dir.path().join("vertical.mp4");
+        let mut progress = Vec::new();
         render_vertical(
             &VerticalRender {
                 input: &source,
-                start: 0.0,
-                end: 2.0,
+                ranges: &ranges,
                 source_size: (1280, 360),
                 fps: 25.0,
-                keys: &keys,
+                has_audio: true,
                 output_size: (360, 640),
                 output: &output,
                 quality: ExportQuality::Draft,
             },
             None,
+            |time| progress.push(time),
         )
         .unwrap();
 
         let info = crate::media_probe::probe_media(&output).unwrap();
         let video = info.video.unwrap();
         assert_eq!((video.width, video.height), (360, 640));
+        assert!(info.audio.is_some());
+        let duration = info.duration_seconds.unwrap();
+        assert!((duration - 5.0).abs() < 0.15, "{duration}");
+        assert!(progress.last().is_some_and(|&t| t > 3.0), "{progress:?}");
         let colour = |time: &str| {
             let out = std::process::Command::new("ffmpeg")
                 .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
@@ -366,12 +486,23 @@ mod tests {
                 .output()
                 .unwrap()
                 .stdout;
-            (out[0], out[2])
+            (out[0], out[1], out[2])
         };
-        let (red, blue) = colour("0.1");
-        assert!(red > 150 && blue < 80, "starts on the red side");
-        let (red, blue) = colour("1.9");
-        assert!(blue > 150 && red < 80, "pans to the blue side");
+        let (r, g, b) = colour("0.5");
+        assert!(
+            g > 100 && r < 80 && b < 80,
+            "first range: green ({r},{g},{b})"
+        );
+        let (r, g, b) = colour("2.1");
+        assert!(
+            r > 150 && g < 80 && b < 80,
+            "second range starts red ({r},{g},{b})"
+        );
+        let (r, g, b) = colour("3.9");
+        assert!(
+            b > 150 && r < 80 && g < 80,
+            "and pans to blue ({r},{g},{b})"
+        );
     }
 }
 
@@ -417,7 +548,7 @@ mod profiling {
         ];
         let frames = (duration * fps) as usize;
         for size in [(720, 1280), (1080, 1920)] {
-            let (filter, script) = camera_filter(&keys, (w, h), size, fps, duration);
+            let (filter, script) = camera_filter(&keys, (w, h), size, fps, duration, "r0");
             println!(
                 "{}: {} crop changes over {frames} frames",
                 filter.split(',').next().unwrap_or_default(),
@@ -439,16 +570,20 @@ mod profiling {
             render_vertical(
                 &VerticalRender {
                     input: &source,
-                    start: 600.0,
-                    end: 600.0 + duration,
+                    ranges: &[VerticalRange {
+                        start: 600.0,
+                        end: 600.0 + duration,
+                        framing: Framing::Follow(keys.to_vec()),
+                    }],
                     source_size: (w, h),
                     fps,
-                    keys: &keys,
+                    has_audio: true,
                     output_size: size,
                     output: &output,
                     quality,
                 },
                 None,
+                |_| {},
             )
             .unwrap();
             let elapsed = started.elapsed().as_secs_f64();
