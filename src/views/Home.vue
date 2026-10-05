@@ -82,7 +82,6 @@ const trimSilence = ref(true);
 
 const speakerCount = ref<number | null>(null);
 const context = ref("");
-const useAdvancedAlignment = ref(false);
 const clipCount = ref(createDefaultClipWorkspaceState().count);
 const clipMinDuration = ref(createDefaultClipWorkspaceState().minDuration);
 const clipMaxDuration = ref(createDefaultClipWorkspaceState().maxDuration);
@@ -251,7 +250,6 @@ const transcriptWorkspaceState = computed<TranscriptWorkspaceState>(() => ({
     speakerCount: speakerCount.value,
     removeFillerWords: removeFillerWords.value,
     trimSilence: trimSilence.value,
-    useAdvancedAlignment: useAdvancedAlignment.value,
     speakerOrder: speakerOrder.value,
     lastAnalyzedSettings: lastAnalyzedSettings.value,
     rawParakeetSegments: rawParakeetSegments.value,
@@ -362,7 +360,6 @@ function resetTranscriptWorkspaceState() {
     speakerCount.value = null;
     removeFillerWords.value = false;
     trimSilence.value = true;
-    useAdvancedAlignment.value = false;
     speakerOrder.value = [];
     lastAnalyzedSettings.value = createDefaultLastAnalyzedSettings();
     rawParakeetSegments.value = [];
@@ -385,7 +382,6 @@ function applyTranscriptWorkspace(state: TranscriptWorkspaceState) {
     speakerCount.value = state.speakerCount;
     removeFillerWords.value = state.removeFillerWords;
     trimSilence.value = state.trimSilence;
-    useAdvancedAlignment.value = state.useAdvancedAlignment;
     speakerOrder.value = state.speakerOrder;
     lastAnalyzedSettings.value = state.lastAnalyzedSettings;
     rawParakeetSegments.value = state.rawParakeetSegments ?? [];
@@ -584,9 +580,6 @@ async function loadTranscript() {
         }
         if (parsed.targetLanguage !== undefined) {
             targetLanguage.value = parsed.targetLanguage;
-        }
-        if (parsed.useAdvancedAlignment !== undefined) {
-            useAdvancedAlignment.value = parsed.useAdvancedAlignment;
         }
         if (parsed.speakerOrder) {
             speakerOrder.value = parsed.speakerOrder;
@@ -1248,24 +1241,6 @@ async function processFile() {
         await saveTranscript();
         assertActiveRun(runId);
 
-        if (isLlmOnlyBackend.value && useAdvancedAlignment.value && segments.value.length > 0) {
-            status.value = "Aligning transcript with local model...";
-            try {
-                const alignedSegments = await invoke<TranscriptSegment[]>("align_transcript", {
-                    audioPath: audioInfo.path,
-                    transcript: segments.value
-                });
-                assertActiveRun(runId);
-                segments.value = alignedSegments;
-                status.value = `Alignment complete. Adjusted ${segments.value.length} segments.`;
-                await saveTranscript();
-                assertActiveRun(runId);
-            } catch (e) {
-                console.error("Alignment failed", e);
-                status.value = `Alignment failed: ${e}. Using original timestamps.`;
-            }
-        }
-
     } catch (e) {
         if (isRunCancelled(e)) {
             status.value = "Run cancelled.";
@@ -1444,15 +1419,12 @@ function updateProcessing(processing: boolean) {
                     :currentLanguage="currentLanguage"
                     :targetLanguage="targetLanguage"
                     :isTranslating="isTranslating"
-                    :isLlmOnlyBackend="isLlmOnlyBackend"
-                    :useAdvancedAlignment="useAdvancedAlignment"
                     :uniqueSpeakers="uniqueSpeakers"
                     :isProcessing="isProcessing"
                     @update:currentLanguage="currentLanguage = $event"
                     @update:targetLanguage="targetLanguage = $event"
                     @translate="translateTranscript"
                     @export-video="cutVideo"
-                    @update:useAdvancedAlignment="useAdvancedAlignment = $event"
                     @rename-speaker="renameSpeaker($event.oldName, $event.newName, $event.inputElement)"
                     @update:segments="displaySegments = $event"
                 />
