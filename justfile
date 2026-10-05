@@ -7,7 +7,7 @@ dev:
     pnpm tauri dev
 
 # Run every check CI runs: lint, types, formatting, clippy and all tests
-check: lint typecheck fmt-check clippy test
+check: lint format-check typecheck fmt-check clippy test
 
 # Lint the frontend
 lint:
@@ -21,6 +21,14 @@ typecheck:
 test:
     pnpm test -- --run
     cd src-tauri && cargo test
+
+# Format the frontend (Prettier)
+format:
+    pnpm format
+
+# Check frontend formatting without changing files
+format-check:
+    pnpm format:check
 
 # Format the Rust code
 fmt:
