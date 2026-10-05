@@ -12,8 +12,8 @@ use hound::WavReader;
 use parakeet_rs::sortformer::{DiarizationConfig, Sortformer, SpeakerSegment};
 use std::path::{Path, PathBuf};
 use tauri::{Emitter, Manager};
-use tokio::io::AsyncWriteExt;
 
+use crate::model_download::{ensure_pinned_file, HUGGING_FACE, SORTFORMER_V2};
 use crate::time_utils::format_time;
 use crate::video::{TranscriptSegment, TranscriptWord};
 use parakeet_rs::ExecutionConfig;
@@ -25,12 +25,6 @@ const MIN_SEGMENT_CHARS_FOR_PUNCT_BREAK: usize = 48;
 const MIN_SEGMENT_WORDS_FOR_PUNCT_BREAK: usize = 6;
 const MIN_SEGMENT_CHARS_FOR_PAUSE_BREAK: usize = 32;
 const PAUSE_BREAK_SECONDS: f32 = 0.9;
-
-/// Files hosted alongside the Parakeet ONNX exports. The Sortformer
-/// diarization model lives here and is shared by every local backend.
-pub(crate) const HF_RESOLVE_BASE: &str =
-    "https://huggingface.co/altunenes/parakeet-rs/resolve/main";
-pub(crate) const DEFAULT_SORTFORMER_FILE_NAME: &str = "diar_streaming_sortformer_4spk-v2.onnx";
 
 /// A single recognised word with its speaker attribution.
 #[derive(Clone, Debug)]
@@ -359,75 +353,6 @@ fn read_wav_16k_mono(path: &Path) -> Result<Vec<f32>> {
     Ok(samples)
 }
 
-pub(crate) async fn download_file_if_missing(
-    window: &tauri::Window,
-    client: &reqwest::Client,
-    destination: &Path,
-    url: &str,
-    label: &str,
-) -> Result<()> {
-    if destination.exists() {
-        return Ok(());
-    }
-
-    if let Some(parent) = destination.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    emit_progress(window, &format!("Downloading {label}..."))?;
-
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("Failed to start download for {label}"))?
-        .error_for_status()
-        .with_context(|| format!("Failed to download {label}"))?;
-
-    let total_bytes = response.content_length();
-    let temp_path = destination.with_extension("partial");
-    let mut file = tokio::fs::File::create(&temp_path).await.with_context(|| {
-        format!(
-            "Failed to create temporary file for {}",
-            destination.display()
-        )
-    })?;
-
-    let mut downloaded_bytes = 0u64;
-    let mut last_reported_percent = 0u64;
-    let mut response = response;
-
-    while let Some(chunk) = response.chunk().await? {
-        file.write_all(&chunk).await?;
-        downloaded_bytes += chunk.len() as u64;
-
-        if let Some(total_bytes) = total_bytes {
-            let percent = ((downloaded_bytes as f64 / total_bytes as f64) * 100.0) as u64;
-            if percent >= last_reported_percent + 10 {
-                last_reported_percent = percent.min(100);
-                emit_progress(
-                    window,
-                    &format!("Downloading {label}... {}%", last_reported_percent),
-                )?;
-            }
-        }
-    }
-
-    file.flush().await?;
-    drop(file);
-    tokio::fs::rename(&temp_path, destination)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to finalize downloaded file '{}'",
-                destination.display()
-            )
-        })?;
-
-    emit_progress(window, &format!("Downloaded {label}"))?;
-    Ok(())
-}
-
 /// Root directory for on-demand model downloads, e.g.
 /// `<app data>/models/<subdirectory>`.
 pub(crate) fn model_root(window: &tauri::Window, subdirectory: &str) -> Result<PathBuf> {
@@ -449,19 +374,19 @@ pub(crate) async fn resolve_sortformer_file(
         return Ok(PathBuf::from(trimmed));
     }
 
-    let sortformer_file = model_root(window, "parakeet-rs")?.join(DEFAULT_SORTFORMER_FILE_NAME);
+    let sortformer_file = model_root(window, "parakeet-rs")?.join(SORTFORMER_V2.file_name());
     if let Some(parent) = sortformer_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let client = reqwest::Client::new();
-    let url = format!("{HF_RESOLVE_BASE}/{DEFAULT_SORTFORMER_FILE_NAME}?download=1");
-    download_file_if_missing(
-        window,
-        &client,
+    ensure_pinned_file(
+        &reqwest::Client::new(),
+        HUGGING_FACE,
+        &SORTFORMER_V2,
         &sortformer_file,
-        &url,
-        DEFAULT_SORTFORMER_FILE_NAME,
+        &|message| {
+            let _ = emit_progress(window, message);
+        },
     )
     .await?;
 
