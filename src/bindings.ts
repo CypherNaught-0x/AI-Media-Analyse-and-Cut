@@ -53,6 +53,11 @@ export const commands = {
 	installCrisperEnvironment: (pythonPath: string, extra: string) => __TAURI_INVOKE<CrisperEnvironmentStatus>("install_crisper_environment", { pythonPath, extra }),
 	cutVideo: (runId: number, inputPath: string, segments: Segment[], outputPath: string, quality: ExportQuality) => __TAURI_INVOKE<null>("cut_video", { runId, inputPath, segments, outputPath, quality }),
 	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean, quality: ExportQuality) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode, quality }),
+	/**
+	 *  Export clips as vertical (9:16) videos that follow the active speaker
+	 *  (shorts phase S2). `turns` say who speaks when; faces are bound to them.
+	 */
+	exportVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[], outputDir: string, quality: ExportQuality) => __TAURI_INVOKE<null>("export_vertical_clips", { runId, inputPath, segments, turns, outputDir, quality }),
 	readFileAsBase64: (path: string) => __TAURI_INVOKE<string>("read_file_as_base64", { path }),
 	openFolder: (path: string) => __TAURI_INVOKE<null>("open_folder", { path }),
 	writeTextFile: (path: string, content: string) => __TAURI_INVOKE<null>("write_text_file", { path, content }),
@@ -296,6 +301,13 @@ export type SilenceInterval = {
 	start: number,
 	end: number,
 	duration: number,
+};
+
+/**  A stretch of speech by one named speaker, for vertical framing. */
+export type SpeakerTurn = {
+	start: number,
+	end: number,
+	speaker: string,
 };
 
 export type TranscriptAlternative = TranscriptAlternative_Serialize | TranscriptAlternative_Deserialize;

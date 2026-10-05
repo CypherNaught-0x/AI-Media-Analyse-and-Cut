@@ -271,6 +271,8 @@ export interface ViralClipsWorkspaceState {
     allowSplicing: boolean;
     /** Ask for looped shorts (opener = resolution, closing leads back to it). */
     looped: boolean;
+    /** Export 9:16 videos that follow the active speaker. */
+    vertical: boolean;
     clips: ShortClip[];
     lastExportPath: string;
     trimBoundarySilence: boolean;

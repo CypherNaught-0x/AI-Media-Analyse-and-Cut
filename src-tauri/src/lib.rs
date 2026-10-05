@@ -339,23 +339,15 @@ async fn prepare_preview_audio(
     .map_err(AppError::from)
 }
 
+mod camera;
 pub mod chunking;
 pub mod clip_selection;
 pub mod crisper;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
-#[allow(dead_code)]
-mod camera;
 pub(crate) mod encoders;
 pub mod error;
-pub(crate) mod ffmpeg;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
-#[allow(dead_code)]
 mod face_tracks;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
-#[allow(dead_code)]
 mod faces;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
-#[allow(dead_code)]
+pub(crate) mod ffmpeg;
 mod frames;
 pub mod gemini;
 mod http;
@@ -367,24 +359,16 @@ mod model_download;
 mod parakeet;
 mod path_guard;
 pub mod podcast;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
-#[allow(dead_code)]
 mod reframe;
 pub mod retry;
 mod run_control;
 mod secrets;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
-#[allow(dead_code)]
 mod shots;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
 pub mod silence;
-#[allow(dead_code)]
 mod speaker_faces;
 pub mod time_utils;
 pub mod transcript_merge;
-// Shorts S2 building blocks; wired to commands once the camera path exists.
 mod upload;
-#[allow(dead_code)]
 mod vertical;
 pub mod video;
 
@@ -777,6 +761,97 @@ async fn export_clips(
     .map_err(AppError::from)
 }
 
+/// A stretch of speech by one named speaker, for vertical framing.
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+pub struct SpeakerTurn {
+    #[specta(type = specta_typescript::Number)]
+    pub start: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub end: f64,
+    pub speaker: String,
+}
+
+/// Export clips as vertical (9:16) videos that follow the active speaker
+/// (shorts phase S2). `turns` say who speaks when; faces are bound to them.
+#[tauri::command]
+#[specta::specta]
+// Parameters mirror the IPC payload the frontend sends.
+#[allow(clippy::too_many_arguments)]
+async fn export_vertical_clips(
+    run_id: u64,
+    window: tauri::Window,
+    input_path: String,
+    segments: Vec<ClipSegment>,
+    turns: Vec<SpeakerTurn>,
+    output_dir: String,
+    quality: ExportQuality,
+    run_control: State<'_, RunControl>,
+) -> Result<(), AppError> {
+    use crate::time_utils::parse_timestamp_to_seconds_raw;
+    run_control.ensure_active(run_id)?;
+
+    let input = PathBuf::from(input_path);
+    let output_dir = PathBuf::from(output_dir);
+    std::fs::create_dir_all(&output_dir)
+        .map_err(|e| format_path_io_error("create the output folder", &output_dir, &e))?;
+    let mut clips = Vec::with_capacity(segments.len());
+    for (index, clip) in segments.iter().enumerate() {
+        let ranges = clip
+            .segments
+            .iter()
+            .map(|segment| {
+                let start = parse_timestamp_to_seconds_raw(&segment.start)
+                    .map_err(|e| format!("Invalid clip start '{}': {e}", segment.start))?;
+                let end = parse_timestamp_to_seconds_raw(&segment.end)
+                    .map_err(|e| format!("Invalid clip end '{}': {e}", segment.end))?;
+                Ok((start.max(0.0), end))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let output = output_dir.join(video::vertical_output_filename(index, clip));
+        let metadata = serde_json::json!({
+            "title": clip.label,
+            "reason": clip.reason,
+            "segments": clip.segments,
+            "format": "9:16",
+        });
+        if let Ok(content) = serde_json::to_string_pretty(&metadata) {
+            let _ = std::fs::write(output.with_extension("json"), content);
+        }
+        clips.push(vertical::VerticalClip { ranges, output });
+    }
+    let turns: Vec<speaker_faces::SpeechTurn> = turns
+        .into_iter()
+        .map(|turn| speaker_faces::SpeechTurn {
+            start: turn.start,
+            end: turn.end,
+            speaker: turn.speaker,
+        })
+        .collect();
+
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        vertical::export_vertical(
+            &input,
+            &clips,
+            &turns,
+            quality,
+            Some((run_id, &run_control)),
+            &mut |fraction, message| {
+                let _ = window.emit(
+                    "progress",
+                    serde_json::json!({
+                        "percentage": fraction * 100.0,
+                        "message": message,
+                    }),
+                );
+            },
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(AppError::from)
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn read_file_as_base64(app: tauri::AppHandle, path: String) -> Result<String, AppError> {
@@ -1113,6 +1188,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             install_crisper_environment,
             cut_video,
             export_clips,
+            export_vertical_clips,
             read_file_as_base64,
             open_folder,
             write_text_file,

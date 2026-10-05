@@ -15,6 +15,7 @@ import {
     clipDuration,
     fromCandidates,
     playbackStep,
+    speakerTurns,
     toExportSegments,
     trimClip,
     wordBoundaries,
@@ -101,6 +102,11 @@ const TOGGLES = [
         key: 'trimBoundarySilence',
         title: 'Trim edge silence',
         text: 'Remove silence at clip starts and ends on export.',
+    },
+    {
+        key: 'vertical',
+        title: 'Vertical 9:16',
+        text: 'Export portrait videos that follow whoever is speaking.',
     },
 ] as const;
 
@@ -286,17 +292,28 @@ async function exportClips(toExport: ShortClip[]) {
         }));
 
         emit('update:status', `Exporting to ${outputDir}...`);
-        await commands.exportClips(
-            runId,
-            props.inputPath,
-            clipSegments,
-            outputDir,
-            // fastMode off: stream copy can only start on a keyframe, so clips
-            // would open early or on a frame that can't be decoded. Social clips
-            // need exact cuts.
-            false,
-            settings.value.exportQuality,
-        );
+        if (props.state.vertical) {
+            await commands.exportVerticalClips(
+                runId,
+                props.inputPath,
+                clipSegments,
+                speakerTurns(props.segments),
+                outputDir,
+                settings.value.exportQuality,
+            );
+        } else {
+            await commands.exportClips(
+                runId,
+                props.inputPath,
+                clipSegments,
+                outputDir,
+                // fastMode off: stream copy can only start on a keyframe, so
+                // clips would open early or on a frame that can't be decoded.
+                // Social clips need exact cuts.
+                false,
+                settings.value.exportQuality,
+            );
+        }
         assertActiveRun(runId);
 
         updateState({ lastExportPath: outputDir });
