@@ -466,65 +466,6 @@ async fn test_transcription_retries_without_json_schema_on_body_decode_error() {
 }
 
 #[tokio::test]
-async fn test_generate_clips_mock() {
-    if !ensure_loopback_access("test_generate_clips_mock").await {
-        return;
-    }
-
-    let mut server = Server::new_async().await;
-    let mock = server
-        .mock("POST", "/v1/chat/completions")
-        .match_query(mockito::Matcher::Any)
-        .with_status(200)
-        .with_header("content-type", "application/json")
-        .with_body(
-            json!({
-                "choices": [{
-                    "message": {
-                        "content": json!([
-                            {
-                                "segments": [{"start": "00:00", "end": "00:10"}],
-                                "title": "Viral Clip",
-                                "reason": "Very funny"
-                            }
-                        ]).to_string()
-                    }
-                }]
-            })
-            .to_string(),
-        )
-        .create_async()
-        .await;
-
-    let client = GeminiClient::new(
-        "fake_key".to_string(),
-        server.url(),
-        "gemini-1.5-flash".to_string(),
-    );
-
-    let result = client
-        .generate_clips("transcript content", 1, 5, 60, None, false)
-        .await
-        .unwrap();
-
-    let json_str = if let Some(start) = result.find('[') {
-        if let Some(end) = result.rfind(']') {
-            &result[start..=end]
-        } else {
-            &result
-        }
-    } else {
-        &result
-    };
-
-    let clips: serde_json::Value = serde_json::from_str(json_str).unwrap();
-    assert!(clips.is_array());
-    assert_eq!(clips[0]["title"], "Viral Clip");
-
-    mock.assert_async().await;
-}
-
-#[tokio::test]
 async fn test_real_pipeline() {
     let _ = dotenvy::dotenv();
 
@@ -653,34 +594,22 @@ async fn test_real_pipeline() {
 
     // 3. Clip Generation
     println!("Testing real clip generation...");
-    let transcript_text = serde_json::to_string(&segments).unwrap();
-    let clips_result = client
-        .generate_clips(&transcript_text, 1, 5, 60, Some("AI".to_string()), false)
-        .await;
-    assert!(
-        clips_result.is_ok(),
-        "Clip generation failed: {:?}",
-        clips_result.err()
-    );
-
-    let clips_json = clips_result.unwrap();
-    let clips_json_str = if let Some(start) = clips_json.find('[') {
-        if let Some(end) = clips_json.rfind(']') {
-            &clips_json[start..=end]
-        } else {
-            &clips_json
-        }
-    } else {
-        &clips_json
-    };
-
-    let clips: serde_json::Value =
-        serde_json::from_str(clips_json_str).expect("Failed to parse clips JSON");
-    assert!(clips.is_array(), "Clips should be an array");
-    assert!(
-        !clips.as_array().unwrap().is_empty(),
-        "Should generate at least one clip"
-    );
+    let clips = ai_media_cutter_lib::clip_selection::select_clips(
+        &client,
+        &segments,
+        &ai_media_cutter_lib::clip_selection::ClipRequest {
+            count: 1,
+            min_seconds: 5.0,
+            max_seconds: 60.0,
+            topic: Some("AI".to_string()),
+            allow_splicing: false,
+            looped: false,
+        },
+        &|_, _| {},
+    )
+    .await
+    .expect("Clip selection failed");
+    assert!(!clips.is_empty(), "Should select at least one clip");
 
     println!("Clip generation successful.");
 }

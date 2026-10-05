@@ -1,3 +1,4 @@
+import { normalizeShortClips } from './shortClips';
 import type {
     ClipWorkspaceState,
     EditSessionV1,
@@ -46,10 +47,12 @@ export function createDefaultClipWorkspaceState(): ClipWorkspaceState {
 export function createDefaultViralClipsWorkspaceState(): ViralClipsWorkspaceState {
     return {
         count: 3,
-        minDuration: 10,
-        maxDuration: 120,
+        // Typical short-form length; sessions keep whatever they saved.
+        minDuration: 20,
+        maxDuration: 60,
         topic: '',
         allowSplicing: false,
+        looped: false,
         clips: [],
         lastExportPath: '',
         trimBoundarySilence: false,
@@ -312,6 +315,10 @@ export function normalizeEditSession(candidate: unknown): EditSessionV1 | null {
         viralClipsWorkspace: {
             ...defaults.viralClipsWorkspace,
             ...(isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace : {}),
+            // Older sessions stored unscored clips with timestamp strings.
+            clips: normalizeShortClips(
+                isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace.clips : [],
+            ),
         },
         podcastWorkspace: {
             ...defaults.podcastWorkspace,

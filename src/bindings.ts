@@ -54,7 +54,6 @@ export const commands = {
 	cutVideo: (runId: number, inputPath: string, segments: Segment[], outputPath: string, quality: ExportQuality) => __TAURI_INVOKE<null>("cut_video", { runId, inputPath, segments, outputPath, quality }),
 	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean, quality: ExportQuality) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode, quality }),
 	readFileAsBase64: (path: string) => __TAURI_INVOKE<string>("read_file_as_base64", { path }),
-	generateClips: (runId: number, llm: LlmConfig, transcript: string, count: number, minDuration: number, maxDuration: number, topic: string | null, splicing: boolean) => __TAURI_INVOKE<string>("generate_clips", { runId, llm, transcript, count, minDuration, maxDuration, topic, splicing }),
 	openFolder: (path: string) => __TAURI_INVOKE<null>("open_folder", { path }),
 	writeTextFile: (path: string, content: string) => __TAURI_INVOKE<null>("write_text_file", { path, content }),
 	readTextFile: (path: string) => __TAURI_INVOKE<string>("read_text_file", { path }),
