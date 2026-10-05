@@ -108,7 +108,7 @@ const segmentNeedsReview = (segment: TranscriptSegment, originalIndex: number): 
     if (segment.reviewResolved) return false;
 
     const belowThreshold =
-        segment.similarityScore !== undefined
+        segment.similarityScore != null
             ? segment.similarityScore < reviewThreshold.value
             : segment.mergeStatus === 'missing_google' || segment.mergeStatus === 'missing_local';
 
@@ -157,7 +157,7 @@ function startsSpeakerRun(visibleIndex: number): boolean {
 function hasRowBadges(segment: TranscriptSegment, originalIndex: number): boolean {
     return (
         !!segment.mergeStatus ||
-        segment.similarityScore !== undefined ||
+        segment.similarityScore != null ||
         segment.reviewResolved === true ||
         getBlacklistMatches(originalIndex).length > 0
     );
@@ -947,7 +947,7 @@ const mergeDown = (originalIndex: number) => {
                             {{ mergeStatusLabel(segment.mergeStatus) }}
                         </span>
                         <span
-                            v-if="segment.similarityScore !== undefined"
+                            v-if="segment.similarityScore != null"
                             class="text-[10px] text-gray-500"
                         >
                             {{ Math.round(segment.similarityScore * 100) }}%

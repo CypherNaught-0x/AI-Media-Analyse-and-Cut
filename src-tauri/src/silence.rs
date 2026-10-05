@@ -11,14 +11,19 @@ use tauri::State;
 
 #[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct SilenceInterval {
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     pub start: f64,
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     pub end: f64,
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     pub duration: f64,
 }
 
 #[derive(Serialize, Debug, Clone, specta::Type)]
 pub struct SegmentOffset {
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     pub min_time: f64,
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     pub offset: f64,
 }
 

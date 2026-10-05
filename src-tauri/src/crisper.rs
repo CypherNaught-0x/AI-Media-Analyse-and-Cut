@@ -112,7 +112,7 @@ impl CrisperOptions {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase")]
 pub struct CrisperEnvironmentStatus {
     /// Interpreter that was probed, if one could be found at all.
     pub python_path: String,
@@ -401,8 +401,8 @@ async fn probe_python(
     )
     .await?;
 
-    let mut status: CrisperEnvironmentStatus = serde_json::from_value(response)
-        .context("Failed to parse CrisperWhisper environment probe")?;
+    let mut status =
+        parse_probe_status(response).context("Failed to parse CrisperWhisper environment probe")?;
 
     // The probe reports the interpreter it actually ran as; keep it.
     if status.python_path.trim().is_empty() {
@@ -410,6 +410,17 @@ async fn probe_python(
     }
 
     Ok(status)
+}
+
+/// Parse the runner's probe reply. The runner may omit fields (e.g. when an
+/// import fails), so they are filled from the defaults rather than marking every
+/// field optional in the status the frontend receives.
+fn parse_probe_status(response: serde_json::Value) -> Result<CrisperEnvironmentStatus> {
+    let mut merged = serde_json::to_value(CrisperEnvironmentStatus::default())?;
+    if let (Some(base), serde_json::Value::Object(probe)) = (merged.as_object_mut(), response) {
+        base.extend(probe);
+    }
+    Ok(serde_json::from_value(merged)?)
 }
 
 fn finalize_status(mut status: CrisperEnvironmentStatus) -> CrisperEnvironmentStatus {
@@ -1253,5 +1264,18 @@ mod tests {
         // added_tokens.json.
         assert!(RUNNER_SOURCE.contains("[um]"));
         assert!(RUNNER_SOURCE.contains("[laughter]"));
+    }
+
+    #[test]
+    fn partial_probe_replies_fill_missing_fields_from_defaults() {
+        let status = parse_probe_status(serde_json::json!({
+            "python": "3.12.1",
+            "installed": true,
+        }))
+        .unwrap();
+        assert_eq!(status.python, "3.12.1");
+        assert!(status.installed);
+        assert!(status.backends.is_empty());
+        assert_eq!(status.message, None);
     }
 }

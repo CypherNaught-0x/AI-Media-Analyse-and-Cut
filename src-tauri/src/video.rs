@@ -20,6 +20,7 @@ pub struct TranscriptWord {
     pub end: String,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub speaker: Option<String>,
 }
 
@@ -41,8 +42,10 @@ pub struct TranscriptAlternative {
     pub source: TranscriptAlternativeSource,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub speaker: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub similarity_score: Option<f32>,
 }
 
@@ -67,14 +70,19 @@ pub struct TranscriptSegment {
     pub speaker: String,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub words: Option<Vec<TranscriptWord>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub alternatives: Option<Vec<TranscriptAlternative>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub merge_status: Option<TranscriptMergeStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub active_source: Option<TranscriptAlternativeSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub similarity_score: Option<f32>,
 }
 

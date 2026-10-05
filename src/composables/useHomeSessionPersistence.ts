@@ -1,5 +1,4 @@
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { normalizeEditSession } from '../utils/editSession';
 import type {
@@ -9,6 +8,7 @@ import type {
     TranscriptWorkspaceState,
     ViralClipsWorkspaceState,
 } from '../types';
+import { commands } from '../bindings';
 
 export const SESSION_STORAGE_KEY = 'home-edit-session-v1';
 const SESSION_FILE_EXTENSION = 'aimc-session.json';
@@ -166,10 +166,10 @@ export function useHomeSessionPersistence(options: UseHomeSessionPersistenceOpti
 
         if (!selectedPath) return;
 
-        await invoke('write_text_file', {
-            path: selectedPath,
-            content: JSON.stringify(buildSessionSnapshot.value, null, 2),
-        });
+        await commands.writeTextFile(
+            selectedPath,
+            JSON.stringify(buildSessionSnapshot.value, null, 2),
+        );
         options.status.value = `Session saved to ${selectedPath}`;
     }
 
@@ -188,7 +188,7 @@ export function useHomeSessionPersistence(options: UseHomeSessionPersistenceOpti
 
         if (typeof selectedPath !== 'string') return;
 
-        const content = await invoke<string>('read_text_file', { path: selectedPath });
+        const content = await commands.readTextFile(selectedPath);
         const parsed = normalizeEditSession(JSON.parse(content));
         if (!parsed) {
             throw new Error('Unsupported or invalid session file.');

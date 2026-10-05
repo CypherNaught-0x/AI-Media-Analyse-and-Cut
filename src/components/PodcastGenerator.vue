@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type {
     PodcastScript,
@@ -15,6 +14,7 @@ import { exportFolderOf } from '../utils/filePath';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import SpinnerIcon from '../assets/icons/spinner.svg?component';
+import { commands } from '../bindings';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -195,16 +195,16 @@ async function generatePodcast() {
             .join('\n');
 
         // Initial generation
-        let response = await invoke<string>('generate_podcast', {
+        let response = await commands.generatePodcast(
             runId,
-            apiKey: settings.value.apiKey,
-            baseUrl: settings.value.baseUrl,
-            model: settings.value.model,
+            settings.value.apiKey,
+            settings.value.baseUrl,
+            settings.value.model,
             transcript,
-            minDuration: minDurationSeconds.value,
-            maxDuration: maxDurationSeconds.value,
-            context: props.context.trim() || null,
-        });
+            minDurationSeconds.value,
+            maxDurationSeconds.value,
+            props.context.trim() || null,
+        );
         assertActiveRun(runId);
 
         let script: PodcastScript;
@@ -236,17 +236,17 @@ async function generatePodcast() {
             iterations++;
             emit('update:status', `Refining podcast script (iteration ${iterations})...`);
 
-            response = await invoke<string>('refine_podcast', {
+            response = await commands.refinePodcast(
                 runId,
-                apiKey: settings.value.apiKey,
-                baseUrl: settings.value.baseUrl,
-                model: settings.value.model,
-                originalTranscript: transcript,
-                currentScript: JSON.stringify(script),
-                currentDuration: duration,
-                targetMin: minDurationSeconds.value,
-                targetMax: maxDurationSeconds.value,
-            });
+                settings.value.apiKey,
+                settings.value.baseUrl,
+                settings.value.model,
+                transcript,
+                JSON.stringify(script),
+                duration,
+                minDurationSeconds.value,
+                maxDurationSeconds.value,
+            );
             assertActiveRun(runId);
 
             let refinedScript: PodcastScript | null = null;
@@ -482,10 +482,10 @@ async function exportPodcast() {
     try {
         const outputPath = props.inputPath.replace(/\.[^/\\.]+$/, '_podcast.m4a');
 
-        await invoke('export_podcast', {
+        await commands.exportPodcast(
             runId,
-            inputPath: props.inputPath,
-            segments: podcastScript.value.segments.map((s) => ({
+            props.inputPath,
+            podcastScript.value.segments.map((s) => ({
                 start: s.start,
                 end: s.end,
                 text: s.text,
@@ -494,12 +494,12 @@ async function exportPodcast() {
                 include_reason: s.includeReason,
                 transition_note: s.transitionNote,
             })),
-            introPath: introPath.value || null,
-            outroPath: outroPath.value || null,
-            startPadding: startPadding.value,
-            endPadding: endPadding.value,
+            introPath.value || null,
+            outroPath.value || null,
+            startPadding.value,
+            endPadding.value,
             outputPath,
-        });
+        );
         assertActiveRun(runId);
 
         updateState({ lastExportPath: outputPath });
@@ -543,10 +543,10 @@ async function exportClips() {
     try {
         const outputDir = props.inputPath.replace(/\.[^/\\.]+$/, '_podcast_clips');
 
-        await invoke('export_podcast_clips', {
+        await commands.exportPodcastClips(
             runId,
-            inputPath: props.inputPath,
-            segments: podcastScript.value.segments.map((s) => ({
+            props.inputPath,
+            podcastScript.value.segments.map((s) => ({
                 start: s.start,
                 end: s.end,
                 text: s.text,
@@ -555,10 +555,10 @@ async function exportClips() {
                 include_reason: s.includeReason,
                 transition_note: s.transitionNote,
             })),
-            startPadding: startPadding.value,
-            endPadding: endPadding.value,
+            startPadding.value,
+            endPadding.value,
             outputDir,
-        });
+        );
         assertActiveRun(runId);
 
         updateState({ lastExportPath: outputDir });
@@ -582,7 +582,7 @@ async function exportClips() {
 async function openExportFolder() {
     if (lastExportPath.value) {
         // The last export is either the podcast file or the clips directory.
-        await invoke('open_folder', { path: exportFolderOf(lastExportPath.value) });
+        await commands.openFolder(exportFolderOf(lastExportPath.value));
     }
 }
 </script>

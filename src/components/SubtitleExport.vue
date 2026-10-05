@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { ref, computed } from 'vue';
 import type { TranscriptSegment } from '../types';
@@ -11,6 +10,7 @@ import {
 } from '../utils/subtitleValidation';
 import { formatSubtitleTimeRange } from '../utils/subtitle';
 import { remapSegmentsToCutTimeline } from '../utils/subtitleTimeline';
+import { commands } from '../bindings';
 
 const props = defineProps<{
     segments: TranscriptSegment[];
@@ -119,7 +119,7 @@ async function exportSubtitles(format: 'srt' | 'vtt' | 'txt', manualSave: boolea
             outputPath = saved;
         }
 
-        await invoke('write_text_file', { path: outputPath, content });
+        await commands.writeTextFile(outputPath, content);
         status.value =
             timeline.value === 'cut'
                 ? `Exported ${format.toUpperCase()} (cut timeline)`

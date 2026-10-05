@@ -25,8 +25,10 @@ pub struct PodcastSegment {
     #[serde(default)]
     pub segment_type: PodcastSegmentType, // 'content' = actual audio, 'voiceover' = suggested transition
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub include_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
     pub transition_note: Option<String>, // For voiceover: suggested text to bridge topics
 }
 

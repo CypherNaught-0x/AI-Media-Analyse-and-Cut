@@ -160,6 +160,7 @@ use serde::Serialize;
 struct AudioInfo {
     path: String,
     size: u64,
+    #[specta(type = specta_typescript::Number)] // never NaN; plain `number` in TS
     duration: f64,
 }
 
