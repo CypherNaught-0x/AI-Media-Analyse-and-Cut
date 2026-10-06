@@ -55,6 +55,7 @@ export function createDefaultViralClipsWorkspaceState(): ViralClipsWorkspaceStat
         looped: false,
         vertical: false,
         captions: true,
+        intensity: 'punchy',
         clips: [],
         lastExportPath: '',
         trimBoundarySilence: false,

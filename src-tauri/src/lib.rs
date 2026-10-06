@@ -359,6 +359,7 @@ mod media_protocol;
 mod model_download;
 mod parakeet;
 mod path_guard;
+mod pauses;
 pub mod podcast;
 mod reframe;
 pub mod retry;
@@ -367,6 +368,7 @@ mod secrets;
 mod shots;
 pub mod silence;
 mod speaker_faces;
+mod tighten;
 pub mod time_utils;
 pub mod transcript_merge;
 mod upload;
@@ -813,81 +815,116 @@ fn speech_turns(turns: Vec<SpeakerTurn>) -> Vec<speaker_faces::SpeechTurn> {
         .collect()
 }
 
+fn timed_words(words: Vec<CaptionWord>) -> Vec<captions::TimedWord> {
+    words
+        .into_iter()
+        .map(|word| captions::TimedWord {
+            start: word.start,
+            end: word.end,
+            text: word.text,
+        })
+        .collect()
+}
+
+fn emit_progress(window: &tauri::Window, fraction: f64, message: String) {
+    let _ = window.emit(
+        "progress",
+        serde_json::json!({ "percentage": fraction * 100.0, "message": message }),
+    );
+}
+
+/// Clips to reframe as vertical shorts, with what's needed to frame, tighten
+/// and caption them.
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VerticalRequest {
+    pub input_path: String,
+    pub segments: Vec<ClipSegment>,
+    /// Who speaks when (the camera follows them).
+    pub turns: Vec<SpeakerTurn>,
+    /// Transcript words around the clips (fillers, captions).
+    pub words: Vec<CaptionWord>,
+    pub intensity: tighten::Intensity,
+    /// Burn the words in as captions.
+    pub captions: bool,
+}
+
+/// Per clip, its source ranges (seconds) in playback order.
+type ClipRanges = Vec<Vec<(f64, f64)>>;
+
+/// The request's clips as tightened source ranges, and the words to caption
+/// them with (without the ones tightening cut on purpose).
+fn prepare_vertical(
+    request: &VerticalRequest,
+    input: &Path,
+    run: Option<(u64, &RunControl)>,
+) -> Result<(ClipRanges, Vec<captions::TimedWord>), String> {
+    let words = timed_words(request.words.clone());
+    let ranges = tighten::tighten_clips(
+        input,
+        &clip_ranges(&request.segments)?,
+        &words,
+        request.intensity,
+        run,
+    )?;
+    let removed = tighten::removed_words(&words, request.intensity);
+    let shown = words.into_iter().filter(|w| !removed.contains(w)).collect();
+    Ok((ranges, shown))
+}
+
 /// Export clips as vertical (9:16) videos that follow the active speaker
-/// (shorts phase S2). `turns` say who speaks when; faces are bound to them.
+/// (shorts phase S2), tightened (S4) and captioned (S3) as requested.
 #[tauri::command]
 #[specta::specta]
-// Parameters mirror the IPC payload the frontend sends.
-#[allow(clippy::too_many_arguments)]
 async fn export_vertical_clips(
     run_id: u64,
     window: tauri::Window,
-    input_path: String,
-    segments: Vec<ClipSegment>,
-    turns: Vec<SpeakerTurn>,
+    request: VerticalRequest,
     output_dir: String,
     quality: ExportQuality,
-    // Burn these words in as captions; `None` for none.
-    captions: Option<Vec<CaptionWord>>,
     run_control: State<'_, RunControl>,
     analysis: State<'_, std::sync::Arc<vertical::AnalysisCache>>,
 ) -> Result<(), AppError> {
     run_control.ensure_active(run_id)?;
-
-    let input = PathBuf::from(input_path);
+    let input = PathBuf::from(&request.input_path);
     let output_dir = PathBuf::from(output_dir);
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format_path_io_error("create the output folder", &output_dir, &e))?;
-    let mut clips = Vec::with_capacity(segments.len());
-    for (index, (clip, ranges)) in segments.iter().zip(clip_ranges(&segments)?).enumerate() {
-        let output = output_dir.join(video::vertical_output_filename(index, clip));
-        let metadata = serde_json::json!({
-            "title": clip.label,
-            "reason": clip.reason,
-            "segments": clip.segments,
-            "format": "9:16",
-        });
-        if let Ok(content) = serde_json::to_string_pretty(&metadata) {
-            let _ = std::fs::write(output.with_extension("json"), content);
-        }
-        clips.push(vertical::VerticalClip { ranges, output });
-    }
-    let turns = speech_turns(turns);
-    let words: Option<Vec<captions::TimedWord>> = captions.map(|words| {
-        words
-            .into_iter()
-            .map(|word| captions::TimedWord {
-                start: word.start,
-                end: word.end,
-                text: word.text,
-            })
-            .collect()
-    });
 
     let run_control = run_control.inner().clone();
     let analysis = analysis.inner().clone();
     run_blocking(move || {
+        let run = Some((run_id, &run_control));
+        emit_progress(&window, 0.0, "Tightening clips...".to_string());
+        let (ranges, words) = prepare_vertical(&request, &input, run)?;
+        let mut clips = Vec::with_capacity(ranges.len());
+        for (index, (clip, ranges)) in request.segments.iter().zip(ranges).enumerate() {
+            let output = output_dir.join(video::vertical_output_filename(index, clip));
+            let metadata = serde_json::json!({
+                "title": clip.label,
+                "reason": clip.reason,
+                "segments": clip.segments,
+                "tightened": ranges,
+                "format": "9:16",
+            });
+            if let Ok(content) = serde_json::to_string_pretty(&metadata) {
+                let _ = std::fs::write(output.with_extension("json"), content);
+            }
+            clips.push(vertical::VerticalClip { ranges, output });
+        }
         vertical::export_vertical(
             &input,
             &clips,
-            &turns,
+            &speech_turns(request.turns.clone()),
             vertical::RenderOptions {
                 quality,
-                captions: words
-                    .as_deref()
-                    .map(|words| (words, captions::CaptionStyle::default())),
+                captions: request
+                    .captions
+                    .then(|| (words.as_slice(), captions::CaptionStyle::default())),
             },
             Some(&analysis),
-            Some((run_id, &run_control)),
-            &mut |fraction, message| {
-                let _ = window.emit(
-                    "progress",
-                    serde_json::json!({
-                        "percentage": fraction * 100.0,
-                        "message": message,
-                    }),
-                );
-            },
+            run,
+            &mut |fraction, message| emit_progress(&window, fraction, message),
         )
         .map(|_| ())
     })
@@ -896,42 +933,80 @@ async fn export_vertical_clips(
 }
 
 /// Plan the vertical framing of clips without rendering, for the live 9:16
-/// preview. The analysis is cached, so a following export reuses it.
+/// preview: tightened like the export, and with the analysis cached so a
+/// following export reuses it. The pieces are the playback order.
 #[tauri::command]
 #[specta::specta]
 async fn plan_vertical_clips(
     run_id: u64,
     window: tauri::Window,
-    input_path: String,
-    segments: Vec<ClipSegment>,
-    turns: Vec<SpeakerTurn>,
+    request: VerticalRequest,
     run_control: State<'_, RunControl>,
     analysis: State<'_, std::sync::Arc<vertical::AnalysisCache>>,
 ) -> Result<vertical::VerticalPreview, AppError> {
     run_control.ensure_active(run_id)?;
-    let input = PathBuf::from(input_path);
-    let ranges = clip_ranges(&segments)?;
-    let turns = speech_turns(turns);
+    let input = PathBuf::from(&request.input_path);
     let run_control = run_control.inner().clone();
     let analysis = analysis.inner().clone();
     run_blocking(move || {
+        let run = Some((run_id, &run_control));
+        let (ranges, _) = prepare_vertical(&request, &input, run)?;
         vertical::plan_vertical(
             &input,
             &ranges,
-            &turns,
+            &speech_turns(request.turns.clone()),
             Some(&analysis),
-            Some((run_id, &run_control)),
+            run,
             &mut |fraction| {
-                let _ = window.emit(
-                    "progress",
-                    serde_json::json!({
-                        "percentage": fraction * 100.0,
-                        "message": format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
-                    }),
-                );
+                emit_progress(
+                    &window,
+                    fraction,
+                    format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
+                )
             },
         )
         .map(|plan| vertical::VerticalPreview::from(&plan))
+    })
+    .await
+    .map_err(AppError::from)
+}
+
+/// Tighten clips (shorter pauses, no fillers or stutters) for the normal
+/// export and its preview: the same clips with more, shorter segments.
+#[tauri::command]
+#[specta::specta]
+async fn tighten_clips(
+    run_id: u64,
+    input_path: String,
+    segments: Vec<ClipSegment>,
+    words: Vec<CaptionWord>,
+    intensity: tighten::Intensity,
+    run_control: State<'_, RunControl>,
+) -> Result<Vec<ClipSegment>, AppError> {
+    run_control.ensure_active(run_id)?;
+    let run_control = run_control.inner().clone();
+    run_blocking(move || {
+        let ranges = tighten::tighten_clips(
+            Path::new(&input_path),
+            &clip_ranges(&segments)?,
+            &timed_words(words),
+            intensity,
+            Some((run_id, &run_control)),
+        )?;
+        Ok(segments
+            .into_iter()
+            .zip(ranges)
+            .map(|(clip, ranges)| ClipSegment {
+                segments: ranges
+                    .into_iter()
+                    .map(|(start, end)| Segment {
+                        start: crate::time_utils::format_time(start),
+                        end: crate::time_utils::format_time(end),
+                    })
+                    .collect(),
+                ..clip
+            })
+            .collect())
     })
     .await
     .map_err(AppError::from)
@@ -1275,6 +1350,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             export_clips,
             export_vertical_clips,
             plan_vertical_clips,
+            tighten_clips,
             read_file_as_base64,
             open_folder,
             write_text_file,

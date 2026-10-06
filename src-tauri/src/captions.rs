@@ -89,6 +89,46 @@ pub(crate) fn output_words(words: &[TimedWord], ranges: &[(f64, f64)]) -> Vec<Ti
     out
 }
 
+/// Like [`output_words`], but for tightened clips: a word whose timing
+/// falls into a cut between two nearby ranges (timings are often a little
+/// early and land in the pause before the word) is shown at the start of the
+/// next range instead of being lost. Remove deliberately cut words (fillers,
+/// stutters) from `words` first.
+pub(crate) fn tightened_output_words(words: &[TimedWord], ranges: &[(f64, f64)]) -> Vec<TimedWord> {
+    /// Ranges further apart than this are separate moments, not a cut pause.
+    const NEARBY: f64 = 3.0;
+    let mut out = output_words(words, ranges);
+    let mut offset = 0.0;
+    for pair in ranges.windows(2) {
+        let ((a_start, a_end), (b_start, _)) = (pair[0], pair[1]);
+        offset += a_end - a_start;
+        if b_start < a_end || b_start - a_end > NEARBY {
+            continue;
+        }
+        for word in words {
+            let middle = (word.start + word.end) / 2.0;
+            let in_gap = a_end <= middle && middle < b_start;
+            let shown =
+                word.end.min(b_start) - word.start.max(a_end) < (word.end - word.start) / 2.0;
+            if in_gap && !shown {
+                out.push(TimedWord {
+                    start: offset,
+                    end: offset + (word.end - word.start).min(0.25),
+                    text: word.text.clone(),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.start.total_cmp(&b.start));
+    // Keep words from overlapping after the move.
+    for i in 1..out.len() {
+        if out[i].start < out[i - 1].end {
+            out[i - 1].end = out[i].start.max(out[i - 1].start);
+        }
+    }
+    out
+}
+
 /// Words grouped into caption chunks.
 pub(crate) fn chunk_words(words: &[TimedWord], style: &CaptionStyle) -> Vec<Vec<TimedWord>> {
     let mut chunks: Vec<Vec<TimedWord>> = Vec::new();
@@ -474,6 +514,25 @@ mod tests {
             assert!((got.start - want.start).abs() < 1e-9, "{out:?}");
             assert!((got.end - want.end).abs() < 1e-9, "{out:?}");
         }
+    }
+
+    #[test]
+    fn words_timed_into_a_cut_pause_move_to_the_next_range() {
+        // "Und" is timed inside the pause that tightening cut (10.5-11.4);
+        // the audio has it at the start of the next range.
+        let words = [
+            word(10.0, 10.5, "fertig."),
+            word(10.8, 11.0, "Und"),
+            word(11.4, 11.8, "dann"),
+        ];
+        let out = tightened_output_words(&words, &[(10.0, 10.55), (11.35, 12.0)]);
+        let texts: Vec<&str> = out.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, ["fertig.", "Und", "dann"]);
+        assert!((out[1].start - 0.55).abs() < 1e-9, "{out:?}");
+        assert!(out[1].end <= out[2].start + 1e-9, "{out:?}");
+        // Far-apart ranges (a splice) don't pull words across.
+        let spliced = tightened_output_words(&words, &[(10.0, 10.55), (20.0, 21.0)]);
+        assert_eq!(spliced.len(), 1);
     }
 
     #[test]

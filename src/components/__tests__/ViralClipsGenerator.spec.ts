@@ -72,9 +72,17 @@ function lastState(wrapper: ReturnType<typeof mountWith>): ViralClipsWorkspaceSt
 describe('ViralClipsGenerator', () => {
     beforeEach(() => {
         vi.clearAllMocks();
-        vi.mocked(invoke).mockImplementation((command) => {
+        vi.mocked(invoke).mockImplementation((command, args) => {
             if (command === 'begin_run') return Promise.resolve(123);
             if (command === 'select_clips') return Promise.resolve([candidate]);
+            // Tightening cuts the last word off each clip.
+            if (command === 'tighten_clips')
+                return Promise.resolve(
+                    (args as { segments: { segments: unknown[] }[] }).segments.map((clip) => ({
+                        ...clip,
+                        segments: [{ start: '00:10.000', end: '00:12.000' }],
+                    })),
+                );
             return Promise.resolve(null);
         });
     });
@@ -120,7 +128,10 @@ describe('ViralClipsGenerator', () => {
 
     it('exports only the selected clips, as timestamp ranges', async () => {
         const [keep, skip] = fromCandidates([candidate, { ...candidate, title: 'Skipped' }]);
-        const wrapper = mountWith({ clips: [keep, { ...skip, selected: false }] });
+        const wrapper = mountWith({
+            clips: [keep, { ...skip, selected: false }],
+            intensity: 'off',
+        });
         expect(wrapper.get('[data-testid="clips-export-selected"]').text()).toContain('1 selected');
 
         await wrapper.get('[data-testid="clips-export-selected"]').trigger('click');
@@ -140,6 +151,38 @@ describe('ViralClipsGenerator', () => {
             ],
         });
         expect((call?.[1] as { segments: unknown[] }).segments).toHaveLength(1);
+        expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).not.toContain(
+            'tighten_clips',
+        );
+    });
+
+    it('tightens clips before a normal export', async () => {
+        const [clip] = fromCandidates([candidate]);
+        const wrapper = mountWith({ clips: [clip], intensity: 'hyper' });
+
+        await wrapper.get('[data-testid="clips-export-selected"]').trigger('click');
+        await flushPromises();
+
+        const tighten = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'tighten_clips');
+        expect(tighten?.[1]).toMatchObject({
+            intensity: 'hyper',
+            segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
+            words: [{ text: 'one' }, { text: 'two' }, { text: 'three' }],
+        });
+        const exported = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'export_clips');
+        expect(exported?.[1]).toMatchObject({
+            segments: [{ segments: [{ start: '00:10.000', end: '00:12.000' }] }],
+        });
+    });
+
+    it('switches the tightening intensity', async () => {
+        const wrapper = mountWith();
+        await wrapper.get('[data-testid="clips-intensity-chill"]').trigger('click');
+        expect(lastState(wrapper).intensity).toBe('chill');
     });
 
     it("exports vertical clips with the speakers' turns when 9:16 is on", async () => {
@@ -156,17 +199,23 @@ describe('ViralClipsGenerator', () => {
             .mocked(invoke)
             .mock.calls.find(([command]) => command === 'export_vertical_clips');
         expect(call?.[1]).toMatchObject({
-            inputPath: '/tmp/source.mp4',
             outputDir: '/tmp/source_clips',
             quality: 'balanced',
-            segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
-            turns: [{ start: 10, end: 13, speaker: 'Host' }],
-            captions: [
-                { start: 10, end: 10.8, text: 'one' },
-                { start: 11, end: 11.9, text: 'two' },
-                { start: 12.1, end: 13, text: 'three' },
-            ],
+            request: {
+                inputPath: '/tmp/source.mp4',
+                segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
+                turns: [{ start: 10, end: 13, speaker: 'Host' }],
+                words: [
+                    { start: 10, end: 10.8, text: 'one' },
+                    { start: 11, end: 11.9, text: 'two' },
+                    { start: 12.1, end: 13, text: 'three' },
+                ],
+                intensity: 'punchy',
+                captions: true,
+            },
         });
+        // The backend tightens vertical clips itself.
+        expect(commandsCalled).not.toContain('tighten_clips');
     });
 
     it('previews the planned 9:16 framing when vertical is on', async () => {
@@ -203,9 +252,11 @@ describe('ViralClipsGenerator', () => {
             .mocked(invoke)
             .mock.calls.find(([command]) => command === 'plan_vertical_clips');
         expect(call?.[1]).toMatchObject({
-            inputPath: '/tmp/source.mp4',
-            segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
-            turns: [{ start: 10, end: 13, speaker: 'Host' }],
+            request: {
+                inputPath: '/tmp/source.mp4',
+                segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
+                turns: [{ start: 10, end: 13, speaker: 'Host' }],
+            },
         });
         // 9:16 frame; the 270x480 crop at (505, 120) fills it 1:1.
         const frame = wrapper.get('[data-testid="clips-player-frame"]').element as HTMLElement;

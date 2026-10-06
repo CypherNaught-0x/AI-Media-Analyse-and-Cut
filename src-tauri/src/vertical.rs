@@ -7,7 +7,7 @@
 //! for the others.
 
 use crate::camera::{plan_camera, CameraSettings, Frame as CameraFrame};
-use crate::captions::{output_words, CaptionStyle, TimedWord};
+use crate::captions::{tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_tracks::{Track, Tracker};
 use crate::faces::FaceDetector;
@@ -37,8 +37,55 @@ const MIN_TRACK_SECONDS: f64 = 0.5;
 /// Share of the progress bar for analysis; rendering takes the rest.
 const ANALYSIS_SHARE: f64 = 0.5;
 
-/// One analysed range: source key, range (seconds) and its tracks.
-type CacheEntry = (String, (f64, f64), Vec<Track>);
+/// A clip edge this close to a source cut moves onto the cut, so a clip
+/// never opens or closes on a few frames of another shot (a flash frame).
+const SLIVER: f64 = 0.3;
+
+/// What analysing a source range found.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Analysis {
+    pub tracks: Vec<Track>,
+    /// Source cut times.
+    pub cuts: Vec<f64>,
+}
+
+impl Analysis {
+    fn within(&self, range: (f64, f64)) -> Analysis {
+        Analysis {
+            tracks: self
+                .tracks
+                .iter()
+                .filter_map(|track| track.within(range.0, range.1))
+                .collect(),
+            cuts: self
+                .cuts
+                .iter()
+                .copied()
+                .filter(|cut| (range.0..=range.1).contains(cut))
+                .collect(),
+        }
+    }
+}
+
+/// `range` with edges that sit just next to a source cut moved onto it.
+fn trim_slivers(range: (f64, f64), cuts: &[f64]) -> (f64, f64) {
+    let (mut start, mut end) = range;
+    for &cut in cuts {
+        if cut > start && cut - start < SLIVER && cut < end {
+            start = cut;
+        }
+        if cut < end && end - cut < SLIVER && cut > start {
+            end = cut;
+        }
+    }
+    (start, end)
+}
+
+/// A range to plan (without flash frames) and its tracks (indices).
+type RangeTracks = ((f64, f64), Vec<usize>);
+
+/// One analysed range: source key, range (seconds) and what was found.
+type CacheEntry = (String, (f64, f64), Analysis);
 
 /// Face analysis of source ranges, kept for the session so previewing and
 /// then exporting a clip (or re-exporting it) analyses it only once.
@@ -49,25 +96,21 @@ pub(crate) struct AnalysisCache {
 }
 
 impl AnalysisCache {
-    /// Tracks for `range` from an entry that covers it.
-    fn get(&self, source: &str, range: (f64, f64)) -> Option<Vec<Track>> {
+    /// The analysis of `range` from an entry that covers it.
+    fn get(&self, source: &str, range: (f64, f64)) -> Option<Analysis> {
         let mut entries = self.entries.lock().expect("analysis cache poisoned");
         let index = entries.iter().rposition(|(key, covered, _)| {
             key == source && covered.0 <= range.0 + 1e-6 && range.1 <= covered.1 + 1e-6
         })?;
         let entry = entries.remove(index);
-        let tracks = entry
-            .2
-            .iter()
-            .filter_map(|track| track.within(range.0, range.1))
-            .collect();
+        let analysis = entry.2.within(range);
         entries.push(entry);
-        Some(tracks)
+        Some(analysis)
     }
 
-    fn put(&self, source: String, range: (f64, f64), tracks: Vec<Track>) {
+    fn put(&self, source: String, range: (f64, f64), analysis: Analysis) {
         let mut entries = self.entries.lock().expect("analysis cache poisoned");
-        entries.push((source, range, tracks));
+        entries.push((source, range, analysis));
         if entries.len() > CACHE_ENTRIES {
             entries.remove(0);
         }
@@ -92,9 +135,9 @@ fn analyse_range(
     detector: &mut FaceDetector,
     run: Option<(u64, &RunControl)>,
     on_time: &mut dyn FnMut(f64),
-) -> Result<Vec<Track>, String> {
+) -> Result<Analysis, String> {
     let cuts = detect_cuts(path, range.0, range.1, run)?;
-    let mut tracker = Tracker::new(cuts, ANALYSIS_FPS);
+    let mut tracker = Tracker::new(cuts.clone(), ANALYSIS_FPS);
     let mut error = None;
     decode_frames(
         &FrameRequest {
@@ -120,7 +163,10 @@ fn analyse_range(
     if let Some(error) = error {
         return Err(error);
     }
-    Ok(tracker.finish(MIN_TRACK_SECONDS))
+    Ok(Analysis {
+        tracks: tracker.finish(MIN_TRACK_SECONDS),
+        cuts,
+    })
 }
 
 /// The planned framing of a set of clips, ready to render (or preview).
@@ -247,8 +293,9 @@ pub(crate) fn plan_vertical(
     let source_key = crate::media_cache::source_key(input)?;
     let mut detector = None;
     let mut tracks: Vec<Track> = Vec::new();
-    // Per clip, per range: indices into `tracks`.
-    let mut range_tracks: Vec<Vec<Vec<usize>>> = Vec::new();
+    // Per clip, per range: the range without flash frames, and indices into
+    // `tracks`.
+    let mut range_tracks: Vec<Vec<RangeTracks>> = Vec::new();
     let mut analysed = 0.0;
     let mut next_shot = 0;
     for ranges in clips {
@@ -256,7 +303,7 @@ pub(crate) fn plan_vertical(
         for &(start, end) in ranges {
             let range = ((start - ANALYSIS_MARGIN).max(0.0), end + ANALYSIS_MARGIN);
             let local = match cache.and_then(|cache| cache.get(&source_key, range)) {
-                Some(tracks) => tracks,
+                Some(analysis) => analysis,
                 None => {
                     if detector.is_none() {
                         detector = Some(FaceDetector::new()?);
@@ -264,26 +311,27 @@ pub(crate) fn plan_vertical(
                     let detector = detector.as_mut().expect("just created");
                     let mut on_time =
                         |time: f64| on_progress(((analysed + time) / total_seconds).min(1.0));
-                    let tracks =
+                    let analysis =
                         analyse_range(input, range, analysis_w, detector, run, &mut on_time)?;
                     if let Some(cache) = cache {
-                        cache.put(source_key.clone(), range, tracks.clone());
+                        cache.put(source_key.clone(), range, analysis.clone());
                     }
-                    tracks
+                    analysis
                 }
             };
             analysed += range.1 - range.0;
             on_progress((analysed / total_seconds).min(1.0));
-            let shots = local.iter().map(|t| t.shot + 1).max().unwrap_or(0);
+            let kept = trim_slivers((start, end), &local.cuts);
+            let shots = local.tracks.iter().map(|t| t.shot + 1).max().unwrap_or(0);
             let mut indices = Vec::new();
-            for mut track in local {
+            for mut track in local.tracks {
                 track.id = tracks.len();
                 track.shot += next_shot;
                 indices.push(track.id);
                 tracks.push(track);
             }
             next_shot += shots;
-            per_range.push(indices);
+            per_range.push((kept, indices));
         }
         range_tracks.push(per_range);
     }
@@ -294,14 +342,12 @@ pub(crate) fn plan_vertical(
     // 3. Camera path per range.
     let settings = CameraSettings::default();
     let aspect = f64::from(OUTPUT_SIZE.0) / f64::from(OUTPUT_SIZE.1);
-    let planned = clips
+    let planned = range_tracks
         .iter()
-        .zip(&range_tracks)
-        .map(|(ranges, per_range)| {
-            ranges
+        .map(|per_range| {
+            per_range
                 .iter()
-                .zip(per_range)
-                .flat_map(|(&(start, end), indices)| {
+                .flat_map(|&((start, end), ref indices)| {
                     let range_tracks: Vec<Track> =
                         indices.iter().map(|&i| tracks[i].clone()).collect();
                     plan_camera(
@@ -389,9 +435,12 @@ pub(crate) fn export_vertical(
     let mut rendered = 0.0;
     for (index, (clip, pieces)) in clips.iter().zip(&plan.clips).enumerate() {
         let clip_seconds: f64 = clip.ranges.iter().map(|(s, e)| e - s).sum();
+        // Captions follow what is rendered: the pieces, after flash-frame
+        // trimming.
+        let shown: Vec<(f64, f64)> = pieces.iter().map(|p| (p.start, p.end)).collect();
         let words = options
             .captions
-            .map(|(words, style)| (output_words(words, &clip.ranges), style));
+            .map(|(words, style)| (tightened_output_words(words, &shown), style));
         render_vertical(
             &VerticalRender {
                 input,
@@ -456,17 +505,35 @@ mod tests {
     }
 
     #[test]
+    fn clip_edges_next_to_a_cut_move_onto_it() {
+        assert_eq!(
+            trim_slivers((10.0, 20.0), &[10.1, 15.0, 19.8]),
+            (10.1, 19.8)
+        );
+        // Far from the edges: nothing changes.
+        assert_eq!(trim_slivers((10.0, 20.0), &[10.5, 19.5]), (10.0, 20.0));
+    }
+
+    #[test]
     fn the_cache_answers_ranges_inside_an_analysed_one() {
         let cache = AnalysisCache::default();
         cache.put(
             "a".into(),
             (10.0, 20.0),
-            vec![track(&[10.0, 12.0, 15.0, 19.0])],
+            Analysis {
+                tracks: vec![track(&[10.0, 12.0, 15.0, 19.0])],
+                cuts: vec![11.0, 17.0],
+            },
         );
 
         let inside = cache.get("a", (11.0, 16.0)).unwrap();
-        let times: Vec<f64> = inside[0].observations.iter().map(|o| o.time).collect();
+        let times: Vec<f64> = inside.tracks[0]
+            .observations
+            .iter()
+            .map(|o| o.time)
+            .collect();
         assert_eq!(times, [12.0, 15.0]);
+        assert_eq!(inside.cuts, [11.0]);
         // Not covered, or another source: analyse again.
         assert!(cache.get("a", (9.0, 16.0)).is_none());
         assert!(cache.get("b", (11.0, 16.0)).is_none());
@@ -476,7 +543,7 @@ mod tests {
     fn the_cache_forgets_the_least_recently_used() {
         let cache = AnalysisCache::default();
         for i in 0..=CACHE_ENTRIES {
-            cache.put("a".into(), (i as f64, i as f64 + 1.0), Vec::new());
+            cache.put("a".into(), (i as f64, i as f64 + 1.0), Analysis::default());
         }
         assert!(cache.get("a", (0.0, 1.0)).is_none());
         assert!(cache.get("a", (1.0, 2.0)).is_some());
@@ -533,6 +600,20 @@ mod evaluation {
                 text: word["text"].as_str().unwrap_or_default().to_string(),
             })
             .collect();
+        // Tighten like the app does (SHORTS_PROFILE_INTENSITY, default punchy).
+        let intensity = match std::env::var("SHORTS_PROFILE_INTENSITY").as_deref() {
+            Ok("off") => crate::tighten::Intensity::Off,
+            Ok("chill") => crate::tighten::Intensity::Chill,
+            Ok("hyper") => crate::tighten::Intensity::Hyper,
+            _ => crate::tighten::Intensity::Punchy,
+        };
+        let ranges =
+            crate::tighten::tighten_clips(Path::new(&source), &[ranges], &words, intensity, None)
+                .unwrap()
+                .remove(0);
+        let removed = crate::tighten::removed_words(&words, intensity);
+        let words: Vec<TimedWord> = words.into_iter().filter(|w| !removed.contains(w)).collect();
+        println!("{intensity:?}: {} ranges", ranges.len());
         let output = PathBuf::from(keep).join("vertical_export.mp4");
         let started = std::time::Instant::now();
         let mut last = String::new();

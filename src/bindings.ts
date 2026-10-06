@@ -55,14 +55,20 @@ export const commands = {
 	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean, quality: ExportQuality) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode, quality }),
 	/**
 	 *  Export clips as vertical (9:16) videos that follow the active speaker
-	 *  (shorts phase S2). `turns` say who speaks when; faces are bound to them.
+	 *  (shorts phase S2), tightened (S4) and captioned (S3) as requested.
 	 */
-	exportVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[], outputDir: string, quality: ExportQuality, captions: CaptionWord[] | null) => __TAURI_INVOKE<null>("export_vertical_clips", { runId, inputPath, segments, turns, outputDir, quality, captions }),
+	exportVerticalClips: (runId: number, request: VerticalRequest, outputDir: string, quality: ExportQuality) => __TAURI_INVOKE<null>("export_vertical_clips", { runId, request, outputDir, quality }),
 	/**
 	 *  Plan the vertical framing of clips without rendering, for the live 9:16
-	 *  preview. The analysis is cached, so a following export reuses it.
+	 *  preview: tightened like the export, and with the analysis cached so a
+	 *  following export reuses it. The pieces are the playback order.
 	 */
-	planVerticalClips: (runId: number, inputPath: string, segments: ClipSegment[], turns: SpeakerTurn[]) => __TAURI_INVOKE<VerticalPreview>("plan_vertical_clips", { runId, inputPath, segments, turns }),
+	planVerticalClips: (runId: number, request: VerticalRequest) => __TAURI_INVOKE<VerticalPreview>("plan_vertical_clips", { runId, request }),
+	/**
+	 *  Tighten clips (shorter pauses, no fillers or stutters) for the normal
+	 *  export and its preview: the same clips with more, shorter segments.
+	 */
+	tightenClips: (runId: number, inputPath: string, segments: ClipSegment[], words: CaptionWord[], intensity: Intensity) => __TAURI_INVOKE<ClipSegment[]>("tighten_clips", { runId, inputPath, segments, words, intensity }),
 	readFileAsBase64: (path: string) => __TAURI_INVOKE<string>("read_file_as_base64", { path }),
 	openFolder: (path: string) => __TAURI_INVOKE<null>("open_folder", { path }),
 	writeTextFile: (path: string, content: string) => __TAURI_INVOKE<null>("write_text_file", { path, content }),
@@ -252,6 +258,9 @@ export type ExportQuality =
 "balanced" | 
 /**  Fast and small; previews and drafts. */
 "draft";
+
+/**  How hard to tighten, as in the plan's intensity presets. */
+export type Intensity = "off" | "chill" | "punchy" | "hyper";
 
 /**
  *  The remote LLM a request goes to, as configured in Settings. The API key
@@ -455,5 +464,21 @@ export type VerticalPreview = {
 	outputHeight: number,
 	/**  Per clip: its pieces in playback order. */
 	clips: PreviewPiece[][],
+};
+
+/**
+ *  Clips to reframe as vertical shorts, with what's needed to frame, tighten
+ *  and caption them.
+ */
+export type VerticalRequest = {
+	inputPath: string,
+	segments: ClipSegment[],
+	/**  Who speaks when (the camera follows them). */
+	turns: SpeakerTurn[],
+	/**  Transcript words around the clips (fillers, captions). */
+	words: CaptionWord[],
+	intensity: Intensity,
+	/**  Burn the words in as captions. */
+	captions: boolean,
 };
 

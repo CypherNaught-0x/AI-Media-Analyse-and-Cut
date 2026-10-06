@@ -89,7 +89,7 @@ pub struct TranscriptSegment {
     pub similarity_score: Option<f32>,
 }
 
-#[derive(Serialize, Deserialize, Debug, specta::Type)]
+#[derive(Serialize, Deserialize, Debug, Clone, specta::Type)]
 pub struct ClipSegment {
     pub segments: Vec<Segment>,
     pub label: Option<String>,

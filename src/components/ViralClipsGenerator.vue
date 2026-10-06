@@ -4,6 +4,7 @@ import { mediaUrl } from '../utils/mediaUrl';
 import type {
     ClipRole,
     ShortClip,
+    ShortClipRange,
     SilenceInterval,
     TranscriptSegment,
     ViralClipsWorkspaceState,
@@ -22,10 +23,16 @@ import {
     wordBoundaries,
 } from '../utils/shortClips';
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
-import { formatTime } from '../composables/useTimeFormat';
+import { formatTime, parseTime } from '../composables/useTimeFormat';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
-import { commands, type VerticalPreview } from '../bindings';
+import {
+    commands,
+    type ClipSegment,
+    type Intensity,
+    type VerticalPreview,
+    type VerticalRequest,
+} from '../bindings';
 import { videoBox, type VideoBox } from '../utils/verticalFraming';
 import { errorMessage } from '../utils/appError';
 
@@ -117,7 +124,38 @@ const TOGGLES = [
     },
 ] as const;
 
+const INTENSITIES: { value: Intensity; label: string; text: string }[] = [
+    { value: 'off', label: 'Off', text: 'Keep every pause and filler.' },
+    { value: 'chill', label: 'Chill', text: 'Pauses up to 350 ms, no fillers.' },
+    { value: 'punchy', label: 'Punchy', text: 'Pauses up to 180 ms, no fillers or stutters.' },
+    { value: 'hyper', label: 'Hyper', text: 'Pauses up to 90 ms: rapid-fire.' },
+];
+const intensity = setting('intensity');
+const intensityText = computed(
+    () => INTENSITIES.find((option) => option.value === intensity.value)?.text ?? '',
+);
+
 const boundaries = computed(() => wordBoundaries(props.segments));
+
+/** Transcript words around `ranges`, for fillers and captions. */
+function wordsAround(ranges: { start: number; end: number }[]) {
+    // A margin covers the export padding added later.
+    return captionWords(
+        props.segments,
+        ranges.map((range) => ({ start: range.start - 2, end: range.end + 2 })),
+    );
+}
+
+function verticalRequest(clipSegments: ClipSegment[], ranges: ShortClipRange[]): VerticalRequest {
+    return {
+        inputPath: props.inputPath,
+        segments: clipSegments,
+        turns: speakerTurns(props.segments),
+        words: wordsAround(ranges),
+        intensity: props.state.intensity,
+        captions: props.state.captions,
+    };
+}
 
 function updateClip(id: string, change: (clip: ShortClip) => ShortClip) {
     updateState({
@@ -153,29 +191,54 @@ function clock(seconds: number): string {
     return formatTime(Math.round(seconds)).replace(/\.000$/, '');
 }
 
-// ---- Preview: plays a clip's ranges back to back in the player above. ----
-const player = ref<HTMLVideoElement | null>(null);
-const previewing = ref<{ id: string; rangeIndex: number } | null>(null);
-const mediaSrc = computed(() => (props.hasMediaFile ? mediaUrl(props.inputPath) : ''));
-
-// ---- 9:16 preview: the planned framing applied to the source player. ----
+// ---- Preview: plays what the export will contain (tightened ranges and,
+// in 9:16 mode, the planned framing) in the player above. ----
 /** CSS size of the 9:16 preview frame. */
 const VERTICAL_FRAME = { width: 270, height: 480 };
-/** Planned framing per clip id, valid for the ranges it was planned for. */
-const verticalPlans = ref(new Map<string, { signature: string; plan: VerticalPreview }>());
+
+interface PlaybackRange {
+    start: number;
+    end: number;
+}
+
+/** What a clip's preview plays, valid for the settings it was made with. */
+interface PreparedPreview {
+    signature: string;
+    ranges: PlaybackRange[];
+    plan: VerticalPreview | null;
+}
+
+const player = ref<HTMLVideoElement | null>(null);
+const previewing = ref<{ id: string; rangeIndex: number; ranges: PlaybackRange[] } | null>(null);
+const mediaSrc = computed(() => (props.hasMediaFile ? mediaUrl(props.inputPath) : ''));
+const prepared = ref(new Map<string, PreparedPreview>());
 const verticalBox = ref<VideoBox | null>(null);
 let frameRequest: number | null = null;
 
-function rangeSignature(clip: ShortClip): string {
-    return clip.ranges.map((range) => `${range.start}-${range.end}`).join(',');
+function previewSignature(clip: ShortClip): string {
+    const ranges = clip.ranges.map((range) => `${range.start}-${range.end}`).join(',');
+    return `${props.state.vertical ? '9:16' : 'source'}|${props.state.intensity}|${ranges}`;
+}
+
+function clipSegment(clip: ShortClip): ClipSegment {
+    return { segments: toExportSegments(clip), label: clip.title, reason: clip.reason };
+}
+
+/** Consecutive pieces of the plan as playback ranges, joining touching ones. */
+function piecesAsRanges(plan: VerticalPreview): PlaybackRange[] {
+    const ranges: PlaybackRange[] = [];
+    for (const piece of plan.clips[0] ?? []) {
+        const last = ranges[ranges.length - 1];
+        if (last && Math.abs(last.end - piece.start) < 1e-6) last.end = piece.end;
+        else ranges.push({ start: piece.start, end: piece.end });
+    }
+    return ranges;
 }
 
 const verticalPlan = computed(() => {
     const current = previewing.value;
     if (!props.state.vertical || !current) return null;
-    const clip = clips.value.find((candidate) => candidate.id === current.id);
-    const entry = verticalPlans.value.get(current.id);
-    return clip && entry?.signature === rangeSignature(clip) ? entry.plan : null;
+    return prepared.value.get(current.id)?.plan ?? null;
 });
 
 function updateVerticalBox() {
@@ -209,37 +272,65 @@ function stopFollowingFrames() {
 
 onBeforeUnmount(stopFollowingFrames);
 
-/** Plan the clip's vertical framing unless a plan for its ranges exists. */
-async function ensureVerticalPlan(clip: ShortClip): Promise<boolean> {
-    const signature = rangeSignature(clip);
-    if (verticalPlans.value.get(clip.id)?.signature === signature) return true;
-    if (props.busy || isProcessing.value) return false;
+/**
+ * What the clip's preview plays: its ranges as they are, or (tightened or
+ * in 9:16) as the backend prepares them for export.
+ */
+async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> {
+    const signature = previewSignature(clip);
+    const existing = prepared.value.get(clip.id);
+    if (existing?.signature === signature) return existing;
+    if (!props.state.vertical && props.state.intensity === 'off') {
+        return { signature, ranges: clip.ranges, plan: null };
+    }
+    if (props.busy || isProcessing.value) return null;
 
     const runId = await beginRun();
     activeRunId.value = runId;
     isProcessing.value = true;
     emit('update:processing', true);
-    emit('update:status', 'Planning the 9:16 framing...');
+    emit(
+        'update:status',
+        props.state.vertical ? 'Planning the 9:16 framing...' : 'Tightening the clip...',
+    );
     try {
-        const plan = await commands.planVerticalClips(
-            runId,
-            props.inputPath,
-            [{ segments: toExportSegments(clip), label: clip.title, reason: clip.reason }],
-            speakerTurns(props.segments),
-        );
+        let entry: PreparedPreview;
+        if (props.state.vertical) {
+            const plan = await commands.planVerticalClips(
+                runId,
+                verticalRequest([clipSegment(clip)], clip.ranges),
+            );
+            entry = { signature, ranges: piecesAsRanges(plan), plan };
+        } else {
+            const [tightened] = await commands.tightenClips(
+                runId,
+                props.inputPath,
+                [clipSegment(clip)],
+                wordsAround(clip.ranges),
+                props.state.intensity,
+            );
+            const ranges = (tightened?.segments ?? []).map((segment) => ({
+                start: parseTime(segment.start),
+                end: parseTime(segment.end),
+            }));
+            entry = { signature, ranges: ranges.length ? ranges : clip.ranges, plan: null };
+        }
         assertActiveRun(runId);
-        const plans = new Map(verticalPlans.value);
-        plans.set(clip.id, { signature, plan });
-        verticalPlans.value = plans;
-        emit('update:status', 'Previewing the 9:16 framing.');
-        return true;
+        const next = new Map(prepared.value);
+        next.set(clip.id, entry);
+        prepared.value = next;
+        emit(
+            'update:status',
+            props.state.vertical ? 'Previewing the 9:16 framing.' : 'Previewing.',
+        );
+        return entry;
     } catch (e) {
         if (isRunCancelled(e)) {
             emit('update:status', 'Run cancelled.');
         } else {
-            emit('update:status', `Error planning the 9:16 framing: ${errorMessage(e)}`);
+            emit('update:status', `Error preparing the preview: ${errorMessage(e)}`);
         }
-        return false;
+        return null;
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
@@ -255,11 +346,11 @@ async function preview(clip: ShortClip) {
         stopPreview();
         return;
     }
-    if (props.state.vertical && !(await ensureVerticalPlan(clip))) return;
+    const entry = await preparePreview(clip);
     const video = player.value;
-    if (!video) return;
-    previewing.value = { id: clip.id, rangeIndex: 0 };
-    video.currentTime = clip.ranges[0].start;
+    if (!entry || !video || entry.ranges.length === 0) return;
+    previewing.value = { id: clip.id, rangeIndex: 0, ranges: entry.ranges };
+    video.currentTime = entry.ranges[0].start;
     void video.play();
     stopFollowingFrames();
     followFrames();
@@ -276,14 +367,9 @@ function onTimeUpdate() {
     const video = player.value;
     const current = previewing.value;
     if (!video || !current) return;
-    const clip = clips.value.find((candidate) => candidate.id === current.id);
-    if (!clip) {
-        stopPreview();
-        return;
-    }
-    const step = playbackStep(video.currentTime, clip.ranges, current.rangeIndex);
+    const step = playbackStep(video.currentTime, current.ranges, current.rangeIndex);
     if (step.action === 'seek') {
-        previewing.value = { id: clip.id, rangeIndex: step.rangeIndex };
+        previewing.value = { ...current, rangeIndex: step.rangeIndex };
         video.currentTime = step.to;
     } else if (step.action === 'stop') {
         stopPreview();
@@ -353,7 +439,7 @@ async function exportClips(toExport: ShortClip[]) {
 
     try {
         const outputDir = props.inputPath.replace(/\.[^/\\.]+$/, '') + '_clips';
-        let clipSegments = toExport.map((clip) => ({
+        let clipSegments: ClipSegment[] = toExport.map((clip) => ({
             segments: toExportSegments(clip),
             label: clip.title,
             reason: clip.reason,
@@ -395,23 +481,29 @@ async function exportClips(toExport: ShortClip[]) {
             ),
         }));
 
+        const allRanges = toExport.flatMap((clip) => clip.ranges);
         emit('update:status', `Exporting to ${outputDir}...`);
         if (props.state.vertical) {
+            // Tightening happens in the backend, so captions can follow it.
             await commands.exportVerticalClips(
                 runId,
-                props.inputPath,
-                clipSegments,
-                speakerTurns(props.segments),
+                verticalRequest(clipSegments, allRanges),
                 outputDir,
                 settings.value.exportQuality,
-                props.state.captions
-                    ? captionWords(
-                          props.segments,
-                          toExport.flatMap((clip) => clip.ranges),
-                      )
-                    : null,
             );
         } else {
+            if (props.state.intensity !== 'off') {
+                emit('update:status', 'Tightening clips...');
+                clipSegments = await commands.tightenClips(
+                    runId,
+                    props.inputPath,
+                    clipSegments,
+                    wordsAround(allRanges),
+                    props.state.intensity,
+                );
+                assertActiveRun(runId);
+                emit('update:status', `Exporting to ${outputDir}...`);
+            }
             await commands.exportClips(
                 runId,
                 props.inputPath,
@@ -546,6 +638,34 @@ async function openExportFolder() {
                     <span class="block text-xs text-gray-500">{{ toggle.text }}</span>
                 </span>
             </label>
+        </div>
+
+        <div class="mb-8 flex flex-wrap items-center gap-3">
+            <span class="text-xs font-bold uppercase tracking-wider text-gray-400">Tightening</span>
+            <div
+                class="flex overflow-hidden rounded-xl border border-white/10"
+                role="radiogroup"
+                aria-label="Tightening"
+            >
+                <button
+                    v-for="option in INTENSITIES"
+                    :key="option.value"
+                    type="button"
+                    role="radio"
+                    :aria-checked="intensity === option.value"
+                    :data-testid="`clips-intensity-${option.value}`"
+                    class="px-4 py-2 text-sm transition-colors"
+                    :class="
+                        intensity === option.value
+                            ? 'bg-pink-600/80 font-semibold text-white'
+                            : 'bg-black/20 text-gray-300 hover:bg-white/10'
+                    "
+                    @click="intensity = option.value"
+                >
+                    {{ option.label }}
+                </button>
+            </div>
+            <span class="text-xs text-gray-500">{{ intensityText }}</span>
         </div>
 
         <button
