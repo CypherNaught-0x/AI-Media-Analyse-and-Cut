@@ -157,6 +157,7 @@ function buildSession(inputPath = '/tmp/source.mp4'): EditSessionV1 {
             vertical: false,
             captions: true,
             intensity: 'punchy',
+            transitions: null,
             autoEdit: false,
             faces: [],
             faceSearch: null,
