@@ -4,6 +4,7 @@ import type {
     FaceSearch,
     ShortClip,
     ShortClipRange,
+    TimeSpan,
     TranscriptSegment,
 } from '../types';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
@@ -79,18 +80,98 @@ export function normalizeShortClips(raw: unknown): ShortClip[] {
                 signals: (clip.signals as ShortClip['signals']) ?? null,
                 looped: clip.looped === true,
                 selected: clip.selected !== false,
+                ...(spans(clip.cutWords).length ? { cutWords: spans(clip.cutWords) } : {}),
+                ...(spans(clip.cuts).length ? { cuts: spans(clip.cuts) } : {}),
             },
         ];
     });
 }
 
+/** Saved time spans, without malformed ones. */
+function spans(raw: unknown): TimeSpan[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+        (span): span is TimeSpan =>
+            !!span &&
+            typeof span.start === 'number' &&
+            typeof span.end === 'number' &&
+            span.end > span.start,
+    );
+}
+
+/** Pieces shorter than this (seconds) left between cuts are dropped. */
+const MIN_PIECE = 0.05;
+
+/** The clip's ranges without what the user cut out, in playback order. */
+export function playedRanges(clip: Pick<ShortClip, 'ranges' | 'cuts'>): ShortClipRange[] {
+    const cuts = [...(clip.cuts ?? [])].sort((a, b) => a.start - b.start);
+    return clip.ranges.flatMap((range) => {
+        const pieces: ShortClipRange[] = [];
+        let start = range.start;
+        for (const cut of cuts) {
+            if (cut.end <= start || cut.start >= range.end) continue;
+            if (cut.start - start >= MIN_PIECE) pieces.push({ ...range, start, end: cut.start });
+            start = Math.max(start, cut.end);
+        }
+        if (range.end - start >= MIN_PIECE) pieces.push({ ...range, start, end: range.end });
+        return pieces;
+    });
+}
+
+/**
+ * What to cut for `cutWords`, given the clip's words in source order: each
+ * run of cut words from its first word's start up to the next word's start
+ * (taking the pause after it along), or its last word's end when nothing
+ * follows within a second.
+ */
+export function cutIntervals(words: ClipWord[], cutWords: TimeSpan[]): TimeSpan[] {
+    const isCut = (word: ClipWord) =>
+        cutWords.some((cut) => cut.start === word.start && cut.end === word.end);
+    const intervals: TimeSpan[] = [];
+    let index = 0;
+    while (index < words.length) {
+        if (!isCut(words[index])) {
+            index += 1;
+            continue;
+        }
+        const first = words[index];
+        while (index + 1 < words.length && isCut(words[index + 1])) index += 1;
+        const last = words[index];
+        const next = words[index + 1];
+        const end =
+            next && next.start >= last.end && next.start - last.end <= 1 ? next.start : last.end;
+        intervals.push({ start: first.start, end });
+        index += 1;
+    }
+    return intervals;
+}
+
+/**
+ * `clip` with `changed` words cut out (or restored), `words` being all of
+ * its words in source order. Cutting everything that plays is refused.
+ */
+export function setCutWords(
+    clip: ShortClip,
+    words: ClipWord[],
+    changed: ClipWord[],
+    cut: boolean,
+): ShortClip {
+    const same = (a: TimeSpan, b: TimeSpan) => a.start === b.start && a.end === b.end;
+    const kept = (clip.cutWords ?? []).filter((span) => !changed.some((word) => same(span, word)));
+    const cutWords = cut ? [...kept, ...changed.map(({ start, end }) => ({ start, end }))] : kept;
+    const cuts = cutIntervals(words, cutWords);
+    if (playedRanges({ ranges: clip.ranges, cuts }).length === 0) return clip;
+    const { cutWords: _old, cuts: _oldCuts, ...rest } = clip;
+    return cutWords.length ? { ...rest, cutWords, cuts } : rest;
+}
+
 export function clipDuration(clip: ShortClip): number {
-    return clip.ranges.reduce((total, range) => total + (range.end - range.start), 0);
+    return playedRanges(clip).reduce((total, range) => total + (range.end - range.start), 0);
 }
 
 /** The clip's ranges as the export command takes them. */
 export function toExportSegments(clip: ShortClip): { start: string; end: string }[] {
-    return clip.ranges.map((range) => ({
+    return playedRanges(clip).map((range) => ({
         start: formatTime(range.start),
         end: formatTime(range.end),
     }));

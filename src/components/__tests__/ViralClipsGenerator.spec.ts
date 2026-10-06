@@ -294,6 +294,35 @@ describe('ViralClipsGenerator', () => {
         expect(edited[0].words?.[1]).toEqual({ start: '00:11.000', end: '00:11.900', text: 'TWO' });
     });
 
+    it('cuts a word out of a clip without touching the transcript', async () => {
+        const [clip] = fromCandidates([candidate]);
+        const wrapper = mountWith({ clips: [clip] });
+        await wrapper.get(`[data-testid="clip-text-toggle-${clip.id}"]`).trigger('click');
+        await wrapper.get('[data-testid="clip-text-mode-cut"]').trigger('click');
+        await wrapper.get('[data-testid="clip-word-1"]').trigger('click');
+
+        const cut = lastState(wrapper).clips[0];
+        // "two" (11-11.9 s) and the pause up to "three".
+        expect(cut.cuts).toEqual([{ start: 11, end: 12.1 }]);
+        expect(wrapper.emitted('update:segments')).toBeUndefined();
+
+        await wrapper.setProps({ state: lastState(wrapper) });
+        await wrapper.get('[data-testid="clips-export-selected"]').trigger('click');
+        await flushPromises();
+        // What goes to tightening (and from there to the export) skips the cut.
+        const call = vi.mocked(invoke).mock.calls.find(([command]) => command === 'tighten_clips');
+        expect(call?.[1]).toMatchObject({
+            segments: [
+                {
+                    segments: [
+                        { start: '00:10.000', end: '00:11.000' },
+                        { start: '00:12.100', end: '00:13.000' },
+                    ],
+                },
+            ],
+        });
+    });
+
     it('lists detected faces and saves turning one off or naming one', async () => {
         const [clip] = fromCandidates([candidate]);
         const anchor = { time: 11, x: 0.8, y: 0.3 };
