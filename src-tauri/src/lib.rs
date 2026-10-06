@@ -343,6 +343,7 @@ pub mod apple_speech;
 mod camera;
 mod captions;
 pub mod chunking;
+pub mod clip_editing;
 pub mod clip_selection;
 pub mod crisper;
 pub(crate) mod encoders;
@@ -430,6 +431,34 @@ async fn select_clips(
         .run_cancellable(
             run_id,
             clip_selection::select_clips(&client, &transcript, &request, &on_progress),
+        )
+        .await?)
+}
+
+/// Auto editing: cuts an LLM proposes to make each clip flow better, as
+/// word ranges per clip. The transcript is never changed.
+#[tauri::command]
+#[specta::specta]
+async fn suggest_clip_cuts(
+    run_id: u64,
+    window: tauri::Window,
+    llm: LlmConfig,
+    clips: Vec<clip_editing::EditClip>,
+    run_control: State<'_, RunControl>,
+) -> Result<Vec<Vec<clip_editing::WordCut>>, AppError> {
+    run_control.ensure_active(run_id)?;
+    let client = GeminiClient::new(secrets::api_key().require()?, llm.base_url, llm.model);
+    let on_progress = |done: usize, total: usize| {
+        emit_progress(
+            &window,
+            done as f64 / total.max(1) as f64,
+            format!("Auto-editing clips ({done}/{total})..."),
+        );
+    };
+    Ok(run_control
+        .run_cancellable(
+            run_id,
+            clip_editing::suggest_cuts(&client, &clips, &on_progress),
         )
         .await?)
 }
@@ -1479,6 +1508,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             prepare_preview_audio,
             cached_preview_audio,
             select_clips,
+            suggest_clip_cuts,
             list_models,
             secrets::set_api_key,
             secrets::clear_api_key,

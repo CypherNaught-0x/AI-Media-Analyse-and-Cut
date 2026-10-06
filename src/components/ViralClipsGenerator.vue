@@ -12,8 +12,10 @@ import { useSettings } from '../composables/useSettings';
 import { trimClipBoundarySilence } from '../utils/clipSilence';
 import { padClipSegments } from '../utils/clips';
 import {
+    applyAutoCuts,
     clipDuration,
     clipWords,
+    editRequest,
     editWord,
     fromCandidates,
     captionWords,
@@ -139,6 +141,11 @@ const TOGGLES = [
         key: 'captions',
         title: 'Captions',
         text: 'Burn word-by-word captions into 9:16 exports.',
+    },
+    {
+        key: 'autoEdit',
+        title: 'Auto edit',
+        text: 'An LLM cuts false starts, repetitions and asides from new clips; review them under Text.',
     },
 ] as const;
 
@@ -611,6 +618,67 @@ function editClipWord(word: ClipWord, text: string) {
     prepared.value = next;
 }
 
+// ---- Auto editing: an LLM proposes cuts for a better flow; they land as
+// auto cuts the user reviews in the clip's text. ----
+const autoEditingClip = ref<string | null>(null);
+
+/**
+ * Auto-edit `targets` within run `runId`, updating them in `all` (the
+ * clips as they are now); says what it cut.
+ */
+async function autoEdit(
+    runId: number,
+    targets: ShortClip[],
+    all: ShortClip[] = props.state.clips,
+): Promise<string> {
+    const cuts = await commands.suggestClipCuts(
+        runId,
+        { baseUrl: settings.value.baseUrl, model: settings.value.model },
+        targets.map((clip) => editRequest(props.segments, clip)),
+    );
+    assertActiveRun(runId);
+    let words = 0;
+    const edited = new Map(
+        targets.map((clip, i) => {
+            const result = applyAutoCuts(props.segments, clip, cuts[i] ?? []);
+            words += (result.cutWords ?? []).filter((cut) => cut.auto).length;
+            return [clip.id, result];
+        }),
+    );
+    updateState({ clips: all.map((clip) => edited.get(clip.id) ?? clip) });
+    return words === 0
+        ? 'auto editing found nothing to cut'
+        : `auto editing cut ${words} word${words === 1 ? '' : 's'}`;
+}
+
+async function autoEditClip(clip: ShortClip) {
+    if (props.busy || isProcessing.value) return;
+    const runId = await beginRun();
+    activeRunId.value = runId;
+    isProcessing.value = true;
+    autoEditingClip.value = clip.id;
+    emit('update:processing', true);
+    emit('update:status', 'Auto-editing the clip...');
+    stopPreview();
+    try {
+        const result = await autoEdit(runId, [clip]);
+        emit('update:status', `${result.charAt(0).toUpperCase()}${result.slice(1)}.`);
+    } catch (e) {
+        if (isRunCancelled(e)) {
+            emit('update:status', 'Run cancelled.');
+            return;
+        }
+        emit('update:status', `Error auto-editing the clip: ${errorMessage(e)}`);
+    } finally {
+        autoEditingClip.value = null;
+        if (activeRunId.value === runId) {
+            activeRunId.value = null;
+            isProcessing.value = false;
+            emit('update:processing', false);
+        }
+    }
+}
+
 // ---- Generation ----
 async function generateClips() {
     if (props.busy || props.segments.length === 0) return;
@@ -637,11 +705,21 @@ async function generateClips() {
             },
         );
         assertActiveRun(runId);
-        updateState({ clips: fromCandidates(candidates) });
-        emit(
-            'update:status',
-            `Found ${candidates.length} clip${candidates.length === 1 ? '' : 's'}.`,
-        );
+        const found = fromCandidates(candidates);
+        updateState({ clips: found });
+        const summary = `Found ${candidates.length} clip${candidates.length === 1 ? '' : 's'}`;
+        emit('update:status', `${summary}.`);
+        if (props.state.autoEdit && found.length > 0) {
+            // The clips stay even if editing them fails.
+            try {
+                emit('update:status', `${summary}; auto-editing them...`);
+                const edited = await autoEdit(runId, found, found);
+                emit('update:status', `${summary}; ${edited}.`);
+            } catch (e) {
+                if (isRunCancelled(e)) throw e;
+                emit('update:status', `${summary}, but auto editing failed: ${errorMessage(e)}`);
+            }
+        }
     } catch (e) {
         if (isRunCancelled(e)) {
             emit('update:status', 'Run cancelled.');
@@ -1106,8 +1184,11 @@ async function openExportFolder() {
                         :kept="keptRanges(clip)"
                         :playhead="previewing?.id === clip.id ? playhead : null"
                         :cut-words="clip.cutWords"
+                        :auto-editing="autoEditingClip === clip.id"
+                        :can-auto-edit="!isProcessing && !busy"
                         @edit="editClipWord"
                         @cut="(words, cut) => cutClipWords(clip, words, cut)"
+                        @auto-edit="autoEditClip(clip)"
                     />
 
                     <!-- Facts, ratings and actions sit at the bottom, so cards in a row line up. -->

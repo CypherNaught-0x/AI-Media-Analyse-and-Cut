@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import type { TimeSpan } from '../types';
+import type { CutWord } from '../types';
 import type { ClipWord } from '../utils/shortClips';
 
 interface Props {
@@ -9,8 +9,12 @@ interface Props {
     kept: { start: number; end: number }[] | null;
     /** Player time while this clip previews, else null. */
     playhead: number | null;
-    /** Words the user cut out of the clip. */
-    cutWords?: TimeSpan[];
+    /** Words cut out of the clip (by the user, or by auto editing). */
+    cutWords?: CutWord[];
+    /** Auto editing of this clip is running. */
+    autoEditing?: boolean;
+    /** Auto editing may start (nothing else runs). */
+    canAutoEdit?: boolean;
 }
 
 const props = defineProps<Props>();
@@ -18,6 +22,8 @@ const emit = defineEmits<{
     edit: [word: ClipWord, text: string];
     /** Cut `words` out of the clip (or, with `cut` false, restore them). */
     cut: [words: ClipWord[], cut: boolean];
+    /** Let an LLM propose cuts for this clip. */
+    'auto-edit': [];
 }>();
 
 type Mode = 'edit' | 'cut';
@@ -28,8 +34,24 @@ const draft = ref('');
 /** The word last clicked in cut mode, for Shift-click ranges. */
 const anchor = ref<number | null>(null);
 
+function cutOf(word: ClipWord): CutWord | undefined {
+    return (props.cutWords ?? []).find((cut) => cut.start === word.start && cut.end === word.end);
+}
+
 function userCut(word: ClipWord): boolean {
-    return (props.cutWords ?? []).some((cut) => cut.start === word.start && cut.end === word.end);
+    return cutOf(word) !== undefined;
+}
+
+function autoCut(word: ClipWord): boolean {
+    return cutOf(word)?.auto === true;
+}
+
+function wordTitle(word: ClipWord): string {
+    const cut = cutOf(word);
+    if (cut?.auto) return `Cut by auto editing${cut.reason ? `: ${cut.reason}` : ''}`;
+    if (cut) return 'Cut from this clip';
+    if (tightened(word)) return 'Cut by tightening';
+    return mode.value === 'cut' ? 'Click to cut' : 'Click to edit';
 }
 
 /** Cut by tightening (outside what the prepared preview plays), not by the user. */
@@ -148,9 +170,19 @@ function restoreAll() {
                 </button>
             </div>
             <button
+                type="button"
+                class="ml-auto rounded px-1.5 py-0.5 text-orange-300 hover:bg-white/10 disabled:opacity-40"
+                :disabled="!canAutoEdit"
+                title="Let an LLM cut false starts, repetitions and asides; replaces earlier auto cuts"
+                data-testid="clip-text-auto-edit"
+                @click="emit('auto-edit')"
+            >
+                {{ autoEditing ? 'Auto editing...' : 'Auto edit' }}
+            </button>
+            <button
                 v-if="cutCount > 0"
                 type="button"
-                class="ml-auto rounded px-1.5 py-0.5 text-red-300 hover:bg-white/10"
+                class="rounded px-1.5 py-0.5 text-red-300 hover:bg-white/10"
                 data-testid="clip-text-restore"
                 @click="restoreAll"
             >
@@ -204,22 +236,16 @@ function restoreAll() {
                             ? 'cursor-pointer hover:bg-red-500/20'
                             : 'cursor-text hover:bg-white/10',
                         index === active ? 'bg-[#ffd60a] text-black' : '',
-                        userCut(word)
-                            ? 'bg-red-500/10 text-red-300/70 line-through decoration-red-400'
-                            : '',
+                        autoCut(word)
+                            ? 'bg-orange-500/10 text-orange-300/70 line-through decoration-orange-400'
+                            : userCut(word)
+                              ? 'bg-red-500/10 text-red-300/70 line-through decoration-red-400'
+                              : '',
                         tightened(word) ? 'text-gray-500 line-through decoration-gray-500/70' : '',
                     ]"
-                    :title="
-                        userCut(word)
-                            ? 'Cut from this clip'
-                            : tightened(word)
-                              ? 'Cut by tightening'
-                              : mode === 'cut'
-                                ? 'Click to cut'
-                                : 'Click to edit'
-                    "
+                    :title="wordTitle(word)"
                     :data-word="index"
-                    :data-cut="userCut(word) || undefined"
+                    :data-cut="autoCut(word) ? 'auto' : userCut(word) || undefined"
                     :data-testid="`clip-word-${index}`"
                     @click="onWord(index, $event)"
                     @keydown.enter.prevent="onWord(index, $event)"

@@ -274,8 +274,8 @@ export interface ShortClip {
     looped: boolean;
     /** Included in "Export selected". */
     selected: boolean;
-    /** Words the user cut out of this clip (their source times); the transcript keeps them. */
-    cutWords?: TimeSpan[];
+    /** Words cut out of this clip (their source times); the transcript keeps them. */
+    cutWords?: CutWord[];
     /** What is cut from the ranges (source seconds): the cut words and the pause after each run. */
     cuts?: TimeSpan[];
 }
@@ -284,6 +284,12 @@ export interface ShortClip {
 export interface TimeSpan {
     start: number;
     end: number;
+}
+
+/** A word cut out of a clip: by the user, or proposed by auto editing (with why). */
+export interface CutWord extends TimeSpan {
+    auto?: boolean;
+    reason?: string;
 }
 
 /** People found in a set of clips, and which set (see the faces panel). */
@@ -306,6 +312,8 @@ export interface ViralClipsWorkspaceState {
     captions: boolean;
     /** How hard to tighten pauses, fillers and stutters on export. */
     intensity: Intensity;
+    /** Let an LLM cut false starts, repetitions and asides from new clips. */
+    autoEdit: boolean;
     /** The user's word on faces in 9:16 exports: ignored ones, named ones. */
     faces: FaceOverride[];
     /** The last face search, for the clips it was made for. */

@@ -32,6 +32,11 @@ export const commands = {
 	/**  Pick short-form clip candidates from the transcript (shorts phase S1). */
 	selectClips: (runId: number, llm: LlmConfig, transcript: TranscriptSegment_Deserialize[], request: ClipRequest) => __TAURI_INVOKE<ClipCandidate[]>("select_clips", { runId, llm, transcript, request }),
 	/**
+	 *  Auto editing: cuts an LLM proposes to make each clip flow better, as
+	 *  word ranges per clip. The transcript is never changed.
+	 */
+	suggestClipCuts: (runId: number, llm: LlmConfig, clips: EditClip[]) => __TAURI_INVOKE<WordCut[][]>("suggest_clip_cuts", { runId, llm, clips }),
+	/**
 	 *  Models available at `base_url`. Uses `api_key` when given (a key typed in
 	 *  Settings but not saved yet), otherwise the stored key.
 	 */
@@ -292,6 +297,22 @@ export type DetectedFace = {
 	seconds: number,
 	/**  Index of the request's override that applies to it. */
 	applied: number | null,
+};
+
+/**  A clip to edit. */
+export type EditClip = {
+	title: string,
+	/**  Looped shorts: the ending leads back into the opening, so both stay. */
+	looped: boolean,
+	words: EditWord[],
+};
+
+/**  One word of a clip, in playback order. */
+export type EditWord = {
+	text: string,
+	speaker: string,
+	/**  The first word after a splice (a jump to another moment). */
+	splice: boolean,
 };
 
 /**
@@ -582,5 +603,12 @@ export type VerticalRequest = {
 	looped: boolean[],
 	/**  The user's word on faces: ignored ones, named ones. */
 	faces?: FaceOverride[],
+};
+
+/**  Words `from..=to` (indices into the clip's words) to cut, and why. */
+export type WordCut = {
+	from: number,
+	to: number,
+	reason: string,
 };
 
