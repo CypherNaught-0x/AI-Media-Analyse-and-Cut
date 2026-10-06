@@ -304,6 +304,9 @@ fn camera_filter(
     (filter, script)
 }
 
+/// Integrated loudness of the delivered audio (LUFS).
+const LOUDNESS: f64 = -14.0;
+
 /// Audio fades at hard cuts (seconds): enough to avoid clicks, too short to
 /// hear.
 const CUT_FADE: f64 = 0.008;
@@ -447,7 +450,7 @@ fn render_graph(
             format!("j{i}")
         };
         let joined_audio = if last {
-            "a".to_string()
+            "aj".to_string()
         } else {
             format!("ja{i}")
         };
@@ -503,8 +506,17 @@ fn render_graph(
     if ranges.len() == 1 {
         let _ = write!(graph, "[v0]null[{video_out}];");
         if render.has_audio {
-            let _ = write!(graph, "[a0]anull[a];");
+            let _ = write!(graph, "[a0]anull[aj];");
         }
+    }
+    if render.has_audio {
+        // Shorts platforms normalise to about -14 LUFS; deliver at that
+        // level so the clip isn't turned down (or sounds quiet next to
+        // others). loudnorm works at 192 kHz internally.
+        let _ = write!(
+            graph,
+            "[aj]loudnorm=I={LOUDNESS}:TP=-1.5:LRA=11,aresample=48000[a];"
+        );
     }
     if let Some(y) = caption_y {
         // The caption stream ends on a blank frame; keep the video going.
@@ -1006,7 +1018,12 @@ mod caption_tests {
         let status = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-y"])
             .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=2"])
-            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2,volume=-30dB",
+            ])
             .args([
                 "-c:v",
                 "libx264",
@@ -1054,6 +1071,21 @@ mod caption_tests {
         let info = crate::media_probe::probe_media(&output).unwrap();
         assert!(info.audio.is_some());
         assert!((info.duration_seconds.unwrap() - 2.0).abs() < 0.15);
+        // A quiet sine (-30 dBFS) comes out near -14 LUFS.
+        let measured = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-nostats", "-i"])
+            .arg(&output)
+            .args(["-af", "ebur128", "-f", "null", "-"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&measured.stderr);
+        let summary = log.rsplit("Summary:").next().unwrap_or_default();
+        let loudness: f64 = summary
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("I:"))
+            .and_then(|value| value.trim().trim_end_matches("LUFS").trim().parse().ok())
+            .unwrap();
+        assert!((loudness - LOUDNESS).abs() < 2.0, "{loudness} LUFS");
         let yellow_pixels = |time: &str| {
             let frame = std::process::Command::new("ffmpeg")
                 .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
