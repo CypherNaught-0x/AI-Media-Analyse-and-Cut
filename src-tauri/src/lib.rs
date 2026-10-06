@@ -357,6 +357,7 @@ mod media_cache;
 pub mod media_probe;
 mod media_protocol;
 mod model_download;
+mod morph;
 mod parakeet;
 mod path_guard;
 mod pauses;
@@ -891,6 +892,39 @@ async fn export_vertical_clips(
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format_path_io_error("create the output folder", &output_dir, &e))?;
 
+    // Morph cuts need RIFE (21 MB), downloaded on first use. Without it the
+    // export still works, with plain cuts.
+    let cuts = vertical::CutStyle::from(request.intensity);
+    let morph_model = if cuts.morph {
+        match local_asr::model_root(&window, "rife") {
+            Ok(dir) => {
+                let path = dir.join(morph::RIFE.file_name());
+                let downloaded = model_download::ensure_pinned_file(
+                    &http::http_client(),
+                    model_download::HUGGING_FACE,
+                    &morph::RIFE,
+                    &path,
+                    &|message| emit_progress(&window, 0.0, message.to_string()),
+                )
+                .await;
+                match downloaded {
+                    Ok(()) => Some(path),
+                    Err(error) => {
+                        warn!("Morph cuts unavailable, using plain cuts: {error:#}");
+                        None
+                    }
+                }
+            }
+            Err(error) => {
+                warn!("Morph cuts unavailable, using plain cuts: {error:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    run_control.ensure_active(run_id)?;
+
     let run_control = run_control.inner().clone();
     let analysis = analysis.inner().clone();
     run_blocking(move || {
@@ -918,7 +952,8 @@ async fn export_vertical_clips(
             &speech_turns(request.turns.clone()),
             vertical::RenderOptions {
                 quality,
-                cuts: vertical::CutStyle::from(request.intensity),
+                cuts,
+                morph_model: morph_model.as_deref(),
                 captions: request
                     .captions
                     .then(|| (words.as_slice(), captions::CaptionStyle::default())),

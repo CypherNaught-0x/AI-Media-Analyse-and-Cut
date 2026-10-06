@@ -133,13 +133,16 @@ pub(crate) enum Transition {
     Whip,
     /// A short crossfade.
     Fade,
+    /// Interpolated frames between the two sides of a jump cut
+    /// (`VerticalRange::morph`); the audio is a plain cut.
+    Morph,
 }
 
 impl Transition {
     /// How long the two stretches overlap (seconds).
     pub(crate) fn seconds(self) -> f64 {
         match self {
-            Transition::Cut => 0.0,
+            Transition::Cut | Transition::Morph => 0.0,
             Transition::Whip => 0.24,
             Transition::Fade => 0.3,
         }
@@ -158,6 +161,9 @@ pub(crate) struct VerticalRange {
     pub zoom: f64,
     /// How this stretch joins the previous one.
     pub transition: Transition,
+    /// For `Transition::Morph`: the in-between frames (RGB, cropped to the
+    /// framing at the cut), played over the cut.
+    pub morph: Option<Vec<crate::frames::Frame>>,
 }
 
 impl VerticalRange {
@@ -168,6 +174,7 @@ impl VerticalRange {
             framing,
             zoom: 1.0,
             transition: Transition::Cut,
+            morph: None,
         }
     }
 }
@@ -176,6 +183,20 @@ impl VerticalRange {
 /// eat more than half of either stretch becomes a cut.
 fn effective_transition(ranges: &[VerticalRange], index: usize) -> Transition {
     let transition = ranges[index].transition;
+    if transition == Transition::Morph {
+        // Each side gives up half the morph (a few frames); keep it to
+        // stretches that remain clearly longer than that.
+        let fits = |range: &VerticalRange| range.end - range.start > 0.5;
+        return if index > 0
+            && ranges[index].morph.as_ref().is_some_and(|f| !f.is_empty())
+            && fits(&ranges[index])
+            && fits(&ranges[index - 1])
+        {
+            Transition::Morph
+        } else {
+            Transition::Cut
+        };
+    }
     let seconds = transition.seconds();
     let long_enough = |range: &VerticalRange| range.end - range.start >= 2.0 * seconds;
     if index == 0 || !long_enough(&ranges[index]) || !long_enough(&ranges[index - 1]) {
@@ -290,10 +311,12 @@ const CUT_FADE: f64 = 0.008;
 /// The `-filter_complex` graph for `render` (trims relative to the input
 /// seek) and the `sendcmd` scripts it reads, by file name.
 /// `caption_y`: top of the caption band if captions are laid over (input 1).
+/// `morph_inputs[i]`: the input holding the morph frames into stretch `i`.
 fn render_graph(
     render: &VerticalRender<'_>,
     seek: f64,
     caption_y: Option<u32>,
+    morph_inputs: &[Option<usize>],
 ) -> (String, Vec<(String, String)>) {
     let mut graph = String::new();
     let mut scripts = Vec::new();
@@ -302,9 +325,22 @@ fn render_graph(
     let transitions: Vec<Transition> = (0..ranges.len())
         .map(|index| effective_transition(ranges, index))
         .collect();
+    // A morph replaces the last frames before the cut and the first ones
+    // after it; the audio isn't touched, so sync holds.
+    let morph_half = |i: usize| match (
+        transitions.get(i),
+        &ranges.get(i).and_then(|r| r.morph.as_ref()),
+    ) {
+        (Some(Transition::Morph), Some(frames)) => frames.len() as f64 / render.fps / 2.0,
+        _ => 0.0,
+    };
     for (i, range) in ranges.iter().enumerate() {
-        let (start, end) = (range.start - seek, range.end - seek);
-        let duration = range.end - range.start;
+        let head = morph_half(i);
+        let tail = morph_half(i + 1);
+        let (start, end) = (range.start + head - seek, range.end - tail - seek);
+        let duration = range.end - range.start - head - tail;
+        let audio_duration = range.end - range.start;
+        let (audio_start, audio_end) = (range.start - seek, range.end - seek);
         let trim = format!("[0:v]trim=start={start:.6}:end={end:.6},setpts=PTS-STARTPTS");
         // Same frame rate, time base and format for every stretch, as xfade
         // requires.
@@ -317,9 +353,12 @@ fn render_graph(
             Framing::Follow(keys) => {
                 let name = format!("r{i}");
                 // A punch-in is a tighter crop: sharper than scaling up.
+                // Key times are relative to the stretch, which a morph may
+                // start a little later.
                 let keys: Vec<CropKey> = keys
                     .iter()
                     .map(|key| CropKey {
+                        time: key.time - head,
                         height: key.height / zoom,
                         ..*key
                     })
@@ -361,21 +400,33 @@ fn render_graph(
             }
         }
         if render.has_audio {
-            // Short fades where a hard cut meets this stretch, against clicks.
+            // Short fades where a hard cut (or a morph, which is one for the
+            // audio) meets this stretch, against clicks.
+            let cut = |t: &Transition| matches!(t, Transition::Cut | Transition::Morph);
             let mut fades = String::new();
-            if i > 0 && transitions[i] == Transition::Cut {
+            if i > 0 && cut(&transitions[i]) {
                 let _ = write!(fades, ",afade=t=in:d={CUT_FADE}");
             }
-            if i + 1 < ranges.len() && transitions[i + 1] == Transition::Cut {
+            if i + 1 < ranges.len() && cut(&transitions[i + 1]) {
                 let _ = write!(
                     fades,
                     ",afade=t=out:st={:.6}:d={CUT_FADE}",
-                    (duration - CUT_FADE).max(0.0)
+                    (audio_duration - CUT_FADE).max(0.0)
                 );
             }
             let _ = write!(
                 graph,
-                "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS{fades}[a{i}];"
+                "[0:a]atrim=start={audio_start:.6}:end={audio_end:.6},asetpts=PTS-STARTPTS{fades}[a{i}];"
+            );
+        }
+        if let Some(input) = morph_inputs.get(i).copied().flatten() {
+            // Exactly the interpolated frames: the list repeats the last one.
+            let count = range.morph.as_ref().map_or(0, Vec::len);
+            let _ = write!(
+                graph,
+                "[{input}:v]scale={out_w}:{out_h}:flags=lanczos,setsar=1,fps={fps},\
+                 trim=end_frame={count},settb=AVTB,format=yuv420p[m{i}];",
+                fps = render.fps
             );
         }
     }
@@ -385,6 +436,7 @@ fn render_graph(
     let video_out = if caption_y.is_some() { "vc" } else { "v" };
     let mut current = "v0".to_string();
     let mut current_audio = "a0".to_string();
+    // Output length so far (the audio's: morphs don't change it).
     let mut length = ranges[0].end - ranges[0].start;
     for i in 1..ranges.len() {
         let duration = ranges[i].end - ranges[i].start;
@@ -405,6 +457,15 @@ fn render_graph(
             Transition::Cut => {
                 let _ = write!(graph, "[{current}][v{i}]concat=n=2:v=1:a=0[{joined}];");
             }
+            Transition::Morph if morph_inputs.get(i).copied().flatten().is_some() => {
+                let _ = write!(
+                    graph,
+                    "[{current}][m{i}][v{i}]concat=n=3:v=1:a=0[{joined}];"
+                );
+            }
+            Transition::Morph => {
+                let _ = write!(graph, "[{current}][v{i}]concat=n=2:v=1:a=0[{joined}];");
+            }
             Transition::Whip => {
                 let _ = write!(
                     graph,
@@ -423,7 +484,7 @@ fn render_graph(
             }
         }
         if render.has_audio {
-            if transitions[i] == Transition::Cut {
+            if matches!(transitions[i], Transition::Cut | Transition::Morph) {
                 let _ = write!(
                     graph,
                     "[{current_audio}][a{i}]concat=n=2:v=0:a=1[{joined_audio}];"
@@ -487,7 +548,35 @@ pub(crate) fn render_vertical(
         )?),
         _ => None,
     };
-    let (graph, scripts) = render_graph(render, seek, overlay.as_ref().map(|o| o.y));
+    // Morph frames: one image list (an input) per morph.
+    let mut morph_lists: Vec<(usize, String)> = Vec::new();
+    for (i, range) in render.ranges.iter().enumerate() {
+        let Some(frames) = range.morph.as_ref().filter(|frames| !frames.is_empty()) else {
+            continue;
+        };
+        if effective_transition(render.ranges, i) != Transition::Morph {
+            continue;
+        }
+        let mut list = String::from("ffconcat version 1.0\n");
+        for (k, frame) in frames.iter().enumerate() {
+            let name = format!("morph_{i}_{k}.png");
+            crate::morph::write_png(&dir.path().join(&name), frame)?;
+            let _ = writeln!(list, "file {name}\nduration {:.6}", 1.0 / render.fps);
+        }
+        // The concat demuxer ignores the last entry's duration.
+        let _ = writeln!(list, "file morph_{i}_{}.png", frames.len() - 1);
+        let name = format!("morph_{i}.ffconcat");
+        std::fs::write(dir.path().join(&name), list)
+            .map_err(|e| format!("Failed to write the morph list: {e}"))?;
+        morph_lists.push((i, name));
+    }
+    let first_morph_input = 1 + usize::from(overlay.is_some());
+    let mut morph_inputs = vec![None; render.ranges.len()];
+    for (n, (i, _)) in morph_lists.iter().enumerate() {
+        morph_inputs[*i] = Some(first_morph_input + n);
+    }
+
+    let (graph, scripts) = render_graph(render, seek, overlay.as_ref().map(|o| o.y), &morph_inputs);
     for (name, script) in &scripts {
         std::fs::write(dir.path().join(name), script)
             .map_err(|e| format!("Failed to write the crop script: {e}"))?;
@@ -501,6 +590,9 @@ pub(crate) fn render_vertical(
         command
             .args(["-f", "concat", "-safe", "0"])
             .input(&overlay.list);
+    }
+    for (_, list) in &morph_lists {
+        command.args(["-f", "concat", "-safe", "0"]).input(list);
     }
     command.args(["-filter_complex", &graph, "-map", "[v]"]);
     if render.has_audio {
@@ -810,6 +902,94 @@ mod transition_tests {
         );
         let (red, blue) = colour("2.5");
         assert!(blue > 150 && red < 80, "blue after it ({red},{blue})");
+    }
+}
+
+#[cfg(test)]
+mod morph_tests {
+    use super::*;
+    use crate::frames::Frame;
+
+    /// A morph replaces frames around a jump cut without changing the
+    /// clip's length, and the interpolated frames show at the cut.
+    #[test]
+    fn morph_frames_play_over_the_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("grey.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=4"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
+            .args([
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let key = CropKey {
+            time: 0.0,
+            center_x: 320.0,
+            center_y: 180.0,
+            height: 360.0,
+        };
+        let green = Frame {
+            time: 0.0,
+            width: 202,
+            height: 360,
+            data: [0u8, 200, 0].repeat(202 * 360),
+        };
+        let mut ranges = vec![
+            VerticalRange::new(0.0, 1.5, Framing::Follow(vec![key])),
+            VerticalRange::new(1.8, 3.5, Framing::Follow(vec![key])),
+        ];
+        ranges[1].transition = Transition::Morph;
+        ranges[1].morph = Some(vec![green; 6]);
+        let output = dir.path().join("morphed.mp4");
+        render_vertical(
+            &VerticalRender {
+                input: &source,
+                ranges: &ranges,
+                source_size: (640, 360),
+                fps: 25.0,
+                has_audio: true,
+                output_size: (360, 640),
+                output: &output,
+                quality: ExportQuality::Draft,
+                captions: None,
+            },
+            None,
+            |_| {},
+        )
+        .unwrap();
+
+        let duration = crate::media_probe::probe_media(&output)
+            .unwrap()
+            .duration_seconds
+            .unwrap();
+        assert!((duration - 3.2).abs() < 0.1, "{duration}");
+        let green_at = |time: &str| {
+            let out = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
+                .arg(&output)
+                .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
+                .args(["-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout;
+            out[1] > 150 && out[0] < 80
+        };
+        // Six frames at 25 fps = 0.24 s, centred on the cut at 1.5 s.
+        assert!(green_at("1.5"), "morph frames at the cut");
+        assert!(!green_at("1.2"), "source before");
+        assert!(!green_at("1.8"), "source after");
     }
 }
 

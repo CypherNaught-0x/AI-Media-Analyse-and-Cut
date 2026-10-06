@@ -52,6 +52,16 @@
       "notice": "Poppins, Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins), licensed under the SIL Open Font License 1.1."
     },
     {
+      "id": "rife",
+      "name": "RIFE 4.9 frame interpolation (ONNX export)",
+      "kind": "model-weights",
+      "usedBy": "Morph cuts in vertical shorts (downloaded on first use)",
+      "source": "huggingface.co/yuvraj108c/rife-onnx at 64de7265 (export of hzwer/Practical-RIFE 4.9)",
+      "license": "MIT",
+      "licenseUrl": "https://github.com/hzwer/Practical-RIFE/blob/main/LICENSE",
+      "notice": "RIFE / Practical-RIFE by Zhewei Huang et al. (hzwer), licensed under the MIT License."
+    },
+    {
       "id": "yunet",
       "name": "YuNet face detector (face_detection_yunet_2026may.onnx)",
       "kind": "model-weights",

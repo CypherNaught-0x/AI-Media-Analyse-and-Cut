@@ -11,10 +11,13 @@ use crate::captions::{tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_tracks::{Track, Tracker};
 use crate::faces::FaceDetector;
+use crate::frames::Frame;
 use crate::frames::{decode_frames, FrameRequest, PixelFormat};
 use crate::media_probe::probe_media;
+use crate::morph::{crop, frame_at, luma_difference, Morpher, MAX_DIFFERENCE, MORPH_FRAMES};
 use crate::reframe::{
-    output_starts, render_vertical, CropKey, Framing, Transition, VerticalRange, VerticalRender,
+    crop_at, output_starts, render_vertical, CropKey, CropRect, Framing, Transition, VerticalRange,
+    VerticalRender,
 };
 use crate::run_control::RunControl;
 use crate::shots::detect_cuts;
@@ -391,7 +394,9 @@ pub(crate) fn plan_vertical(
                 .collect::<Vec<_>>()
         })
         .map(|mut pieces| {
-            dress_cuts(&mut pieces, cuts);
+            dress_cuts(&mut pieces, cuts, &mut |a, b| {
+                morph_rect(input, a, b, (source_w, source_h), fps, run).is_some()
+            });
             pieces
         })
         .collect();
@@ -416,34 +421,52 @@ pub(crate) struct CutStyle {
     pub punch: f64,
     /// Transition into a spliced-in moment.
     pub splice: Transition,
+    /// Hide jump cuts with a morph where the two sides are similar enough.
+    pub morph: bool,
 }
 
 impl From<Intensity> for CutStyle {
     fn from(intensity: Intensity) -> Self {
-        let (punch, splice) = match intensity {
-            Intensity::Off => (1.0, Transition::Cut),
-            Intensity::Chill => (1.0, Transition::Fade),
-            Intensity::Punchy => (1.12, Transition::Whip),
-            Intensity::Hyper => (1.18, Transition::Whip),
+        let (punch, splice, morph) = match intensity {
+            Intensity::Off => (1.0, Transition::Cut, false),
+            Intensity::Chill => (1.0, Transition::Fade, true),
+            Intensity::Punchy => (1.12, Transition::Whip, true),
+            Intensity::Hyper => (1.18, Transition::Whip, true),
         };
-        Self { punch, splice }
+        Self {
+            punch,
+            splice,
+            morph,
+        }
     }
 }
 
 /// Punch-ins and transitions for a clip's pieces (in playback order).
-/// Jump cuts alternate between the normal framing and the punch-in, so a
-/// run of them reads as deliberate; a splice gets `style.splice` and resets
-/// the punch. Pieces that continue the same source moment (a framing change)
-/// keep the zoom.
-pub(crate) fn dress_cuts(pieces: &mut [VerticalRange], style: CutStyle) {
+/// A jump cut becomes a morph where `morphable(before, after)` allows it
+/// (keeping the zoom); otherwise jump cuts alternate between the normal
+/// framing and the punch-in, so a run of them reads as deliberate. A splice
+/// gets `style.splice` and resets the punch. Pieces that continue the same
+/// source moment (a framing change) keep the zoom.
+pub(crate) fn dress_cuts(
+    pieces: &mut [VerticalRange],
+    style: CutStyle,
+    morphable: &mut dyn FnMut(&VerticalRange, &VerticalRange) -> bool,
+) {
     let mut punched = false;
     for i in 1..pieces.len() {
         let gap = pieces[i].start - pieces[i - 1].end;
         if gap.abs() < 1e-3 {
             pieces[i].zoom = pieces[i - 1].zoom;
         } else if gap > 0.0 && gap <= JUMP_CUT {
-            punched = !punched && style.punch > 1.0;
-            pieces[i].zoom = if punched { style.punch } else { 1.0 };
+            let mut candidate = pieces[i].clone();
+            candidate.zoom = pieces[i - 1].zoom;
+            if style.morph && morphable(&pieces[i - 1], &candidate) {
+                pieces[i].zoom = pieces[i - 1].zoom;
+                pieces[i].transition = Transition::Morph;
+            } else {
+                punched = !punched && style.punch > 1.0;
+                pieces[i].zoom = if punched { style.punch } else { 1.0 };
+            }
         } else {
             punched = false;
             pieces[i].zoom = 1.0;
@@ -452,11 +475,74 @@ pub(crate) fn dress_cuts(pieces: &mut [VerticalRange], style: CutStyle) {
     }
 }
 
+/// The crop both sides of a jump cut share at the cut, if a morph can hide
+/// it: both follow a face with (nearly) the same crop, and the pictures there
+/// are similar. `b` already carries the zoom it would get.
+fn morph_rect(
+    input: &Path,
+    a: &VerticalRange,
+    b: &VerticalRange,
+    source: (u32, u32),
+    fps: f64,
+    run: Option<(u64, &RunControl)>,
+) -> Option<CropRect> {
+    let (Framing::Follow(keys_a), Framing::Follow(keys_b)) = (&a.framing, &b.framing) else {
+        return None;
+    };
+    if a.end - a.start <= 0.5 || b.end - b.start <= 0.5 {
+        return None;
+    }
+    let half = MORPH_FRAMES as f64 / fps / 2.0;
+    let aspect = f64::from(OUTPUT_SIZE.0) / f64::from(OUTPUT_SIZE.1);
+    let zoomed = |keys: &[CropKey], zoom: f64| -> Vec<CropKey> {
+        keys.iter()
+            .map(|key| CropKey {
+                height: key.height / zoom.max(1.0),
+                ..*key
+            })
+            .collect()
+    };
+    let rect_a = crop_at(
+        &zoomed(keys_a, a.zoom),
+        a.end - a.start - half,
+        source,
+        aspect,
+    );
+    let rect_b = crop_at(&zoomed(keys_b, b.zoom), half, source, aspect);
+    let near = |p: u32, q: u32, size: u32| f64::from(p.abs_diff(q)) <= 0.05 * f64::from(size);
+    if !near(rect_a.x, rect_b.x, rect_a.width)
+        || !near(rect_a.y, rect_b.y, rect_a.height)
+        || !near(rect_a.height, rect_b.height, rect_a.height)
+    {
+        return None;
+    }
+    let (before, after) = morph_frames_around(input, a, b, rect_a, source, fps, run).ok()?;
+    (luma_difference(&before, &after) <= MAX_DIFFERENCE).then_some(rect_a)
+}
+
+/// The last frame kept before a morph and the first one after it, cropped.
+fn morph_frames_around(
+    input: &Path,
+    a: &VerticalRange,
+    b: &VerticalRange,
+    rect: CropRect,
+    source: (u32, u32),
+    fps: f64,
+    run: Option<(u64, &RunControl)>,
+) -> Result<(Frame, Frame), String> {
+    let half = MORPH_FRAMES as f64 / fps / 2.0;
+    let before = frame_at(input, a.end - half - 1.0 / fps, source.0, run)?;
+    let after = frame_at(input, b.start + half, source.0, run)?;
+    Ok((crop(&before, rect), crop(&after, rect)))
+}
+
 /// How vertical clips are rendered.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderOptions<'a> {
     pub quality: ExportQuality,
     pub cuts: CutStyle,
+    /// The morph model; without it morph cuts render as plain cuts.
+    pub morph_model: Option<&'a Path>,
     /// Burned-in captions: transcript words on the source timeline.
     pub captions: Option<(&'a [TimedWord], CaptionStyle)>,
 }
@@ -494,6 +580,53 @@ pub(crate) fn export_vertical(
     seats.dedup_by(|a, b| (a.0, a.1) == (b.0, b.1));
     for (setup, seat, speaker, affinity) in seats {
         log::info!("vertical: setup {setup} seat {seat} = {speaker} (affinity {affinity:.2})");
+    }
+
+    // Interpolate the morph cuts (or fall back to plain cuts).
+    let mut plan = plan;
+    let mut morpher = match options.morph_model {
+        Some(model)
+            if plan
+                .clips
+                .iter()
+                .flatten()
+                .any(|p| p.transition == Transition::Morph) =>
+        {
+            match Morpher::new(model) {
+                Ok(morpher) => Some(morpher),
+                Err(error) => {
+                    log::warn!("vertical: morph cuts unavailable: {error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let (source_size, fps) = (plan.source_size, plan.fps);
+    for pieces in &mut plan.clips {
+        for i in 1..pieces.len() {
+            if pieces[i].transition != Transition::Morph {
+                continue;
+            }
+            let frames = morpher.as_mut().and_then(|morpher| {
+                let rect = morph_rect(input, &pieces[i - 1], &pieces[i], source_size, fps, run)?;
+                let (before, after) = morph_frames_around(
+                    input,
+                    &pieces[i - 1],
+                    &pieces[i],
+                    rect,
+                    source_size,
+                    fps,
+                    run,
+                )
+                .ok()?;
+                morpher.between(&before, &after, MORPH_FRAMES).ok()
+            });
+            match frames {
+                Some(frames) => pieces[i].morph = Some(frames),
+                None => pieces[i].transition = Transition::Cut,
+            }
+        }
     }
 
     let render_total: f64 = ranges
@@ -593,7 +726,11 @@ mod tests {
             piece(5.0, 7.0),
             piece(7.5, 9.0),
         ];
-        dress_cuts(&mut pieces, CutStyle::from(Intensity::Punchy));
+        dress_cuts(
+            &mut pieces,
+            CutStyle::from(Intensity::Punchy),
+            &mut |_, _| false,
+        );
         let zooms: Vec<f64> = pieces.iter().map(|p| p.zoom).collect();
         assert_eq!(zooms, [1.0, 1.12, 1.12, 1.0, 1.12, 1.0, 1.12]);
         let transitions: Vec<Transition> = pieces.iter().map(|p| p.transition).collect();
@@ -604,7 +741,9 @@ mod tests {
             .all(|(i, t)| i == 5 || *t == Transition::Cut));
 
         let mut calm = vec![piece(10.0, 12.0), piece(12.3, 14.0), piece(30.0, 32.0)];
-        dress_cuts(&mut calm, CutStyle::from(Intensity::Chill));
+        dress_cuts(&mut calm, CutStyle::from(Intensity::Chill), &mut |_, _| {
+            false
+        });
         assert!(calm.iter().all(|p| p.zoom == 1.0));
         assert_eq!(calm[2].transition, Transition::Fade);
     }
@@ -719,6 +858,8 @@ mod evaluation {
         let removed = crate::tighten::removed_words(&words, intensity);
         let words: Vec<TimedWord> = words.into_iter().filter(|w| !removed.contains(w)).collect();
         println!("{intensity:?}: {} ranges", ranges.len());
+        let rife = std::env::var_os("SHORTS_RIFE")
+            .map_or_else(|| PathBuf::from("/tmp/rife/rife49.onnx"), PathBuf::from);
         let output = PathBuf::from(keep).join("vertical_export.mp4");
         let started = std::time::Instant::now();
         let mut last = String::new();
@@ -732,6 +873,7 @@ mod evaluation {
             RenderOptions {
                 quality: ExportQuality::Balanced,
                 cuts: CutStyle::from(intensity),
+                morph_model: Some(&rife),
                 captions: Some((&words, CaptionStyle::default())),
             },
             None,
@@ -741,7 +883,10 @@ mod evaluation {
         .unwrap();
         for piece in &plan.clips[0] {
             match &piece.framing {
-                Framing::Fit => println!("{:.1}-{:.1}: fit", piece.start, piece.end),
+                Framing::Fit => println!(
+                    "{:.1}-{:.1}: fit, zoom {:.2}, {:?}",
+                    piece.start, piece.end, piece.zoom, piece.transition
+                ),
                 Framing::Follow(keys) => {
                     let speeds: Vec<f64> = keys
                         .windows(2)
@@ -750,10 +895,16 @@ mod evaluation {
                         .collect();
                     let fastest = speeds.iter().fold(0.0f64, |m, v| m.max(v.abs()));
                     println!(
-                        "{:.1}-{:.1}: follow, {} keys, fastest pan {fastest:.0} px/s",
+                        "{:.1}-{:.1}: follow, {} keys, fastest pan {fastest:.0} px/s, zoom {:.2}, {:?}{}",
                         piece.start,
                         piece.end,
-                        keys.len()
+                        keys.len(),
+                        piece.zoom,
+                        piece.transition,
+                        piece
+                            .morph
+                            .as_ref()
+                            .map_or(String::new(), |f| format!(" ({} frames)", f.len()))
                     );
                     if std::env::var_os("SHORTS_PROFILE_KEYS").is_some() {
                         for key in keys {
