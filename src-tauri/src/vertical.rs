@@ -16,8 +16,8 @@ use crate::frames::{decode_frames, FrameRequest, PixelFormat};
 use crate::media_probe::probe_media;
 use crate::morph::{crop, frame_at, luma_difference, Morpher, MAX_DIFFERENCE, MORPH_FRAMES};
 use crate::reframe::{
-    crop_at, output_starts, render_vertical, CropKey, CropRect, Framing, Transition, VerticalRange,
-    VerticalRender,
+    crop_at, output_starts, render_cover, render_vertical, Cover, CropKey, CropRect, Framing,
+    Transition, VerticalRange, VerticalRender,
 };
 use crate::run_control::RunControl;
 use crate::shots::detect_cuts;
@@ -127,6 +127,8 @@ pub(crate) struct VerticalClip {
     /// Source ranges (seconds), played in order.
     pub ranges: Vec<(f64, f64)>,
     pub output: PathBuf,
+    /// Drawn on the cover image (`<output>.jpg`); no cover without one.
+    pub title: Option<String>,
 }
 
 /// Progress: overall fraction (0-1) and what is happening.
@@ -843,6 +845,32 @@ pub(crate) fn export_vertical(
             },
         )?;
         rendered += clip_seconds;
+
+        // A cover from the first stretch that follows a face (a moment with
+        // a person in it), at its middle.
+        if let Some(title) = clip.title.as_deref().filter(|t| !t.trim().is_empty()) {
+            let framing = pieces
+                .iter()
+                .find(|p| matches!(p.framing, Framing::Follow(_)) && p.end - p.start >= 1.0)
+                .or(pieces.first());
+            if let Some(range) = framing {
+                let cover = clip.output.with_extension("jpg");
+                if let Err(error) = render_cover(
+                    &Cover {
+                        input,
+                        range,
+                        time: (range.start + range.end) / 2.0,
+                        source_size: plan.source_size,
+                        output_size: OUTPUT_SIZE,
+                        title,
+                        output: &cover,
+                    },
+                    run,
+                ) {
+                    log::warn!("vertical: no cover for {}: {error}", cover.display());
+                }
+            }
+        }
     }
     on_progress(1.0, "Vertical export finished".to_string());
     Ok(plan)
@@ -1167,6 +1195,7 @@ mod evaluation {
             &[VerticalClip {
                 ranges: ranges.clone(),
                 output: output.clone(),
+                title: Some("Wie weit vertrauen Patienten der KI?".to_string()),
             }],
             &turns,
             RenderOptions {

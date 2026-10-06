@@ -192,13 +192,23 @@ struct PlacedWord {
 }
 
 impl CaptionPainter {
+    /// A painter for captions of up to two lines.
     pub(crate) fn new(style: CaptionStyle, frame_width: u32) -> Result<Self, String> {
+        Self::with_lines(style, frame_width, 2)
+    }
+
+    /// A painter whose band fits `lines` lines.
+    pub(crate) fn with_lines(
+        style: CaptionStyle,
+        frame_width: u32,
+        lines: usize,
+    ) -> Result<Self, String> {
         let font = FontRef::try_from_slice(FONT)
             .map_err(|e| format!("Failed to load the caption font: {e}"))?;
         let scaled = font.as_scaled(PxScale::from(style.font_px));
         let line = scaled.ascent() - scaled.descent() + scaled.line_gap();
         let margin = style.font_px * (style.stroke + 0.15);
-        let height = (2.0 * line + 2.0 * margin).ceil() as u32 & !1;
+        let height = (lines as f32 * line + 2.0 * margin).ceil() as u32 & !1;
         Ok(Self {
             font,
             style,
@@ -342,16 +352,36 @@ impl CaptionPainter {
         out
     }
 
-    /// One frame per active word (and one with none active) for `chunk`.
+    /// One frame per active word for `chunk`.
     pub(crate) fn paint_chunk(&self, chunk: &[TimedWord]) -> Vec<Image> {
+        let actives: Vec<Option<usize>> = (0..chunk.len()).map(Some).collect();
+        self.paint(chunk, &actives)
+    }
+
+    /// `text` in the fill colour, wrapped and centred (e.g. a title).
+    pub(crate) fn paint_text(&self, text: &str) -> Image {
+        let words: Vec<TimedWord> = text
+            .split_whitespace()
+            .map(|word| TimedWord {
+                start: 0.0,
+                end: 0.0,
+                text: word.to_string(),
+            })
+            .collect();
+        self.paint(&words, &[None]).remove(0)
+    }
+
+    /// One frame per entry of `actives`: the word highlighted, if any.
+    fn paint(&self, chunk: &[TimedWord], actives: &[Option<usize>]) -> Vec<Image> {
         let placed = self.layout(chunk);
         let (coverage, owner) = self.rasterize(&placed);
         let outline = self.dilate(&coverage, self.style.font_px * self.style.stroke);
         let shadow_offset = (self.style.font_px * 0.05).round() as i32;
         let (w, h) = (self.width as i32, self.height as i32);
 
-        (0..chunk.len())
-            .map(|active| {
+        actives
+            .iter()
+            .map(|&active| {
                 let mut data = vec![0u8; (w * h * 4) as usize];
                 for y in 0..h {
                     for x in 0..w {
@@ -365,7 +395,7 @@ impl CaptionPainter {
                         };
                         let stroke = outline[i];
                         let fill = coverage[i];
-                        let colour = if owner[i] as usize == active {
+                        let colour = if Some(owner[i] as usize) == active {
                             self.style.highlight
                         } else {
                             self.style.fill
@@ -409,7 +439,7 @@ impl CaptionPainter {
     }
 }
 
-fn write_png(path: &Path, image: &Image) -> Result<(), String> {
+pub(crate) fn write_png(path: &Path, image: &Image) -> Result<(), String> {
     let file = std::fs::File::create(path)
         .map_err(|e| format!("Failed to write '{}': {e}", path.display()))?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), image.width, image.height);
@@ -606,6 +636,32 @@ mod tests {
         assert!(dark > 1000, "outline pixels: {dark}");
         let corner = &image.data[..4];
         assert_eq!(corner[3], 0, "transparent outside the text");
+    }
+
+    #[test]
+    fn titles_wrap_onto_several_lines_without_a_highlight() {
+        let style = CaptionStyle::default();
+        let painter = CaptionPainter::with_lines(style, 1080, 4).unwrap();
+        let image = painter.paint_text("Warum Patienten der KI schneller vertrauen als ihrem Arzt");
+        let pixels = image.data.as_chunks::<4>().0;
+        let white = pixels
+            .iter()
+            .filter(|p| p[3] == 255 && p[..3] == style.fill)
+            .count();
+        let yellow = pixels
+            .iter()
+            .filter(|p| p[3] == 255 && p[..3] == style.highlight)
+            .count();
+        assert!(white > 5000, "{white}");
+        assert_eq!(yellow, 0);
+        // Three separate bands of rows with text: three lines.
+        let has_text = |y: u32| {
+            (0..image.width).any(|x| image.data[((y * image.width + x) * 4 + 3) as usize] == 255)
+        };
+        let bands = (0..image.height)
+            .filter(|&y| has_text(y) && (y == 0 || !has_text(y - 1)))
+            .count();
+        assert_eq!(bands, 3);
     }
 
     #[test]

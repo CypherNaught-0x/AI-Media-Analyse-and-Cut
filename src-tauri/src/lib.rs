@@ -947,7 +947,11 @@ async fn export_vertical_clips(
             if let Ok(content) = serde_json::to_string_pretty(&metadata) {
                 let _ = std::fs::write(output.with_extension("json"), content);
             }
-            clips.push(vertical::VerticalClip { ranges, output });
+            clips.push(vertical::VerticalClip {
+                ranges,
+                output,
+                title: clip.label.clone(),
+            });
         }
         vertical::export_vertical(
             &input,
