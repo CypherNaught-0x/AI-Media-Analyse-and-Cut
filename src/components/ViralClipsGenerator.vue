@@ -4,7 +4,6 @@ import { mediaUrl } from '../utils/mediaUrl';
 import type {
     ClipRole,
     ShortClip,
-    ShortClipRange,
     SilenceInterval,
     TranscriptSegment,
     ViralClipsWorkspaceState,
@@ -146,14 +145,15 @@ function wordsAround(ranges: { start: number; end: number }[]) {
     );
 }
 
-function verticalRequest(clipSegments: ClipSegment[], ranges: ShortClipRange[]): VerticalRequest {
+function verticalRequest(clipSegments: ClipSegment[], clips: ShortClip[]): VerticalRequest {
     return {
         inputPath: props.inputPath,
         segments: clipSegments,
         turns: speakerTurns(props.segments),
-        words: wordsAround(ranges),
+        words: wordsAround(clips.flatMap((clip) => clip.ranges)),
         intensity: props.state.intensity,
         captions: props.state.captions,
+        looped: clips.map((clip) => clip.looped),
     };
 }
 
@@ -301,7 +301,7 @@ async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> 
         if (props.state.vertical) {
             const plan = await commands.planVerticalClips(
                 runId,
-                verticalRequest([clipSegment(clip)], clip.ranges),
+                verticalRequest([clipSegment(clip)], [clip]),
             );
             entry = { signature, ranges: piecesAsRanges(plan), plan };
         } else {
@@ -311,6 +311,7 @@ async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> 
                 [clipSegment(clip)],
                 wordsAround(clip.ranges),
                 props.state.intensity,
+                [clip.looped],
             );
             const ranges = (tightened?.segments ?? []).map((segment) => ({
                 start: parseTime(segment.start),
@@ -491,7 +492,7 @@ async function exportClips(toExport: ShortClip[]) {
             // Tightening happens in the backend, so captions can follow it.
             await commands.exportVerticalClips(
                 runId,
-                verticalRequest(clipSegments, allRanges),
+                verticalRequest(clipSegments, toExport),
                 outputDir,
                 settings.value.exportQuality,
             );
@@ -504,6 +505,7 @@ async function exportClips(toExport: ShortClip[]) {
                     clipSegments,
                     wordsAround(allRanges),
                     props.state.intensity,
+                    toExport.map((clip) => clip.looped),
                 );
                 assertActiveRun(runId);
                 emit('update:status', `Exporting to ${outputDir}...`);

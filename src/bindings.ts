@@ -68,7 +68,7 @@ export const commands = {
 	 *  Tighten clips (shorter pauses, no fillers or stutters) for the normal
 	 *  export and its preview: the same clips with more, shorter segments.
 	 */
-	tightenClips: (runId: number, inputPath: string, segments: ClipSegment[], words: CaptionWord[], intensity: Intensity) => __TAURI_INVOKE<ClipSegment[]>("tighten_clips", { runId, inputPath, segments, words, intensity }),
+	tightenClips: (runId: number, inputPath: string, segments: ClipSegment[], words: CaptionWord[], intensity: Intensity, looped: boolean[]) => __TAURI_INVOKE<ClipSegment[]>("tighten_clips", { runId, inputPath, segments, words, intensity, looped }),
 	readFileAsBase64: (path: string) => __TAURI_INVOKE<string>("read_file_as_base64", { path }),
 	openFolder: (path: string) => __TAURI_INVOKE<null>("open_folder", { path }),
 	writeTextFile: (path: string, content: string) => __TAURI_INVOKE<null>("write_text_file", { path, content }),
@@ -494,5 +494,7 @@ export type VerticalRequest = {
 	intensity: Intensity,
 	/**  Burn the words in as captions. */
 	captions: boolean,
+	/**  Per clip: a looped short (its end runs into its start). */
+	looped: boolean[],
 };
 

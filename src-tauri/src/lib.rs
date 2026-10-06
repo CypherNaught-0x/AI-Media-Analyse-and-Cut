@@ -848,6 +848,8 @@ pub struct VerticalRequest {
     pub intensity: tighten::Intensity,
     /// Burn the words in as captions.
     pub captions: bool,
+    /// Per clip: a looped short (its end runs into its start).
+    pub looped: Vec<bool>,
 }
 
 /// Per clip, its source ranges (seconds) in playback order.
@@ -866,6 +868,7 @@ fn prepare_vertical(
         &clip_ranges(&request.segments)?,
         &words,
         request.intensity,
+        &request.looped,
         run,
     )?;
     let removed = tighten::removed_words(&words, request.intensity);
@@ -1025,6 +1028,8 @@ async fn tighten_clips(
     segments: Vec<ClipSegment>,
     words: Vec<CaptionWord>,
     intensity: tighten::Intensity,
+    // Per clip: a looped short, whose seam keeps almost no air.
+    looped: Vec<bool>,
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<ClipSegment>, AppError> {
     run_control.ensure_active(run_id)?;
@@ -1035,6 +1040,7 @@ async fn tighten_clips(
             &clip_ranges(&segments)?,
             &timed_words(words),
             intensity,
+            &looped,
             Some((run_id, &run_control)),
         )?;
         Ok(segments

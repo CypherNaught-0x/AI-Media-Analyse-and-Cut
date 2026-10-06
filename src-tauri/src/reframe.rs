@@ -404,13 +404,14 @@ fn render_graph(
         }
         if render.has_audio {
             // Short fades where a hard cut (or a morph, which is one for the
-            // audio) meets this stretch, against clicks.
+            // audio) meets this stretch, and at the clip's ends (platforms
+            // loop shorts), against clicks.
             let cut = |t: &Transition| matches!(t, Transition::Cut | Transition::Morph);
             let mut fades = String::new();
-            if i > 0 && cut(&transitions[i]) {
+            if i == 0 || cut(&transitions[i]) {
                 let _ = write!(fades, ",afade=t=in:d={CUT_FADE}");
             }
-            if i + 1 < ranges.len() && cut(&transitions[i + 1]) {
+            if i + 1 == ranges.len() || cut(&transitions[i + 1]) {
                 let _ = write!(
                     fades,
                     ",afade=t=out:st={:.6}:d={CUT_FADE}",
