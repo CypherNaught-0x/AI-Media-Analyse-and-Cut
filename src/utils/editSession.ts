@@ -56,6 +56,7 @@ export function createDefaultViralClipsWorkspaceState(): ViralClipsWorkspaceStat
         vertical: false,
         captions: true,
         intensity: 'punchy',
+        transitions: null,
         autoEdit: false,
         faces: [],
         faceSearch: null,

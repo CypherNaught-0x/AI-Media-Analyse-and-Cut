@@ -186,9 +186,38 @@ describe('ViralClipsGenerator', () => {
         expect(lastState(wrapper).intensity).toBe('chill');
     });
 
+    it('picks splice transitions, in the listed order, and back to auto', async () => {
+        const wrapper = mountWith();
+        const auto = wrapper.get('[data-testid="clips-transitions-auto"]');
+        expect(auto.attributes('aria-checked')).toBe('true');
+        // Auto at punchy shows the whip.
+        expect(
+            wrapper.get('[data-testid="clips-transition-whip"]').attributes('aria-checked'),
+        ).toBe('true');
+
+        // From auto, a click picks just that one.
+        await wrapper.get('[data-testid="clips-transition-flash"]').trigger('click');
+        expect(lastState(wrapper).transitions).toEqual(['flash']);
+
+        await wrapper.setProps({
+            state: { ...createDefaultViralClipsWorkspaceState(), transitions: ['flash'] },
+        });
+        await wrapper.get('[data-testid="clips-transition-blur_zoom"]').trigger('click');
+        expect(lastState(wrapper).transitions).toEqual(['blur_zoom', 'flash']);
+        await wrapper.get('[data-testid="clips-transition-flash"]').trigger('click');
+        expect(lastState(wrapper).transitions).toEqual([]);
+
+        await wrapper.get('[data-testid="clips-transitions-auto"]').trigger('click');
+        expect(lastState(wrapper).transitions).toBeNull();
+    });
+
     it("exports vertical clips with the speakers' turns when 9:16 is on", async () => {
         const [clip] = fromCandidates([candidate]);
-        const wrapper = mountWith({ clips: [clip], vertical: true });
+        const wrapper = mountWith({
+            clips: [clip],
+            vertical: true,
+            transitions: ['blur_cut', 'iris'],
+        });
 
         await wrapper.get('[data-testid="clips-export-selected"]').trigger('click');
         await flushPromises();
@@ -212,6 +241,7 @@ describe('ViralClipsGenerator', () => {
                     { start: 12.1, end: 13, text: 'three' },
                 ],
                 intensity: 'punchy',
+                transitions: ['blur_cut', 'iris'],
                 captions: true,
                 looped: [false],
             },

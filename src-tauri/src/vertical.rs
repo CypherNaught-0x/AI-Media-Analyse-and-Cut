@@ -815,7 +815,7 @@ pub(crate) fn plan_vertical(
     input: &Path,
     clips: &[Vec<(f64, f64)>],
     cast: Cast<'_>,
-    cuts: CutStyle,
+    cuts: &CutStyle,
     cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut dyn FnMut(f64),
@@ -1040,12 +1040,12 @@ fn insert_cutaways(
 }
 
 /// How cuts are dressed.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CutStyle {
     /// Punch-in on every other jump cut (1.0 = none).
     pub punch: f64,
-    /// Transition into a spliced-in moment.
-    pub splice: Transition,
+    /// Transitions into spliced-in moments, taken in turn (none: cuts).
+    pub splices: Vec<Transition>,
     /// Hide jump cuts with a morph where the two sides are similar enough.
     pub morph: bool,
     /// Otherwise hide them by cutting away to a listener.
@@ -1062,10 +1062,27 @@ impl From<Intensity> for CutStyle {
         };
         Self {
             punch,
-            splice,
+            splices: vec![splice],
             morph,
             cutaways,
         }
+    }
+}
+
+impl CutStyle {
+    /// The style for `intensity`, with the user's choice of splice
+    /// transitions if they made one.
+    pub(crate) fn new(intensity: Intensity, splices: Option<&[Transition]>) -> Self {
+        let mut style = Self::from(intensity);
+        if let Some(splices) = splices {
+            // Morphs only bridge jump cuts.
+            style.splices = splices
+                .iter()
+                .copied()
+                .filter(|t| *t != Transition::Morph)
+                .collect();
+        }
+        style
     }
 }
 
@@ -1073,14 +1090,15 @@ impl From<Intensity> for CutStyle {
 /// A jump cut becomes a morph where `morphable(before, after)` allows it
 /// (keeping the zoom); otherwise jump cuts alternate between the normal
 /// framing and the punch-in, so a run of them reads as deliberate. A splice
-/// gets `style.splice` and resets the punch. Pieces that continue the same
+/// gets the next of `style.splices` and resets the punch. Pieces that continue the same
 /// source moment (a framing change) keep the zoom.
 pub(crate) fn dress_cuts(
     pieces: &mut [VerticalRange],
-    style: CutStyle,
+    style: &CutStyle,
     morphable: &mut dyn FnMut(&VerticalRange, &VerticalRange) -> bool,
 ) {
     let mut punched = false;
+    let mut splices = style.splices.iter().cycle();
     for i in 1..pieces.len() {
         let gap = pieces[i].start - pieces[i - 1].end;
         if gap.abs() < 1e-3 {
@@ -1102,7 +1120,7 @@ pub(crate) fn dress_cuts(
         } else {
             punched = false;
             pieces[i].zoom = 1.0;
-            pieces[i].transition = style.splice;
+            pieces[i].transition = splices.next().copied().unwrap_or_default();
         }
     }
 }
@@ -1169,7 +1187,7 @@ fn morph_frames_around(
 }
 
 /// How vertical clips are rendered.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct RenderOptions<'a> {
     pub quality: ExportQuality,
     pub cuts: CutStyle,
@@ -1194,7 +1212,7 @@ pub(crate) fn export_vertical(
         input,
         &ranges,
         cast,
-        options.cuts,
+        &options.cuts,
         cache,
         run,
         &mut |fraction| {
@@ -1386,7 +1404,7 @@ mod tests {
         ];
         dress_cuts(
             &mut pieces,
-            CutStyle::from(Intensity::Punchy),
+            &CutStyle::from(Intensity::Punchy),
             &mut |_, _| false,
         );
         let zooms: Vec<f64> = pieces.iter().map(|p| p.zoom).collect();
@@ -1399,11 +1417,46 @@ mod tests {
             .all(|(i, t)| i == 5 || *t == Transition::Cut));
 
         let mut calm = vec![piece(10.0, 12.0), piece(12.3, 14.0), piece(30.0, 32.0)];
-        dress_cuts(&mut calm, CutStyle::from(Intensity::Chill), &mut |_, _| {
+        dress_cuts(&mut calm, &CutStyle::from(Intensity::Chill), &mut |_, _| {
             false
         });
         assert!(calm.iter().all(|p| p.zoom == 1.0));
         assert_eq!(calm[2].transition, Transition::Fade);
+    }
+
+    #[test]
+    fn splices_take_the_chosen_transitions_in_turn() {
+        let splices = [Transition::BlurZoom, Transition::Morph, Transition::Flash];
+        let style = CutStyle::new(Intensity::Punchy, Some(&splices));
+        assert_eq!(style.splices, [Transition::BlurZoom, Transition::Flash]);
+        let mut pieces = vec![
+            piece(10.0, 12.0),
+            piece(30.0, 32.0),
+            piece(50.0, 52.0),
+            piece(5.0, 7.0),
+            piece(7.3, 9.0),
+        ];
+        dress_cuts(&mut pieces, &style, &mut |_, _| false);
+        let transitions: Vec<Transition> = pieces.iter().map(|p| p.transition).collect();
+        assert_eq!(
+            transitions,
+            [
+                Transition::Cut,
+                Transition::BlurZoom,
+                Transition::Flash,
+                Transition::BlurZoom,
+                Transition::Cut,
+            ]
+        );
+
+        // None chosen: plain cuts.
+        let mut pieces = vec![piece(10.0, 12.0), piece(30.0, 32.0)];
+        dress_cuts(
+            &mut pieces,
+            &CutStyle::new(Intensity::Punchy, Some(&[])),
+            &mut |_, _| false,
+        );
+        assert_eq!(pieces[1].transition, Transition::Cut);
     }
 
     fn follow(start: f64, end: f64, x: f64) -> VerticalRange {
@@ -1459,7 +1512,7 @@ mod tests {
         let mut pieces: Vec<VerticalRange> = per_range.into_iter().flatten().collect();
         dress_cuts(
             &mut pieces,
-            CutStyle::from(Intensity::Punchy),
+            &CutStyle::from(Intensity::Punchy),
             &mut |_, _| false,
         );
         assert!(

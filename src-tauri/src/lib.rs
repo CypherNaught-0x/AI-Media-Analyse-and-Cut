@@ -881,6 +881,10 @@ pub struct VerticalRequest {
     /// Transcript words around the clips (fillers, captions).
     pub words: Vec<CaptionWord>,
     pub intensity: tighten::Intensity,
+    /// Transitions into spliced-in moments, taken in turn; none: the
+    /// intensity's.
+    #[serde(default)]
+    pub transitions: Option<Vec<reframe::Transition>>,
     /// Burn the words in as captions.
     pub captions: bool,
     /// Per clip: a looped short (its end runs into its start).
@@ -935,7 +939,7 @@ async fn export_vertical_clips(
 
     // Morph cuts need RIFE (21 MB), downloaded on first use. Without it the
     // export still works, with plain cuts.
-    let cuts = vertical::CutStyle::from(request.intensity);
+    let cuts = vertical::CutStyle::new(request.intensity, request.transitions.as_deref());
     let morph_model = if cuts.morph {
         match local_asr::model_root(&window, "rife") {
             Ok(dir) => {
@@ -1042,7 +1046,7 @@ async fn plan_vertical_clips(
                 turns: &speech_turns(request.turns.clone()),
                 faces: &request.faces,
             },
-            vertical::CutStyle::from(request.intensity),
+            &vertical::CutStyle::new(request.intensity, request.transitions.as_deref()),
             Some(&analysis),
             run,
             &mut |fraction| {

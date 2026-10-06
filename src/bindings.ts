@@ -570,6 +570,39 @@ export type TranscriptWord_Serialize = {
 	speaker?: string | null,
 };
 
+/**  How a stretch joins the one before it. */
+export type Transition = 
+/**  A plain cut. */
+"cut" | 
+/**
+ *  A fast slide with horizontal motion blur (a whip pan): for jumps to
+ *  another moment.
+ */
+"whip" | 
+/**  A whip upwards, with vertical motion blur. */
+"whip_up" | 
+/**  A short crossfade. */
+"fade" | 
+/**  A zoom into the outgoing picture through a blur. */
+"blur_zoom" | 
+/**  A hard cut hidden in a short burst of blur. */
+"blur_cut" | 
+/**  A fast, hard-edged wipe. */
+"wipe_cut" | 
+/**  A dip through white. */
+"flash" | 
+/**  A dip through black. */
+"dip_to_black" | 
+/**  The picture breaks into blocks and back. */
+"pixelate" | 
+/**  A circle opening onto the incoming picture. */
+"iris" | 
+/**
+ *  Interpolated frames between the two sides of a jump cut
+ *  (`VerticalRange::morph`); the audio is a plain cut.
+ */
+"morph";
+
 /**  The planned vertical framing of clips, as the frontend previews it. */
 export type VerticalPreview = {
 	sourceWidth: number,
@@ -597,6 +630,11 @@ export type VerticalRequest = {
 	/**  Transcript words around the clips (fillers, captions). */
 	words: CaptionWord[],
 	intensity: Intensity,
+	/**
+	 *  Transitions into spliced-in moments, taken in turn; none: the
+	 *  intensity's.
+	 */
+	transitions?: Transition[] | null,
 	/**  Burn the words in as captions. */
 	captions: boolean,
 	/**  Per clip: a looped short (its end runs into its start). */
