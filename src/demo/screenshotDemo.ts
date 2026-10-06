@@ -158,7 +158,8 @@ export function setupDemoMode() {
                 return DEMO_CLIPS;
             case 'plan_vertical_clips': {
                 // One followed framing per requested clip, slightly right of centre.
-                const clips = (args as { segments: unknown[] }).segments.map(() => [
+                const { request } = args as { request: { segments: unknown[] } };
+                const clips = request.segments.map(() => [
                     {
                         start: 0,
                         end: 1e9,
@@ -176,6 +177,9 @@ export function setupDemoMode() {
             }
             case 'export_vertical_clips':
                 return null;
+            case 'tighten_clips':
+                // No audio to measure in demo mode: clips stay as they are.
+                return (args as { segments: unknown[] }).segments;
             case 'has_api_key':
                 return true;
             case 'list_models':

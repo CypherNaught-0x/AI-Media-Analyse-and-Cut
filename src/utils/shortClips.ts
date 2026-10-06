@@ -166,7 +166,7 @@ export type PlaybackStep =
  */
 export function playbackStep(
     time: number,
-    ranges: ShortClipRange[],
+    ranges: { start: number; end: number }[],
     rangeIndex: number,
 ): PlaybackStep {
     const range = ranges[rangeIndex];
