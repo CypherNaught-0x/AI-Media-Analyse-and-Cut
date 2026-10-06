@@ -1,5 +1,11 @@
 import type { CaptionWord, DetectedFace, FaceOverride, SpeakerTurn } from '../bindings';
-import type { ClipCandidate, ShortClip, ShortClipRange, TranscriptSegment } from '../types';
+import type {
+    ClipCandidate,
+    FaceSearch,
+    ShortClip,
+    ShortClipRange,
+    TranscriptSegment,
+} from '../types';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
 
 let nextId = 0;
@@ -174,6 +180,36 @@ export function playbackStep(
     const next = rangeIndex + 1;
     if (next >= ranges.length) return { action: 'stop' };
     return { action: 'seek', to: ranges[next].start, rangeIndex: next };
+}
+
+/** Saved face overrides, without malformed entries. */
+export function normalizeFaceOverrides(raw: unknown): FaceOverride[] {
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+        (item): item is FaceOverride =>
+            !!item &&
+            typeof item === 'object' &&
+            Array.isArray(item.anchors) &&
+            typeof item.ignored === 'boolean' &&
+            !!item.speaker &&
+            typeof item.speaker.kind === 'string',
+    );
+}
+
+/** A saved face search, or null when there is none or it is malformed. */
+export function normalizeFaceSearch(raw: unknown): FaceSearch | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const search = raw as Record<string, unknown>;
+    if (typeof search.signature !== 'string' || !Array.isArray(search.faces)) return null;
+    const faces = search.faces.filter(
+        (face): face is DetectedFace =>
+            !!face &&
+            typeof face === 'object' &&
+            Array.isArray(face.anchors) &&
+            typeof face.thumbnail === 'string' &&
+            typeof face.seconds === 'number',
+    );
+    return { signature: search.signature, faces };
 }
 
 /** How a 0-10 rating reads at a glance: 9+ stands out, 4 or less fades. */

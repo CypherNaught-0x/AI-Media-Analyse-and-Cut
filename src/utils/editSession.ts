@@ -1,4 +1,4 @@
-import { normalizeShortClips } from './shortClips';
+import { normalizeFaceOverrides, normalizeFaceSearch, normalizeShortClips } from './shortClips';
 import type {
     ClipWorkspaceState,
     EditSessionV1,
@@ -57,6 +57,7 @@ export function createDefaultViralClipsWorkspaceState(): ViralClipsWorkspaceStat
         captions: true,
         intensity: 'punchy',
         faces: [],
+        faceSearch: null,
         clips: [],
         lastExportPath: '',
         trimBoundarySilence: false,
@@ -318,10 +319,12 @@ export function normalizeEditSession(candidate: unknown): EditSessionV1 | null {
         viralClipsWorkspace: {
             ...defaults.viralClipsWorkspace,
             ...(isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace : {}),
-            faces:
-                isRecord(raw.viralClipsWorkspace) && Array.isArray(raw.viralClipsWorkspace.faces)
-                    ? raw.viralClipsWorkspace.faces
-                    : [],
+            faces: normalizeFaceOverrides(
+                isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace.faces : [],
+            ),
+            faceSearch: normalizeFaceSearch(
+                isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace.faceSearch : null,
+            ),
             // Older sessions stored unscored clips with timestamp strings.
             clips: normalizeShortClips(
                 isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace.clips : [],

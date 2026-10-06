@@ -1,11 +1,25 @@
 import type {
+    FaceSearch,
     LastAnalyzedSettings,
+    ShortClip,
     LocalEngine,
     TranscriptSegment,
     TranscriptWorkspaceState,
     TranscriptionBackend,
 } from '../types';
 import { isLocalEngine, migrateTranscriptionBackend } from '../types';
+import type { FaceOverride } from '../bindings';
+import { normalizeFaceOverrides, normalizeFaceSearch, normalizeShortClips } from './shortClips';
+
+/**
+ * The viral clips of a recording, saved with it: the clips as found and
+ * edited, the user's word on faces and the last face search.
+ */
+export interface SavedViralClips {
+    clips: ShortClip[];
+    faces: FaceOverride[];
+    faceSearch: FaceSearch | null;
+}
 
 export interface ParsedTranscriptSidecar {
     segments?: TranscriptSegment[];
@@ -25,6 +39,7 @@ export interface ParsedTranscriptSidecar {
     localEngine?: LocalEngine;
     parakeetModelPath?: string;
     sortformerModelPath?: string;
+    viralClips?: SavedViralClips;
 }
 
 export function parseTranscriptSidecar(
@@ -90,10 +105,33 @@ export function parseTranscriptSidecar(
             typeof sidecar.sortformerModelPath === 'string'
                 ? sidecar.sortformerModelPath
                 : undefined,
+        viralClips: parseViralClips(sidecar.viralClips),
     };
 }
 
-export function buildTranscriptSidecar(transcriptWorkspace: TranscriptWorkspaceState) {
+function parseViralClips(raw: unknown): SavedViralClips | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const saved = raw as Record<string, unknown>;
+    return {
+        clips: normalizeShortClips(saved.clips),
+        faces: normalizeFaceOverrides(saved.faces),
+        faceSearch: normalizeFaceSearch(saved.faceSearch),
+    };
+}
+
+/**
+ * The sidecar written next to a recording. `viralClips` is kept only when
+ * there is something in it.
+ */
+export function buildTranscriptSidecar(
+    transcriptWorkspace: TranscriptWorkspaceState,
+    viralClips?: SavedViralClips,
+) {
+    const hasViralClips =
+        !!viralClips &&
+        (viralClips.clips.length > 0 ||
+            viralClips.faces.length > 0 ||
+            viralClips.faceSearch !== null);
     return {
         segments: transcriptWorkspace.segments,
         translations: transcriptWorkspace.translations,
@@ -112,5 +150,6 @@ export function buildTranscriptSidecar(transcriptWorkspace: TranscriptWorkspaceS
         localEngine: transcriptWorkspace.settingsSnapshot.localEngine,
         parakeetModelPath: transcriptWorkspace.settingsSnapshot.parakeetModelPath,
         sortformerModelPath: transcriptWorkspace.settingsSnapshot.sortformerModelPath,
+        ...(hasViralClips ? { viralClips } : {}),
     };
 }
