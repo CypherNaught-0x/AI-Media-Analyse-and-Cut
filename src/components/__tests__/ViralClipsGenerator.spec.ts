@@ -232,7 +232,7 @@ describe('ViralClipsGenerator', () => {
                         thumbnail: 'data:image/png;base64,AA==',
                         speaker: 'Host',
                         confident: false,
-                        setup: 1,
+                        views: 1,
                         seconds: 3,
                         applied: null,
                     },

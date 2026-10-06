@@ -388,8 +388,8 @@ function onTimeUpdate() {
     }
 }
 
-// ---- Faces: what 9:16 framing found, for the user to rule out (a face on
-// a TV) or name. Overrides live in the workspace state and go with every
+// ---- Faces: the people 9:16 framing found (one face, recognised across
+// camera angles), for the user to rule out (a face on a TV) or name. Overrides live in the workspace state and go with every
 // plan and export. ----
 const detectedFaces = ref<DetectedFace[]>([]);
 const speakers = computed(() => speakerNames(props.segments));
@@ -865,78 +865,70 @@ async function openExportFolder() {
                     v-if="detectedFaces.length"
                     class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
                 >
-                    <template v-for="(face, index) in detectedFaces" :key="index">
-                        <!-- One group per camera setup: the same person has a face in each. -->
-                        <li
-                            v-if="index === 0 || detectedFaces[index - 1].setup !== face.setup"
-                            class="col-span-full mt-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500"
-                        >
-                            Camera setup {{ face.setup }}
-                        </li>
-                        <li
-                            class="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-3"
-                            :data-testid="`clips-face-${index}`"
-                        >
-                            <div class="flex items-center gap-3">
-                                <img
-                                    v-if="face.thumbnail"
-                                    :src="face.thumbnail"
-                                    alt=""
-                                    class="h-16 w-16 rounded-lg object-cover transition"
-                                    :class="faceIgnored(face) ? 'opacity-30 grayscale' : ''"
-                                />
-                                <div
-                                    v-else
-                                    class="h-16 w-16 rounded-lg bg-white/5"
-                                    :class="faceIgnored(face) ? 'opacity-30' : ''"
-                                />
-                                <label class="flex flex-col gap-1 text-xs text-gray-300">
-                                    <span class="flex items-center gap-1.5">
-                                        <input
-                                            type="checkbox"
-                                            role="switch"
-                                            :checked="!faceIgnored(face)"
-                                            :data-testid="`clips-face-enabled-${index}`"
-                                            class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
-                                            @change="
-                                                changeFace(index, {
-                                                    ignored: !($event.target as HTMLInputElement)
-                                                        .checked,
-                                                })
-                                            "
-                                        />
-                                        Follow
-                                    </span>
-                                    <span class="text-gray-500"
-                                        >{{ Math.round(face.seconds) }} s on screen</span
-                                    >
-                                </label>
-                            </div>
-                            <select
-                                :value="faceSpeakerValue(face)"
-                                :disabled="faceIgnored(face)"
-                                :aria-label="`Speaker of face ${index + 1}`"
-                                :data-testid="`clips-face-speaker-${index}`"
-                                class="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-white disabled:opacity-40"
-                                @change="
-                                    setFaceSpeaker(
-                                        index,
-                                        ($event.target as HTMLSelectElement).value,
-                                    )
-                                "
-                            >
-                                <option value="auto">{{ autoLabel(face) }}</option>
-                                <option
-                                    v-for="name in speakers"
-                                    :key="name"
-                                    :value="`named:${name}`"
+                    <li
+                        v-for="(face, index) in detectedFaces"
+                        :key="index"
+                        class="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-3"
+                        :data-testid="`clips-face-${index}`"
+                    >
+                        <div class="flex items-center gap-3">
+                            <img
+                                v-if="face.thumbnail"
+                                :src="face.thumbnail"
+                                alt=""
+                                class="h-16 w-16 rounded-lg object-cover transition"
+                                :class="faceIgnored(face) ? 'opacity-30 grayscale' : ''"
+                            />
+                            <div
+                                v-else
+                                class="h-16 w-16 rounded-lg bg-white/5"
+                                :class="faceIgnored(face) ? 'opacity-30' : ''"
+                            />
+                            <label class="flex flex-col gap-1 text-xs text-gray-300">
+                                <span class="flex items-center gap-1.5">
+                                    <input
+                                        type="checkbox"
+                                        role="switch"
+                                        :checked="!faceIgnored(face)"
+                                        :data-testid="`clips-face-enabled-${index}`"
+                                        class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
+                                        @change="
+                                            changeFace(index, {
+                                                ignored: !($event.target as HTMLInputElement)
+                                                    .checked,
+                                            })
+                                        "
+                                    />
+                                    Follow
+                                </span>
+                                <span class="text-gray-500"
+                                    >{{ Math.round(face.seconds) }} s on screen</span
                                 >
-                                    {{ name }}
-                                </option>
-                                <option value="nobody">Not a speaker</option>
-                            </select>
-                        </li>
-                    </template>
+                                <span
+                                    v-if="face.views > 1"
+                                    class="text-gray-500"
+                                    :data-testid="`clips-face-views-${index}`"
+                                    >{{ face.views }} camera angles</span
+                                >
+                            </label>
+                        </div>
+                        <select
+                            :value="faceSpeakerValue(face)"
+                            :disabled="faceIgnored(face)"
+                            :aria-label="`Speaker of face ${index + 1}`"
+                            :data-testid="`clips-face-speaker-${index}`"
+                            class="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-white disabled:opacity-40"
+                            @change="
+                                setFaceSpeaker(index, ($event.target as HTMLSelectElement).value)
+                            "
+                        >
+                            <option value="auto">{{ autoLabel(face) }}</option>
+                            <option v-for="name in speakers" :key="name" :value="`named:${name}`">
+                                {{ name }}
+                            </option>
+                            <option value="nobody">Not a speaker</option>
+                        </select>
+                    </li>
                 </ul>
             </section>
 

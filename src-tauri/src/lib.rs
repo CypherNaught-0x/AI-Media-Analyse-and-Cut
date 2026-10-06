@@ -347,6 +347,7 @@ pub mod clip_selection;
 pub mod crisper;
 pub(crate) mod encoders;
 pub mod error;
+mod face_identity;
 mod face_tracks;
 mod faces;
 pub(crate) mod ffmpeg;
@@ -1036,9 +1037,9 @@ async fn plan_vertical_clips(
     .map_err(AppError::from)
 }
 
-/// The faces in clips (one per camera setup and seat) with the speakers
-/// bound to them, so the user can rule out faces (a picture on a screen) and
-/// name them. Analyses like the 9:16 preview and shares its cache.
+/// The people in clips (a face, recognised across camera angles) with the
+/// speakers bound to them, so the user can rule out faces (a picture on a
+/// screen) and name them. Analyses like the 9:16 preview and shares its cache.
 #[tauri::command]
 #[specta::specta]
 async fn detect_vertical_faces(
@@ -1050,11 +1051,46 @@ async fn detect_vertical_faces(
 ) -> Result<Vec<vertical::DetectedFace>, AppError> {
     run_control.ensure_active(run_id)?;
     let input = PathBuf::from(&request.input_path);
+
+    // Telling the same person apart across camera angles needs SFace
+    // (39 MB), downloaded on first use. Without it every angle's face is
+    // listed on its own.
+    let sface = match local_asr::model_root(&window, "sface") {
+        Ok(dir) => {
+            let path = dir.join(face_identity::SFACE.file_name());
+            let downloaded = model_download::ensure_pinned_file(
+                &http::http_client(),
+                model_download::HUGGING_FACE,
+                &face_identity::SFACE,
+                &path,
+                &|message| emit_progress(&window, 0.0, message.to_string()),
+            )
+            .await;
+            match downloaded {
+                Ok(()) => Some(path),
+                Err(error) => {
+                    warn!("Face recognition unavailable, listing faces per angle: {error:#}");
+                    None
+                }
+            }
+        }
+        Err(error) => {
+            warn!("Face recognition unavailable, listing faces per angle: {error:#}");
+            None
+        }
+    };
+    run_control.ensure_active(run_id)?;
+
     let run_control = run_control.inner().clone();
     let analysis = analysis.inner().clone();
     run_blocking(move || {
         let run = Some((run_id, &run_control));
         let (ranges, _) = prepare_vertical(&request, &input, run)?;
+        let mut embedder = sface.and_then(|model| {
+            face_identity::FaceEmbedder::new(&model)
+                .inspect_err(|error| warn!("Face recognition unavailable: {error}"))
+                .ok()
+        });
         vertical::detect_faces(
             &input,
             &ranges,
@@ -1062,6 +1098,7 @@ async fn detect_vertical_faces(
                 turns: &speech_turns(request.turns.clone()),
                 faces: &request.faces,
             },
+            embedder.as_mut(),
             Some(&analysis),
             run,
             &mut |fraction| {
