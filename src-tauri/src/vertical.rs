@@ -866,30 +866,30 @@ pub(crate) fn plan_vertical(
                 .iter()
                 .map(|(_, indices)| indices.iter().map(|&i| tracks[i].clone()).collect())
                 .collect();
-            let mut per_piece: Vec<Vec<VerticalRange>> = per_range
+            // Ranges joined by jump cuts are planned together, as one shot.
+            let stretches: Vec<((f64, f64), &[Track])> = per_range
                 .iter()
                 .zip(&range_tracks)
-                .map(|(&((start, end), _), local)| {
-                    plan_camera(
-                        (start, end),
-                        local,
-                        &bindings,
-                        turns,
-                        &camera_frame,
-                        aspect,
-                        &settings,
-                    )
-                    .into_iter()
-                    .map(|piece| {
-                        let framing = match piece.framing {
-                            Framing::Fit => Framing::Fit,
-                            Framing::Follow(keys) => {
-                                Framing::Follow(keys.into_iter().map(to_source).collect())
-                            }
-                        };
-                        VerticalRange::new(piece.start, piece.end, framing)
-                    })
-                    .collect()
+                .map(|(&(range, _), local)| (range, local.as_slice()))
+                .collect();
+            let mut per_piece: Vec<Vec<VerticalRange>> = jump_cut_groups(&stretches)
+                .into_iter()
+                .flat_map(|group| {
+                    plan_camera(group, &bindings, turns, &camera_frame, aspect, &settings)
+                })
+                .map(|pieces| {
+                    pieces
+                        .into_iter()
+                        .map(|piece| {
+                            let framing = match piece.framing {
+                                Framing::Fit => Framing::Fit,
+                                Framing::Follow(keys) => {
+                                    Framing::Follow(keys.into_iter().map(to_source).collect())
+                                }
+                            };
+                            VerticalRange::new(piece.start, piece.end, framing)
+                        })
+                        .collect()
                 })
                 .collect();
             if cuts.cutaways {
@@ -963,6 +963,24 @@ const CUTAWAY_SPACING: f64 = 8.0;
 /// A listener framing for a window: (static crop key, face centre), in
 /// source pixels, from the tracks of a range.
 type ListenerFraming<'a> = dyn Fn(&[Track], (f64, f64), f64) -> Option<(CropKey, (f64, f64))> + 'a;
+
+/// Consecutive runs of `stretches` joined by jump cuts (the next one starts
+/// at most `JUMP_CUT` after the previous one ends).
+fn jump_cut_groups<T>(stretches: &[((f64, f64), T)]) -> Vec<&[((f64, f64), T)]> {
+    let mut groups = Vec::new();
+    let mut first = 0;
+    for i in 1..=stretches.len() {
+        let joined = i < stretches.len() && {
+            let gap = stretches[i].0 .0 - stretches[i - 1].0 .1;
+            (-1e-3..=JUMP_CUT).contains(&gap)
+        };
+        if !joined {
+            groups.push(&stretches[first..i]);
+            first = i;
+        }
+    }
+    groups
+}
 
 /// Hide jump cuts that a morph can't by cutting away to a listener: the last
 /// `CUTAWAY_SIDE` before the cut and the first after it show another face
@@ -1422,6 +1440,24 @@ mod tests {
         });
         assert!(calm.iter().all(|p| p.zoom == 1.0));
         assert_eq!(calm[2].transition, Transition::Fade);
+    }
+
+    #[test]
+    fn jump_cuts_group_the_ranges_planned_together() {
+        let stretches = [
+            ((0.0, 2.0), ()),
+            ((2.3, 4.0), ()),
+            // Touching: a framing change in the same moment.
+            ((4.0, 5.0), ()),
+            // A splice, backwards and then forwards beyond a jump cut.
+            ((1.0, 1.5), ()),
+            ((9.0, 10.0), ()),
+        ];
+        let lengths: Vec<usize> = jump_cut_groups(&stretches)
+            .iter()
+            .map(|g| g.len())
+            .collect();
+        assert_eq!(lengths, [3, 1, 1]);
     }
 
     #[test]
