@@ -918,6 +918,7 @@ async fn export_vertical_clips(
             &speech_turns(request.turns.clone()),
             vertical::RenderOptions {
                 quality,
+                cuts: vertical::CutStyle::from(request.intensity),
                 captions: request
                     .captions
                     .then(|| (words.as_slice(), captions::CaptionStyle::default())),
@@ -955,6 +956,7 @@ async fn plan_vertical_clips(
             &input,
             &ranges,
             &speech_turns(request.turns.clone()),
+            vertical::CutStyle::from(request.intensity),
             Some(&analysis),
             run,
             &mut |fraction| {

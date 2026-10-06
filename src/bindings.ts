@@ -322,6 +322,8 @@ export type PreviewPiece = {
 	end: number,
 	fit: boolean,
 	keys: PreviewKey[],
+	/**  Punch-in on top of the framing (1.0 = none). */
+	zoom: number,
 };
 
 export type ProcessedAudio = {

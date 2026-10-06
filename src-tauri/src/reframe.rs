@@ -122,6 +122,30 @@ pub(crate) enum Framing {
     Fit,
 }
 
+/// How a stretch joins the one before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Transition {
+    /// A plain cut.
+    #[default]
+    Cut,
+    /// A fast slide with horizontal motion blur (a whip pan): for jumps to
+    /// another moment.
+    Whip,
+    /// A short crossfade.
+    Fade,
+}
+
+impl Transition {
+    /// How long the two stretches overlap (seconds).
+    pub(crate) fn seconds(self) -> f64 {
+        match self {
+            Transition::Cut => 0.0,
+            Transition::Whip => 0.24,
+            Transition::Fade => 0.3,
+        }
+    }
+}
+
 /// One stretch of the source in a vertical clip.
 #[derive(Debug, Clone)]
 pub(crate) struct VerticalRange {
@@ -129,6 +153,57 @@ pub(crate) struct VerticalRange {
     pub start: f64,
     pub end: f64,
     pub framing: Framing,
+    /// Punch-in on top of the framing (1.0 = none), e.g. 1.12 on every
+    /// other jump cut.
+    pub zoom: f64,
+    /// How this stretch joins the previous one.
+    pub transition: Transition,
+}
+
+impl VerticalRange {
+    pub(crate) fn new(start: f64, end: f64, framing: Framing) -> Self {
+        Self {
+            start,
+            end,
+            framing,
+            zoom: 1.0,
+            transition: Transition::Cut,
+        }
+    }
+}
+
+/// The transition actually rendered into `ranges[index]`: one that would
+/// eat more than half of either stretch becomes a cut.
+fn effective_transition(ranges: &[VerticalRange], index: usize) -> Transition {
+    let transition = ranges[index].transition;
+    let seconds = transition.seconds();
+    let long_enough = |range: &VerticalRange| range.end - range.start >= 2.0 * seconds;
+    if index == 0 || !long_enough(&ranges[index]) || !long_enough(&ranges[index - 1]) {
+        Transition::Cut
+    } else {
+        transition
+    }
+}
+
+/// Where each stretch starts on the output timeline (transitions overlap
+/// stretches, so the output is shorter than their sum).
+pub(crate) fn output_starts(ranges: &[VerticalRange]) -> Vec<f64> {
+    let mut starts = Vec::with_capacity(ranges.len());
+    let mut time = 0.0;
+    for (index, range) in ranges.iter().enumerate() {
+        time -= effective_transition(ranges, index).seconds();
+        starts.push(time.max(0.0));
+        time += range.end - range.start;
+    }
+    starts
+}
+
+/// The output duration of `ranges`.
+pub(crate) fn output_duration(ranges: &[VerticalRange]) -> f64 {
+    match (output_starts(ranges).last(), ranges.last()) {
+        (Some(start), Some(range)) => start + range.end - range.start,
+        _ => 0.0,
+    }
 }
 
 pub(crate) struct VerticalRender<'a> {
@@ -208,6 +283,10 @@ fn camera_filter(
     (filter, script)
 }
 
+/// Audio fades at hard cuts (seconds): enough to avoid clicks, too short to
+/// hear.
+const CUT_FADE: f64 = 0.008;
+
 /// The `-filter_complex` graph for `render` (trims relative to the input
 /// seek) and the `sendcmd` scripts it reads, by file name.
 /// `caption_y`: top of the caption band if captions are laid over (input 1).
@@ -218,29 +297,57 @@ fn render_graph(
 ) -> (String, Vec<(String, String)>) {
     let mut graph = String::new();
     let mut scripts = Vec::new();
-    let mut concat_inputs = String::new();
     let (out_w, out_h) = render.output_size;
-    for (i, range) in render.ranges.iter().enumerate() {
+    let ranges = render.ranges;
+    let transitions: Vec<Transition> = (0..ranges.len())
+        .map(|index| effective_transition(ranges, index))
+        .collect();
+    for (i, range) in ranges.iter().enumerate() {
         let (start, end) = (range.start - seek, range.end - seek);
+        let duration = range.end - range.start;
         let trim = format!("[0:v]trim=start={start:.6}:end={end:.6},setpts=PTS-STARTPTS");
+        // Same frame rate, time base and format for every stretch, as xfade
+        // requires.
+        let finish = format!(
+            "setsar=1,fps={fps},settb=AVTB,format=yuv420p[v{i}];",
+            fps = render.fps
+        );
+        let zoom = range.zoom.max(1.0);
         match &range.framing {
             Framing::Follow(keys) => {
                 let name = format!("r{i}");
+                // A punch-in is a tighter crop: sharper than scaling up.
+                let keys: Vec<CropKey> = keys
+                    .iter()
+                    .map(|key| CropKey {
+                        height: key.height / zoom,
+                        ..*key
+                    })
+                    .collect();
                 let (camera, script) = camera_filter(
-                    keys,
+                    &keys,
                     render.source_size,
                     render.output_size,
                     render.fps,
-                    range.end - range.start,
+                    duration,
                     &name,
                 );
-                let _ = write!(graph, "{trim},{camera}[v{i}];");
+                let _ = write!(graph, "{trim},{camera},{finish}");
                 scripts.push((format!("{name}.cmd"), script));
             }
             Framing::Fit => {
                 // The background is blurred at quarter size: much cheaper
                 // than blurring 1080x1920, and it's a blur anyway.
                 let (bg_w, bg_h) = ((out_w / 4) & !1, (out_h / 4) & !1);
+                let punch = if zoom > 1.0 {
+                    let (w, h) = (
+                        (f64::from(out_w) * zoom).round() as u32 & !1,
+                        (f64::from(out_h) * zoom).round() as u32 & !1,
+                    );
+                    format!(",scale={w}:{h},crop={out_w}:{out_h}")
+                } else {
+                    String::new()
+                };
                 let _ = write!(
                     graph,
                     "{trim},split=2[bg{i}][fg{i}];\
@@ -249,34 +356,104 @@ fn render_graph(
                      eq=brightness=-0.08[bgb{i}];\
                      [fg{i}]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:\
                      flags=lanczos[fgs{i}];\
-                     [bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{i}];"
+                     [bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2{punch},{finish}"
                 );
             }
         }
-        concat_inputs.push_str(&format!("[v{i}]"));
         if render.has_audio {
+            // Short fades where a hard cut meets this stretch, against clicks.
+            let mut fades = String::new();
+            if i > 0 && transitions[i] == Transition::Cut {
+                let _ = write!(fades, ",afade=t=in:d={CUT_FADE}");
+            }
+            if i + 1 < ranges.len() && transitions[i + 1] == Transition::Cut {
+                let _ = write!(
+                    fades,
+                    ",afade=t=out:st={:.6}:d={CUT_FADE}",
+                    (duration - CUT_FADE).max(0.0)
+                );
+            }
             let _ = write!(
                 graph,
-                "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS[a{i}];"
+                "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS{fades}[a{i}];"
             );
-            concat_inputs.push_str(&format!("[a{i}]"));
         }
     }
-    let _ = write!(
-        graph,
-        "{concat_inputs}concat=n={}:v=1:a={}[{}]{}",
-        render.ranges.len(),
-        u8::from(render.has_audio),
-        if caption_y.is_some() { "vc" } else { "v" },
-        if render.has_audio { "[a]" } else { "" }
-    );
+
+    // Join the stretches in order: runs of cuts with concat, transitions
+    // with xfade (video) and acrossfade (audio).
+    let video_out = if caption_y.is_some() { "vc" } else { "v" };
+    let mut current = "v0".to_string();
+    let mut current_audio = "a0".to_string();
+    let mut length = ranges[0].end - ranges[0].start;
+    for i in 1..ranges.len() {
+        let duration = ranges[i].end - ranges[i].start;
+        let last = i + 1 == ranges.len();
+        let joined = if last {
+            video_out.to_string()
+        } else {
+            format!("j{i}")
+        };
+        let joined_audio = if last {
+            "a".to_string()
+        } else {
+            format!("ja{i}")
+        };
+        let seconds = transitions[i].seconds();
+        let offset = (length - seconds).max(0.0);
+        match transitions[i] {
+            Transition::Cut => {
+                let _ = write!(graph, "[{current}][v{i}]concat=n=2:v=1:a=0[{joined}];");
+            }
+            Transition::Whip => {
+                let _ = write!(
+                    graph,
+                    "[{current}][v{i}]xfade=transition=slideleft:duration={seconds}:\
+                     offset={offset:.6},dblur=angle=0:radius=60:\
+                     enable='between(t,{offset:.6},{:.6})'[{joined}];",
+                    offset + seconds
+                );
+            }
+            Transition::Fade => {
+                let _ = write!(
+                    graph,
+                    "[{current}][v{i}]xfade=transition=fade:duration={seconds}:\
+                     offset={offset:.6}[{joined}];"
+                );
+            }
+        }
+        if render.has_audio {
+            if transitions[i] == Transition::Cut {
+                let _ = write!(
+                    graph,
+                    "[{current_audio}][a{i}]concat=n=2:v=0:a=1[{joined_audio}];"
+                );
+            } else {
+                let _ = write!(
+                    graph,
+                    "[{current_audio}][a{i}]acrossfade=d={seconds}[{joined_audio}];"
+                );
+            }
+        }
+        length = offset + duration;
+        current = joined;
+        current_audio = joined_audio;
+    }
+    if ranges.len() == 1 {
+        let _ = write!(graph, "[v0]null[{video_out}];");
+        if render.has_audio {
+            let _ = write!(graph, "[a0]anull[a];");
+        }
+    }
     if let Some(y) = caption_y {
         // The caption stream ends on a blank frame; keep the video going.
         let _ = write!(
             graph,
-            ";[vc][1:v]overlay=x=0:y={y}:eof_action=pass:format=auto,setsar=1[v]"
+            "[vc][1:v]overlay=x=0:y={y}:eof_action=pass:format=auto,setsar=1[v];"
         );
     }
+    // No trailing separator.
+    graph.pop();
     (graph, scripts)
 }
 
@@ -299,7 +476,7 @@ pub(crate) fn render_vertical(
     // characters that need escaping (e.g. ':' in Windows paths) by running
     // in their directory.
     let dir = tempfile::tempdir().map_err(|e| format!("Failed to create a temp folder: {e}"))?;
-    let duration: f64 = render.ranges.iter().map(|r| r.end - r.start).sum();
+    let duration = output_duration(render.ranges);
     let overlay = match render.captions {
         Some((words, style)) if !words.is_empty() => Some(write_overlay(
             dir.path(),
@@ -465,23 +642,15 @@ mod tests {
         };
         let ranges = [
             // Hold on the left (green) side.
-            VerticalRange {
-                start: 2.0,
-                end: 4.0,
-                framing: Framing::Follow(vec![key(0.0, 200.0)]),
-            },
+            VerticalRange::new(2.0, 4.0, Framing::Follow(vec![key(0.0, 200.0)])),
             // Pan from red to blue.
-            VerticalRange {
-                start: 0.0,
-                end: 2.0,
-                framing: Framing::Follow(vec![key(0.0, 200.0), key(2.0, 1100.0)]),
-            },
+            VerticalRange::new(
+                0.0,
+                2.0,
+                Framing::Follow(vec![key(0.0, 200.0), key(2.0, 1100.0)]),
+            ),
             // The whole picture: red | blue across the middle.
-            VerticalRange {
-                start: 0.0,
-                end: 1.0,
-                framing: Framing::Fit,
-            },
+            VerticalRange::new(0.0, 1.0, Framing::Fit),
         ];
         let output = dir.path().join("vertical.mp4");
         let mut progress = Vec::new();
@@ -539,6 +708,112 @@ mod tests {
 }
 
 #[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    #[test]
+    fn transitions_overlap_stretches_on_the_output_timeline() {
+        let mut ranges = vec![
+            VerticalRange::new(0.0, 2.0, Framing::Fit),
+            VerticalRange::new(5.0, 7.0, Framing::Fit),
+            VerticalRange::new(7.3, 7.6, Framing::Fit),
+        ];
+        ranges[1].transition = Transition::Whip;
+        // Too short for a whip: rendered as a cut.
+        ranges[2].transition = Transition::Whip;
+        let starts = output_starts(&ranges);
+        assert!((starts[1] - 1.76).abs() < 1e-9, "{starts:?}");
+        assert!((starts[2] - 3.76).abs() < 1e-9, "{starts:?}");
+        assert!((output_duration(&ranges) - 4.06).abs() < 1e-9);
+    }
+
+    /// Renders a whip between two generated stretches and a punched-in jump
+    /// cut: the clip is shorter by the whip's overlap, keeps its audio, and
+    /// mid-whip shows both sides blurred together.
+    #[test]
+    fn renders_whips_and_punch_ins() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("two.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
+            .args([
+                "-filter_complex",
+                "color=c=red:s=640x360:r=25:d=2[a];color=c=blue:s=640x360:r=25:d=2[b];\
+                 [a][b]concat=n=2,format=yuv420p[v]",
+            ])
+            .args([
+                "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-c:a", "aac",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let key = CropKey {
+            time: 0.0,
+            center_x: 320.0,
+            center_y: 180.0,
+            height: 360.0,
+        };
+        let mut ranges = vec![
+            VerticalRange::new(0.0, 1.0, Framing::Follow(vec![key])),
+            VerticalRange::new(1.2, 1.9, Framing::Follow(vec![key])),
+            VerticalRange::new(2.1, 3.5, Framing::Follow(vec![key])),
+        ];
+        ranges[1].zoom = 1.12;
+        ranges[2].transition = Transition::Whip;
+        let output = dir.path().join("dressed.mp4");
+        render_vertical(
+            &VerticalRender {
+                input: &source,
+                ranges: &ranges,
+                source_size: (640, 360),
+                fps: 25.0,
+                has_audio: true,
+                output_size: (360, 640),
+                output: &output,
+                quality: ExportQuality::Draft,
+                captions: None,
+            },
+            None,
+            |_| {},
+        )
+        .unwrap();
+
+        let info = crate::media_probe::probe_media(&output).unwrap();
+        assert!(info.audio.is_some());
+        let expected = output_duration(&ranges);
+        assert!((expected - 2.86).abs() < 1e-9);
+        let duration = info.duration_seconds.unwrap();
+        assert!(
+            (duration - expected).abs() < 0.12,
+            "{duration} vs {expected}"
+        );
+        let colour = |time: &str| {
+            let out = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
+                .arg(&output)
+                .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
+                .args(["-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout;
+            (out[0], out[2])
+        };
+        let (red, blue) = colour("1.2");
+        assert!(red > 150 && blue < 80, "red before the whip ({red},{blue})");
+        let (red, blue) = colour("1.58");
+        assert!(
+            red > 60 && blue > 60,
+            "both sides during the whip ({red},{blue})"
+        );
+        let (red, blue) = colour("2.5");
+        assert!(blue > 150 && red < 80, "blue after it ({red},{blue})");
+    }
+}
+
+#[cfg(test)]
 mod caption_tests {
     use super::*;
 
@@ -576,11 +851,7 @@ mod caption_tests {
         render_vertical(
             &VerticalRender {
                 input: &source,
-                ranges: &[VerticalRange {
-                    start: 0.0,
-                    end: 2.0,
-                    framing: Framing::Fit,
-                }],
+                ranges: &[VerticalRange::new(0.0, 2.0, Framing::Fit)],
                 source_size: (640, 360),
                 fps: 25.0,
                 has_audio: true,
@@ -687,11 +958,11 @@ mod profiling {
             render_vertical(
                 &VerticalRender {
                     input: &source,
-                    ranges: &[VerticalRange {
-                        start: 600.0,
-                        end: 600.0 + duration,
-                        framing: Framing::Follow(keys.to_vec()),
-                    }],
+                    ranges: &[VerticalRange::new(
+                        600.0,
+                        600.0 + duration,
+                        Framing::Follow(keys.to_vec()),
+                    )],
                     source_size: (w, h),
                     fps,
                     has_audio: true,

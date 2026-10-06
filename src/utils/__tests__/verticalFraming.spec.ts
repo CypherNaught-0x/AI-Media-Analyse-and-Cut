@@ -29,8 +29,8 @@ describe('verticalFraming', () => {
 
     it('finds the piece playing at a source time', () => {
         const pieces: PreviewPiece[] = [
-            { start: 10, end: 12, fit: true, keys: [] },
-            { start: 12, end: 15, fit: false, keys: [key(0, 640)] },
+            { start: 10, end: 12, fit: true, keys: [], zoom: 1 },
+            { start: 12, end: 15, fit: false, keys: [key(0, 640)], zoom: 1 },
         ];
         expect(pieceAt(pieces, 11)?.fit).toBe(true);
         expect(pieceAt(pieces, 12)?.fit).toBe(false);
@@ -39,7 +39,7 @@ describe('verticalFraming', () => {
 
     it('places the video so the crop fills the frame', () => {
         const pieces: PreviewPiece[] = [
-            { start: 10, end: 20, fit: false, keys: [key(0, 640, 480)] },
+            { start: 10, end: 20, fit: false, keys: [key(0, 640, 480)], zoom: 1 },
         ];
         const plan = { sourceWidth: 1280, sourceHeight: 720 };
         // 270x480 crop centred at (640, 360) in a 270x480 frame: 1:1.
@@ -47,8 +47,19 @@ describe('verticalFraming', () => {
         expect(box).toEqual({ width: 1280, height: 720, left: -505, top: -120 });
     });
 
+    it('tightens the framing for punched-in pieces', () => {
+        const pieces: PreviewPiece[] = [
+            { start: 10, end: 20, fit: false, keys: [key(0, 640, 480)], zoom: 1.2 },
+        ];
+        const plan = { sourceWidth: 1280, sourceHeight: 720 };
+        // A 400 px tall crop fills the 480 px frame: scaled by 1.2.
+        const box = videoBox(plan, pieces, 12, { width: 270, height: 480 });
+        expect(box.width).toBeCloseTo(1536);
+        expect(box.left).toBeCloseTo(-(640 - 112.5) * 1.2);
+    });
+
     it('fits the whole picture for fit pieces', () => {
-        const pieces: PreviewPiece[] = [{ start: 0, end: 5, fit: true, keys: [] }];
+        const pieces: PreviewPiece[] = [{ start: 0, end: 5, fit: true, keys: [], zoom: 1 }];
         const plan = { sourceWidth: 1280, sourceHeight: 720 };
         const box = videoBox(plan, pieces, 1, { width: 270, height: 480 });
         expect(box.width).toBeCloseTo(270);

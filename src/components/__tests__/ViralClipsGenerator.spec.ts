@@ -235,6 +235,7 @@ describe('ViralClipsGenerator', () => {
                                 end: 13,
                                 fit: false,
                                 keys: [{ time: 0, centerX: 640, centerY: 360, height: 480 }],
+                                zoom: 1,
                             },
                         ],
                     ],

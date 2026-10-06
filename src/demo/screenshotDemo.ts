@@ -165,6 +165,7 @@ export function setupDemoMode() {
                         end: 1e9,
                         fit: false,
                         keys: [{ time: 0, centerX: 760, centerY: 330, height: 520 }],
+                        zoom: 1,
                     },
                 ]);
                 return {

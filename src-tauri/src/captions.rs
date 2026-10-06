@@ -66,12 +66,12 @@ impl Default for CaptionStyle {
 }
 
 /// The clip's words on the output timeline: `ranges` (source seconds) play
-/// back to back. Words are clipped to their range; words outside all ranges
-/// are dropped.
-pub(crate) fn output_words(words: &[TimedWord], ranges: &[(f64, f64)]) -> Vec<TimedWord> {
+/// in order, range `i` starting at `starts[i]` (transitions overlap ranges).
+/// Words are clipped to their range; words not mostly inside any range are
+/// dropped.
+fn output_words_at(words: &[TimedWord], ranges: &[(f64, f64)], starts: &[f64]) -> Vec<TimedWord> {
     let mut out = Vec::new();
-    let mut offset = 0.0;
-    for &(start, end) in ranges {
+    for (&(start, end), &offset) in ranges.iter().zip(starts) {
         for word in words {
             // Mostly inside: at least half the word is in the range.
             let overlap = word.end.min(end) - word.start.max(start);
@@ -84,24 +84,27 @@ pub(crate) fn output_words(words: &[TimedWord], ranges: &[(f64, f64)]) -> Vec<Ti
                 text: word.text.clone(),
             });
         }
-        offset += end - start;
     }
     out
 }
 
-/// Like [`output_words`], but for tightened clips: a word whose timing
+/// Like [`output_words_at`], but for tightened clips: a word whose timing
 /// falls into a cut between two nearby ranges (timings are often a little
 /// early and land in the pause before the word) is shown at the start of the
 /// next range instead of being lost. Remove deliberately cut words (fillers,
 /// stutters) from `words` first.
-pub(crate) fn tightened_output_words(words: &[TimedWord], ranges: &[(f64, f64)]) -> Vec<TimedWord> {
+/// `starts`: each range's start on the output timeline.
+pub(crate) fn tightened_output_words(
+    words: &[TimedWord],
+    ranges: &[(f64, f64)],
+    starts: &[f64],
+) -> Vec<TimedWord> {
     /// Ranges further apart than this are separate moments, not a cut pause.
     const NEARBY: f64 = 3.0;
-    let mut out = output_words(words, ranges);
-    let mut offset = 0.0;
-    for pair in ranges.windows(2) {
-        let ((a_start, a_end), (b_start, _)) = (pair[0], pair[1]);
-        offset += a_end - a_start;
+    let mut out = output_words_at(words, ranges, starts);
+    for (index, pair) in ranges.windows(2).enumerate() {
+        let ((_, a_end), (b_start, _)) = (pair[0], pair[1]);
+        let offset = starts[index + 1];
         if b_start < a_end || b_start - a_end > NEARBY {
             continue;
         }
@@ -502,7 +505,7 @@ mod tests {
             word(11.8, 12.6, "edge"),
             word(30.0, 30.5, "outside"),
         ];
-        let out = output_words(&words, &[(20.0, 21.0), (10.0, 12.0)]);
+        let out = output_words_at(&words, &[(20.0, 21.0), (10.0, 12.0)], &[0.0, 1.0]);
         let expected = [
             word(0.0, 0.4, "three"),
             word(1.0, 1.5, "one"),
@@ -525,13 +528,13 @@ mod tests {
             word(10.8, 11.0, "Und"),
             word(11.4, 11.8, "dann"),
         ];
-        let out = tightened_output_words(&words, &[(10.0, 10.55), (11.35, 12.0)]);
+        let out = tightened_output_words(&words, &[(10.0, 10.55), (11.35, 12.0)], &[0.0, 0.55]);
         let texts: Vec<&str> = out.iter().map(|w| w.text.as_str()).collect();
         assert_eq!(texts, ["fertig.", "Und", "dann"]);
         assert!((out[1].start - 0.55).abs() < 1e-9, "{out:?}");
         assert!(out[1].end <= out[2].start + 1e-9, "{out:?}");
         // Far-apart ranges (a splice) don't pull words across.
-        let spliced = tightened_output_words(&words, &[(10.0, 10.55), (20.0, 21.0)]);
+        let spliced = tightened_output_words(&words, &[(10.0, 10.55), (20.0, 21.0)], &[0.0, 0.55]);
         assert_eq!(spliced.len(), 1);
     }
 
