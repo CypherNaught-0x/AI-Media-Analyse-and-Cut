@@ -5,7 +5,7 @@ import type {
     TranscriptWorkspaceState,
     TranscriptionBackend,
 } from '../types';
-import { migrateTranscriptionBackend } from '../types';
+import { isLocalEngine, migrateTranscriptionBackend } from '../types';
 
 export interface ParsedTranscriptSidecar {
     segments?: TranscriptSegment[];
@@ -81,10 +81,9 @@ export function parseTranscriptSidecar(
         // Sidecars written before the pipeline/engine split stored the engine as
         // the pipeline ('parakeet' / 'crisper'); migrate rather than discard.
         transcriptionBackend: migrateTranscriptionBackend(sidecar.transcriptionBackend)?.backend,
-        localEngine:
-            sidecar.localEngine === 'parakeet' || sidecar.localEngine === 'crisper'
-                ? sidecar.localEngine
-                : migrateTranscriptionBackend(sidecar.transcriptionBackend)?.localEngine,
+        localEngine: isLocalEngine(sidecar.localEngine)
+            ? sidecar.localEngine
+            : migrateTranscriptionBackend(sidecar.transcriptionBackend)?.localEngine,
         parakeetModelPath:
             typeof sidecar.parakeetModelPath === 'string' ? sidecar.parakeetModelPath : undefined,
         sortformerModelPath:

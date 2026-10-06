@@ -6,6 +6,7 @@ export type {
     ClipRatings,
     ClipRole,
     ClipSignals,
+    AppleSpeechStatus,
     AudioChunk,
     AudioInfo,
     CrisperEnvironmentStatus,
@@ -22,7 +23,7 @@ export type {
 export type TranscriptionBackend = 'llm' | 'local' | 'hybrid' | 'hybrid-merge';
 
 /** The on-device model that produces the timed words. */
-export type LocalEngine = 'parakeet' | 'crisper';
+export type LocalEngine = 'parakeet' | 'crisper' | 'apple-speech';
 
 export const TRANSCRIPTION_BACKENDS: TranscriptionBackend[] = [
     'llm',
@@ -31,11 +32,16 @@ export const TRANSCRIPTION_BACKENDS: TranscriptionBackend[] = [
     'hybrid-merge',
 ];
 
-export const LOCAL_ENGINES: LocalEngine[] = ['parakeet', 'crisper'];
+export const LOCAL_ENGINES: LocalEngine[] = ['parakeet', 'crisper', 'apple-speech'];
+
+export function isLocalEngine(value: unknown): value is LocalEngine {
+    return typeof value === 'string' && (LOCAL_ENGINES as string[]).includes(value);
+}
 
 export const LOCAL_ENGINE_LABELS: Record<LocalEngine, string> = {
     parakeet: 'Parakeet',
     crisper: 'CrisperWhisper',
+    'apple-speech': 'Apple Speech',
 };
 
 /** True when the pipeline needs a local engine to run. */

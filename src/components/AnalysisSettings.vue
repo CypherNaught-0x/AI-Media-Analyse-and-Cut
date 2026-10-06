@@ -3,6 +3,7 @@ import { computed, ref } from 'vue';
 import type { LocalEngine, TranscriptionBackend } from '../types';
 import { usesLocalEngine, usesRemoteModel } from '../types';
 import { runtimeDownload } from '../utils/runtimeLicenses';
+import { useAppleSpeech } from '../composables/useAppleSpeech';
 
 const props = defineProps<{
     transcriptionBackend: TranscriptionBackend;
@@ -82,7 +83,24 @@ const ENGINES: { value: LocalEngine; title: string; badge?: string; description:
         badge: 'EN / DE',
         description: 'Verbatim, ~30 ms word timings, keeps or cuts fillers.',
     },
+    {
+        value: 'apple-speech',
+        title: 'Apple Speech',
+        badge: 'macOS 26+',
+        description: "macOS's on-device model. Very fast, ~45 languages, drops fillers.",
+    },
 ];
+
+const { supported: appleSpeechSupported } = useAppleSpeech();
+/** Apple Speech only exists on macOS; keep a stored choice visible anyway. */
+const engines = computed(() =>
+    ENGINES.filter(
+        (engine) =>
+            engine.value !== 'apple-speech' ||
+            appleSpeechSupported.value ||
+            props.localEngine === 'apple-speech',
+    ),
+);
 
 function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
     if (!textarea) return;
@@ -143,7 +161,7 @@ function startResize(e: MouseEvent, textarea: HTMLTextAreaElement | null) {
             </label>
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <button
-                    v-for="engine in ENGINES"
+                    v-for="engine in engines"
                     :key="engine.value"
                     type="button"
                     class="flex h-full flex-col rounded-xl border px-4 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"

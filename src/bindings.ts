@@ -51,6 +51,12 @@ export const commands = {
 	crisperEnvironmentStatus: (pythonPath: string) => __TAURI_INVOKE<CrisperEnvironmentStatus>("crisper_environment_status", { pythonPath }),
 	/**  Create the managed virtual environment and install `crisperwhisper` into it. */
 	installCrisperEnvironment: (pythonPath: string, extra: string) => __TAURI_INVOKE<CrisperEnvironmentStatus>("install_crisper_environment", { pythonPath, extra }),
+	/**  Transcribe with Apple Speech and return editor-ready segments. */
+	transcribeWithAppleSpeech: (runId: number, audioPath: string, options: AppleSpeechOptions) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_apple_speech", { runId, audioPath, options }),
+	/**  Whether Apple Speech can run here, and for which locales. */
+	appleSpeechStatus: () => __TAURI_INVOKE<AppleSpeechStatus>("apple_speech_status"),
+	/**  Download the on-device model for `locale` (a macOS system asset). */
+	installAppleSpeechLocale: (locale: string) => __TAURI_INVOKE<AppleSpeechStatus>("install_apple_speech_locale", { locale }),
 	cutVideo: (runId: number, inputPath: string, segments: Segment[], outputPath: string, quality: ExportQuality) => __TAURI_INVOKE<null>("cut_video", { runId, inputPath, segments, outputPath, quality }),
 	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean, quality: ExportQuality) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode, quality }),
 	/**
@@ -98,6 +104,27 @@ export const commands = {
 export type AppError = {
 	kind: ErrorKind,
 	message: string,
+};
+
+export type AppleSpeechOptions = {
+	/**  BCP 47 locale, e.g. `de-DE`. The model for it is downloaded on first use. */
+	locale?: string,
+	/**  Assign speakers with Sortformer (the transcriber does not diarize). */
+	diarize?: boolean,
+	sortformerModelPath?: string,
+};
+
+export type AppleSpeechStatus = {
+	/**  macOS with the helper built in. The engine is not offered elsewhere. */
+	supportedPlatform: boolean,
+	/**  The transcriber can run on this Mac right now. */
+	available: boolean,
+	/**  BCP 47 identifiers, e.g. `de-DE`. */
+	supportedLocales: string[],
+	/**  Locales whose on-device model is already downloaded. */
+	installedLocales: string[],
+	/**  Why the engine is unavailable, when it is. */
+	message: string | null,
 };
 
 /**

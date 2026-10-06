@@ -339,6 +339,7 @@ async fn prepare_preview_audio(
     .map_err(AppError::from)
 }
 
+pub mod apple_speech;
 mod camera;
 mod captions;
 pub mod chunking;
@@ -351,6 +352,7 @@ mod faces;
 pub(crate) mod ffmpeg;
 mod frames;
 pub mod gemini;
+mod helper_process;
 mod http;
 mod local_asr;
 mod media_cache;
@@ -376,6 +378,9 @@ mod upload;
 mod vertical;
 pub mod video;
 
+use crate::apple_speech::{
+    apple_speech_status, install_apple_speech_locale, transcribe_with_apple_speech,
+};
 use crate::chunking::split_audio_for_analysis;
 use crate::crisper::{
     crisper_environment_status, install_crisper_environment, transcribe_with_crisper,
@@ -1400,6 +1405,9 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             transcribe_with_crisper,
             crisper_environment_status,
             install_crisper_environment,
+            transcribe_with_apple_speech,
+            apple_speech_status,
+            install_apple_speech_locale,
             cut_video,
             export_clips,
             export_vertical_clips,

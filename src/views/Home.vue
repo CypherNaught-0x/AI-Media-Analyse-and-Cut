@@ -33,6 +33,7 @@ import type {
 import { LOCAL_ENGINE_LABELS, usesLocalEngine, usesRemoteModel } from '../types';
 import StatusBar from '../components/StatusBar.vue';
 import { useSettings } from '../composables/useSettings';
+import { appleSpeechLocale } from '../composables/useAppleSpeech';
 import { useHomeSessionPersistence } from '../composables/useHomeSessionPersistence';
 import { adjustTimestamp, formatTime, parseTime } from '../composables/useTimeFormat';
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
@@ -168,15 +169,24 @@ const rawParakeetSegments = ref<TranscriptSegment[]>([]);
 const parakeetCacheKey = ref<string>('');
 
 /**
- * The CrisperWhisper options that change the transcript itself. Kept as one
- * string so it can be compared and persisted without widening the session
- * schema every time an option is added.
+ * The local-engine options that change the transcript itself (CrisperWhisper's
+ * model, mode, ...; Apple Speech's language). Kept as one string so it can be
+ * compared and persisted without widening the session schema every time an
+ * option is added; the persisted field is still named `crisperSignature`, from
+ * when only CrisperWhisper had such options.
  */
-function currentCrisperSignature(): string {
+function currentEngineSignature(): string {
     // Self-contained rather than reusing the computed below, so this stays safe
     // to call from anywhere during setup.
     const { transcriptionBackend, localEngine } = workspaceSettings.value;
-    if (!usesLocalEngine(transcriptionBackend) || localEngine !== 'crisper') return '';
+    if (!usesLocalEngine(transcriptionBackend)) return '';
+    if (localEngine === 'apple-speech') {
+        return JSON.stringify({
+            locale: appleSpeechLocale(settings.value.appleSpeechLocale),
+            diarize: settings.value.appleSpeechDiarize,
+        });
+    }
+    if (localEngine !== 'crisper') return '';
     return JSON.stringify({
         model: settings.value.crisperModel,
         language: settings.value.crisperLanguage,
@@ -197,7 +207,7 @@ function currentParakeetCacheKey(): string {
         localEngine: workspaceSettings.value.localEngine,
         parakeetModelPath: workspaceSettings.value.parakeetModelPath,
         sortformerModelPath: workspaceSettings.value.sortformerModelPath,
-        crisperSignature: currentCrisperSignature(),
+        crisperSignature: currentEngineSignature(),
     });
 }
 
@@ -217,6 +227,9 @@ const localEngineDisplay = computed(() => {
     if (workspaceSettings.value.localEngine === 'crisper') {
         const language = settings.value.crisperLanguage === 'de' ? 'DE' : 'EN';
         return `CrisperWhisper ${settings.value.crisperModel} (${settings.value.crisperMode}, ${language})`;
+    }
+    if (workspaceSettings.value.localEngine === 'apple-speech') {
+        return `Apple Speech (${appleSpeechLocale(settings.value.appleSpeechLocale)})`;
     }
     const usesCustomPaths =
         workspaceSettings.value.parakeetModelPath.trim() ||
@@ -283,7 +296,7 @@ const settingsChanged = computed(() => {
             lastAnalyzedSettings.value.parakeetModelPath ||
         workspaceSettings.value.sortformerModelPath !==
             lastAnalyzedSettings.value.sortformerModelPath ||
-        currentCrisperSignature() !== lastAnalyzedSettings.value.crisperSignature ||
+        currentEngineSignature() !== lastAnalyzedSettings.value.crisperSignature ||
         context.value !== lastAnalyzedSettings.value.context ||
         workspaceSettings.value.glossary !== lastAnalyzedSettings.value.glossary ||
         speakerCount.value !== lastAnalyzedSettings.value.speakerCount ||
@@ -688,7 +701,7 @@ async function loadTranscript() {
                 localEngine: workspaceSettings.value.localEngine ?? 'parakeet',
                 parakeetModelPath: workspaceSettings.value.parakeetModelPath ?? '',
                 sortformerModelPath: workspaceSettings.value.sortformerModelPath ?? '',
-                crisperSignature: currentCrisperSignature(),
+                crisperSignature: currentEngineSignature(),
             };
         }
         if (parsed.rawParakeetSegments !== undefined) {
@@ -1089,30 +1102,37 @@ async function transcribeWithLocalEngine(
         return rawParakeetSegments.value;
     }
 
+    const engine = workspaceSettings.value.localEngine;
     const segments =
-        workspaceSettings.value.localEngine === 'crisper'
-            ? await commands.transcribeWithCrisper(runId, analysisAudioPath, {
-                  pythonPath: settings.value.crisperPythonPath,
-                  model: settings.value.crisperModel,
-                  language: settings.value.crisperLanguage,
-                  mode: settings.value.crisperMode,
-                  backend: settings.value.crisperBackend,
-                  device: settings.value.crisperDevice,
-                  computeType: settings.value.crisperComputeType,
-                  // The editor cuts on word timings, so they are always requested
-                  // (the model adds no measurable overhead for them).
-                  wordTimestamps: true,
-                  removeFillers: removeFillerWords.value,
-                  removeVocalEvents: settings.value.crisperRemoveVocalEvents,
-                  diarize: settings.value.crisperDiarize,
+        engine === 'apple-speech'
+            ? await commands.transcribeWithAppleSpeech(runId, analysisAudioPath, {
+                  locale: appleSpeechLocale(settings.value.appleSpeechLocale),
+                  diarize: settings.value.appleSpeechDiarize,
                   sortformerModelPath: workspaceSettings.value.sortformerModelPath,
               })
-            : await commands.transcribeWithParakeet(
-                  runId,
-                  analysisAudioPath,
-                  workspaceSettings.value.parakeetModelPath,
-                  workspaceSettings.value.sortformerModelPath,
-              );
+            : engine === 'crisper'
+              ? await commands.transcribeWithCrisper(runId, analysisAudioPath, {
+                    pythonPath: settings.value.crisperPythonPath,
+                    model: settings.value.crisperModel,
+                    language: settings.value.crisperLanguage,
+                    mode: settings.value.crisperMode,
+                    backend: settings.value.crisperBackend,
+                    device: settings.value.crisperDevice,
+                    computeType: settings.value.crisperComputeType,
+                    // The editor cuts on word timings, so they are always requested
+                    // (the model adds no measurable overhead for them).
+                    wordTimestamps: true,
+                    removeFillers: removeFillerWords.value,
+                    removeVocalEvents: settings.value.crisperRemoveVocalEvents,
+                    diarize: settings.value.crisperDiarize,
+                    sortformerModelPath: workspaceSettings.value.sortformerModelPath,
+                })
+              : await commands.transcribeWithParakeet(
+                    runId,
+                    analysisAudioPath,
+                    workspaceSettings.value.parakeetModelPath,
+                    workspaceSettings.value.sortformerModelPath,
+                );
 
     assertActiveRun(runId);
     // Cache the raw, pre-offset output so changing only LLM-side inputs (or
@@ -1354,7 +1374,7 @@ async function processFile() {
             localEngine: workspaceSettings.value.localEngine,
             parakeetModelPath: workspaceSettings.value.parakeetModelPath,
             sortformerModelPath: workspaceSettings.value.sortformerModelPath,
-            crisperSignature: currentCrisperSignature(),
+            crisperSignature: currentEngineSignature(),
         };
 
         await saveTranscript();
