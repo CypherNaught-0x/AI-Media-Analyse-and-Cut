@@ -158,6 +158,7 @@ function buildSession(inputPath = '/tmp/source.mp4'): EditSessionV1 {
             captions: true,
             intensity: 'punchy',
             faces: [],
+            faceSearch: null,
             clips: [],
             lastExportPath: '',
             trimBoundarySilence: false,
@@ -336,6 +337,52 @@ describe('Home.vue', () => {
 
         expect(wrapper.text()).toContain('Transcript');
         expect(wrapper.text()).toContain('1 Segments');
+    });
+
+    it('restores the clips and faces saved with a recording when it is opened', async () => {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const defaultInvoke = vi.mocked(invoke).getMockImplementation()!;
+        const clip = {
+            id: 'c1',
+            title: 'Saved clip',
+            hookLine: 'Hook',
+            reason: 'Reason',
+            ranges: [{ start: 0, end: 2, role: 'body', firstSegment: 0, lastSegment: 0 }],
+            ratings: { hook: 9, standalone: 8, emotion: 7, info: 6, loopContinuity: 0 },
+            signals: { speakerChanges: 0, laughs: 0, wordsPerSecond: 2 },
+            score: 80,
+            looped: false,
+            selected: true,
+        };
+        const faces = [
+            { anchors: [{ time: 1, x: 0.5, y: 0.4 }], ignored: true, speaker: { kind: 'auto' } },
+        ];
+        vi.mocked(invoke).mockImplementation((cmd, args) => {
+            const path = (args as { path?: string } | undefined)?.path;
+            if (cmd === 'read_text_file' && path === '/tmp/recording.mp4.transcript.json') {
+                return Promise.resolve(
+                    JSON.stringify({
+                        segments: [{ start: '00:00', end: '00:02', speaker: 'A', text: 'Hi' }],
+                        viralClips: { clips: [clip], faces, faceSearch: null },
+                    }),
+                );
+            }
+            return defaultInvoke(cmd, args);
+        });
+        localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession()));
+
+        const wrapper = mount(Home, { global: { plugins: [router] } });
+        await flushPromises();
+        const vm = wrapper.vm as unknown as {
+            inputPath: string;
+            viralClipsState: { clips: { title: string }[]; faces: unknown[] };
+        };
+        vm.inputPath = '/tmp/recording.mp4';
+        await flushPromises();
+
+        expect(vm.viralClipsState.clips.map((c) => c.title)).toEqual(['Saved clip']);
+        expect(vm.viralClipsState.faces).toEqual(faces);
+        vi.mocked(invoke).mockImplementation(defaultInvoke);
     });
 
     it('keeps the transcript and its sidecar when a re-analysis fails', async () => {

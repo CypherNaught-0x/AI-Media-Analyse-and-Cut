@@ -1,4 +1,11 @@
-import type { ClipRatings, ClipRole, ClipSignals, FaceOverride, Intensity } from '../bindings';
+import type {
+    ClipRatings,
+    ClipRole,
+    ClipSignals,
+    DetectedFace,
+    FaceOverride,
+    Intensity,
+} from '../bindings';
 // IPC payloads generated from the Rust commands (src/bindings.ts) are the
 // source of truth for the shapes the backend sends and accepts.
 export type {
@@ -269,6 +276,12 @@ export interface ShortClip {
     selected: boolean;
 }
 
+/** People found in a set of clips, and which set (see the faces panel). */
+export interface FaceSearch {
+    signature: string;
+    faces: DetectedFace[];
+}
+
 export interface ViralClipsWorkspaceState {
     count: number;
     minDuration: number;
@@ -285,6 +298,8 @@ export interface ViralClipsWorkspaceState {
     intensity: Intensity;
     /** The user's word on faces in 9:16 exports: ignored ones, named ones. */
     faces: FaceOverride[];
+    /** The last face search, for the clips it was made for. */
+    faceSearch: FaceSearch | null;
     clips: ShortClip[];
     lastExportPath: string;
     trimBoundarySilence: boolean;

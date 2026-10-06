@@ -628,6 +628,19 @@ watch(
     { deep: true },
 );
 
+// Clips and faces are saved with the recording too.
+watch(
+    () => [
+        viralClipsState.value.clips,
+        viralClipsState.value.faces,
+        viralClipsState.value.faceSearch,
+    ],
+    () => {
+        sessionPersistence.scheduleTranscriptSave();
+    },
+    { deep: true },
+);
+
 watch(
     transcriptWorkspaceState,
     () => {
@@ -645,6 +658,10 @@ async function loadTranscript() {
         const parsed = parseTranscriptSidecar(content, createDefaultLastAnalyzedSettings());
         if (!parsed) {
             return;
+        }
+        // Clips and faces saved with the recording come back with it.
+        if (parsed.viralClips) {
+            viralClipsState.value = { ...viralClipsState.value, ...parsed.viralClips };
         }
 
         if (
@@ -739,7 +756,15 @@ async function saveTranscript() {
     try {
         await commands.writeTextFile(
             transcriptPath,
-            JSON.stringify(buildTranscriptSidecar(transcriptWorkspaceState.value), null, 2),
+            JSON.stringify(
+                buildTranscriptSidecar(transcriptWorkspaceState.value, {
+                    clips: viralClipsState.value.clips,
+                    faces: viralClipsState.value.faces,
+                    faceSearch: viralClipsState.value.faceSearch,
+                }),
+                null,
+                2,
+            ),
         );
         console.log('Transcript saved.');
     } catch (e) {

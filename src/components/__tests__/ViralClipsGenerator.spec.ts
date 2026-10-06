@@ -255,6 +255,27 @@ describe('ViralClipsGenerator', () => {
         }
     });
 
+    it("doesn't search again for clips whose faces were saved", async () => {
+        vi.useFakeTimers();
+        try {
+            const [clip] = fromCandidates([candidate]);
+            const signature = `/tmp/source.mp4|${clip.ranges.map((r) => `${r.start}-${r.end}`).join(',')}`;
+            const wrapper = mountWith({
+                clips: [clip],
+                vertical: true,
+                faceSearch: { signature, faces: [] },
+            });
+            await vi.advanceTimersByTimeAsync(2000);
+            const searched = vi
+                .mocked(invoke)
+                .mock.calls.some(([command]) => command === 'detect_vertical_faces');
+            expect(searched).toBe(false);
+            wrapper.unmount();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('lists detected faces and saves turning one off or naming one', async () => {
         const [clip] = fromCandidates([candidate]);
         const anchor = { time: 11, x: 0.8, y: 0.3 };
@@ -282,6 +303,9 @@ describe('ViralClipsGenerator', () => {
             .mocked(invoke)
             .mock.calls.find(([command]) => command === 'detect_vertical_faces');
         expect(call?.[1]).toMatchObject({ request: { faces: [] } });
+        // The search is kept in the state, with the clips it was made for.
+        expect(lastState(wrapper).faceSearch?.signature).toContain('/tmp/source.mp4|');
+        await wrapper.setProps({ state: lastState(wrapper) });
         const speaker = wrapper.get('[data-testid="clips-face-speaker-0"]');
         expect(speaker.text()).toContain('Auto (Host, unsure)');
 
@@ -289,6 +313,8 @@ describe('ViralClipsGenerator', () => {
         expect(lastState(wrapper).faces).toEqual([
             { anchors: [anchor], ignored: false, speaker: { kind: 'named', name: 'Host' } },
         ]);
+        // The face now points at its override.
+        expect(lastState(wrapper).faceSearch?.faces[0].applied).toBe(0);
 
         await wrapper.setProps({ state: lastState(wrapper) });
         await wrapper.get('[data-testid="clips-face-enabled-0"]').setValue(false);

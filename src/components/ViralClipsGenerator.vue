@@ -419,17 +419,11 @@ function onTimeUpdate() {
 }
 
 // ---- Faces: the people 9:16 framing found (one face, recognised across
-// camera angles), for the user to rule out (a face on a TV) or name. Overrides live in the workspace state and go with every
-// plan and export. ----
-const detectedFaces = ref<DetectedFace[]>([]);
+// camera angles), for the user to rule out (a face on a TV) or name. The
+// last search and the overrides live in the workspace state (saved with the
+// recording); overrides go with every plan and export. ----
+const detectedFaces = computed(() => props.state.faceSearch?.faces ?? []);
 const speakers = computed(() => speakerNames(props.segments));
-
-watch(
-    () => props.inputPath,
-    () => {
-        detectedFaces.value = [];
-    },
-);
 
 function faceOverride(face: DetectedFace): FaceOverride | null {
     return face.applied === null ? null : (props.state.faces[face.applied] ?? null);
@@ -457,8 +451,14 @@ function changeFace(index: number, change: Partial<Pick<FaceOverride, 'ignored' 
     if (!face) return;
     const faces = setFaceOverride(props.state.faces, face, change);
     const applied = face.applied ?? faces.length - 1;
-    detectedFaces.value = detectedFaces.value.map((f, i) => (i === index ? { ...f, applied } : f));
-    updateState({ faces });
+    const search = props.state.faceSearch;
+    updateState({
+        faces,
+        faceSearch: search && {
+            ...search,
+            faces: search.faces.map((f, i) => (i === index ? { ...f, applied } : f)),
+        },
+    });
 }
 
 function setFaceSpeaker(index: number, value: string) {
@@ -498,7 +498,13 @@ watch(
         if (scanTimer !== null) clearTimeout(scanTimer);
         scanTimer = null;
         const signature = faceScanSignature.value;
-        if (!signature || signature === scannedSignature) return;
+        // A search saved with the recording counts as done.
+        if (
+            !signature ||
+            signature === scannedSignature ||
+            signature === props.state.faceSearch?.signature
+        )
+            return;
         scanTimer = setTimeout(() => {
             scanTimer = null;
             if (props.busy || isProcessing.value || previewing.value) return;
@@ -515,7 +521,8 @@ onBeforeUnmount(() => {
 async function detectFaces() {
     const toScan = clipsToScan.value;
     if (props.busy || isProcessing.value || toScan.length === 0 || !props.hasMediaFile) return;
-    scannedSignature = faceScanSignature.value;
+    const signature = faceScanSignature.value;
+    scannedSignature = signature;
 
     const runId = await beginRun();
     activeRunId.value = runId;
@@ -529,7 +536,7 @@ async function detectFaces() {
             verticalRequest(toScan.map(clipSegment), toScan),
         );
         assertActiveRun(runId);
-        detectedFaces.value = faces;
+        updateState({ faceSearch: { signature, faces } });
         emit(
             'update:status',
             `Found ${faces.length} face${faces.length === 1 ? '' : 's'} in ${toScan.length} clip${toScan.length === 1 ? '' : 's'}.`,
