@@ -238,6 +238,59 @@ fn smooth(path: &[(f64, f64)], sigma_samples: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// A listener to cut away to over `window` (absolute source seconds): the
+/// largest face on screen throughout that isn't the one framed around
+/// `subject_x`. Returns a static framing (centre and height) like any
+/// subject's, and the face's centre to recognise the same person elsewhere.
+pub(crate) fn listener_framing(
+    tracks: &[Track],
+    window: (f64, f64),
+    subject_x: f64,
+    frame: &Frame,
+    settings: &CameraSettings,
+) -> Option<((f64, f64, f64), (f64, f64))> {
+    let times: Vec<f64> = (0..)
+        .map(|i| window.0 + f64::from(i) * STEP)
+        .take_while(|&time| time <= window.1)
+        .collect();
+    if times.is_empty() {
+        return None;
+    }
+    let on_screen: Vec<&Track> = tracks
+        .iter()
+        .filter(|track| times.iter().all(|&time| visible(track, time)))
+        .collect();
+    let centre = |track: &Track| f64::from(nearest(track, window.0).face.center().0);
+    // The speaker is the face nearest the subject's framing.
+    let speaker = on_screen.iter().min_by(|a, b| {
+        (centre(a) - subject_x)
+            .abs()
+            .total_cmp(&(centre(b) - subject_x).abs())
+    })?;
+    let listener = on_screen
+        .iter()
+        .filter(|track| !std::ptr::eq(**track, *speaker))
+        .max_by(|a, b| {
+            nearest(a, window.0)
+                .face
+                .height
+                .total_cmp(&nearest(b, window.0).face.height)
+        })?;
+    let targets: Vec<(f64, f64, f64)> = times
+        .iter()
+        .map(|&time| target(nearest(listener, time), frame, settings))
+        .collect();
+    let face = nearest(listener, window.0).face.center();
+    Some((
+        (
+            median(targets.iter().map(|t| t.0).collect()),
+            median(targets.iter().map(|t| t.1).collect()),
+            median(targets.iter().map(|t| t.2).collect()),
+        ),
+        (f64::from(face.0), f64::from(face.1)),
+    ))
+}
+
 /// Crop keys following `track` over `times` (absolute), relative to
 /// `origin`, appended to `keys`.
 ///
@@ -670,6 +723,35 @@ mod tests {
         );
         assert_eq!(keys[0].time, 0.0);
         assert_eq!(keys[0].center_x, 260.0);
+    }
+
+    #[test]
+    fn the_listener_is_the_other_face_on_screen() {
+        let tracks = [
+            track(0, (0.0, 5.0), |_| (200.0, 100.0)),
+            track(1, (0.0, 5.0), |_| (900.0, 100.0)),
+            // Only briefly visible: not a listener for the whole window.
+            track(2, (0.0, 1.0), |_| (600.0, 100.0)),
+        ];
+        let ((x, _, height), face) = listener_framing(
+            &tracks,
+            (2.0, 2.7),
+            260.0,
+            &FRAME,
+            &CameraSettings::default(),
+        )
+        .unwrap();
+        assert_eq!((x, face.0), (960.0, 960.0));
+        assert!((height - 545.45).abs() < 0.1);
+        // Nobody else on screen: no cutaway.
+        assert!(listener_framing(
+            &tracks[..1],
+            (2.0, 2.7),
+            260.0,
+            &FRAME,
+            &CameraSettings::default()
+        )
+        .is_none());
     }
 
     #[test]

@@ -164,6 +164,8 @@ pub(crate) struct VerticalRange {
     /// For `Transition::Morph`: the in-between frames (RGB, cropped to the
     /// framing at the cut), played over the cut.
     pub morph: Option<Vec<crate::frames::Frame>>,
+    /// Shows a listener to hide a jump cut (the audio is the speaker's).
+    pub cutaway: bool,
 }
 
 impl VerticalRange {
@@ -175,6 +177,7 @@ impl VerticalRange {
             zoom: 1.0,
             transition: Transition::Cut,
             morph: None,
+            cutaway: false,
         }
     }
 }
