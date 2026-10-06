@@ -1,17 +1,24 @@
 # Git hooks (https://lefthook.dev). Installed by `pnpm install`.
 # Skip once with `LEFTHOOK=0 git commit ...`; `just check` runs everything.
 
-# Fast checks on the staged files only. They never modify files, so a
-# partially staged file can't pick up unstaged changes.
+# Fast fixes and checks on the staged files only. ESLint and Prettier fix
+# what they can and re-stage it (stage_fixed), so nobody has to format by
+# hand while editing; they run one after the other so they don't race on a
+# file. Lefthook hides the unstaged part of partially staged files while the
+# hook runs, so fixing never pulls unstaged changes into the commit.
+# rustfmt only checks: `cargo fmt` rewrites the whole crate, unstaged files
+# included.
 pre-commit:
-  parallel: true
+  piped: true
   jobs:
-    - name: prettier
-      glob: "*.{ts,js,mjs,vue,css,html,json}"
-      run: pnpm exec prettier --check --ignore-unknown --no-error-on-unmatched-pattern {staged_files}
     - name: eslint
       glob: "*.{ts,js,mjs,vue}"
-      run: pnpm exec eslint --no-warn-ignored {staged_files}
+      run: pnpm exec eslint --fix --no-warn-ignored {staged_files}
+      stage_fixed: true
+    - name: prettier
+      glob: "*.{ts,js,mjs,vue,css,html,json}"
+      run: pnpm exec prettier --write --ignore-unknown --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
     - name: rustfmt
       glob: "src-tauri/**/*.rs"
       root: "src-tauri/"
