@@ -6,6 +6,8 @@ import {
     fromCandidates,
     normalizeShortClips,
     captionWords,
+    clipWords,
+    editWord,
     playbackStep,
     ratingTone,
     setFaceOverride,
@@ -234,5 +236,56 @@ describe('ratingTone', () => {
             'low',
             'low',
         ]);
+    });
+});
+
+describe('clipWords and editWord', () => {
+    const segments: TranscriptSegment[] = [
+        {
+            start: '00:10.000',
+            end: '00:12.000',
+            speaker: 'Annette',
+            text: '60 Prozent nutzen Schatten KI.',
+            words: [
+                { start: '00:10.000', end: '00:10.400', text: '60' },
+                { start: '00:10.400', end: '00:10.900', text: 'Prozent' },
+                { start: '00:10.900', end: '00:11.300', text: 'nutzen' },
+                { start: '00:11.300', end: '00:11.700', text: 'Schatten' },
+                { start: '00:11.700', end: '00:12.000', text: 'KI.' },
+            ],
+        },
+        { start: '00:12.000', end: '00:14.000', speaker: 'Tobias', text: 'Wirklich so viele?' },
+    ];
+
+    it('lists the words in the ranges with where they live', () => {
+        const words = clipWords(segments, [{ start: 10.5, end: 13 }]);
+        expect(words.map((w) => [w.segment, w.index, w.text, w.speaker])).toEqual([
+            [0, 1, 'Prozent', 'Annette'],
+            [0, 2, 'nutzen', 'Annette'],
+            [0, 3, 'Schatten', 'Annette'],
+            [0, 4, 'KI.', 'Annette'],
+            [1, 0, 'Wirklich', 'Tobias'],
+            [1, 1, 'so', 'Tobias'],
+        ]);
+    });
+
+    it('edits a timed word and the segment text with it', () => {
+        const edited = editWord(segments, { segment: 0, index: 3 }, 'Schatten-KI');
+        expect(edited[0].words?.[3]).toEqual({
+            start: '00:11.300',
+            end: '00:11.700',
+            text: 'Schatten-KI',
+        });
+        expect(edited[0].text).toBe('60 Prozent nutzen Schatten-KI KI.');
+        expect(edited[1]).toBe(segments[1]);
+    });
+
+    it('edits a word of a segment without timings in its text', () => {
+        const edited = editWord(segments, { segment: 1, index: 2 }, 'viele!');
+        expect(edited[1].text).toBe('Wirklich so viele!');
+    });
+
+    it('ignores empty edits', () => {
+        expect(editWord(segments, { segment: 0, index: 0 }, '  ')).toBe(segments);
     });
 });
