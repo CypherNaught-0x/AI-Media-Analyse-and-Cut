@@ -184,7 +184,7 @@ describe('setFaceOverride', () => {
         thumbnail: '',
         speaker: null,
         confident: false,
-        setup: 1,
+        views: 1,
         seconds: 4,
         applied,
     });

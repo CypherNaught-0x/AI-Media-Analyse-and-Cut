@@ -193,17 +193,17 @@ export function setupDemoMode() {
                             `<circle cx="48" cy="40" r="20" fill="${colour}"/>` +
                             `<ellipse cx="48" cy="96" rx="34" ry="28" fill="${colour}"/></svg>`,
                     );
-                const face = (x: number, colour: string, speaker: string | null) => ({
+                const face = (x: number, colour: string, speaker: string | null, views = 1) => ({
                     anchors: [{ time: 30, x, y: 0.4 }],
                     thumbnail: silhouette(colour),
                     speaker,
                     confident: speaker !== null,
-                    setup: 1,
+                    views,
                     seconds: 23,
                     applied: null,
                 });
                 return [
-                    face(0.25, '#f472b6', 'Speaker 1'),
+                    face(0.25, '#f472b6', 'Speaker 1', 2),
                     face(0.5, '#94a3b8', null),
                     face(0.75, '#60a5fa', 'Speaker 2'),
                 ];

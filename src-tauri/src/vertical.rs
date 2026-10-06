@@ -9,6 +9,7 @@
 use crate::camera::{listener_framing, plan_camera, CameraSettings, Frame as CameraFrame};
 use crate::captions::{chunk_words, tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
+use crate::face_identity::{group_people, Embedding, FaceEmbedder, SAME_PERSON};
 use crate::face_tracks::{Track, Tracker};
 use crate::faces::{Face, FaceDetector};
 use crate::frames::Frame;
@@ -349,8 +350,8 @@ pub struct FaceOverride {
     pub speaker: FaceSpeaker,
 }
 
-/// A face (a seat of a camera setup) found in the clips, for the user to
-/// check.
+/// A person found in the clips, for the user to check: one face, or the
+/// same face recognised in several camera setups.
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedFace {
@@ -362,9 +363,8 @@ pub struct DetectedFace {
     pub speaker: Option<String>,
     /// The binding is trusted for framing.
     pub confident: bool,
-    /// The camera setup it was seen in (faces of one setup share a number);
-    /// the same person has a face per setup.
-    pub setup: u32,
+    /// Camera setups (angles) the person was recognised in.
+    pub views: u32,
     /// Seconds on screen in the clips.
     #[specta(type = specta_typescript::Number)]
     pub seconds: f64,
@@ -380,8 +380,8 @@ pub(crate) struct Cast<'a> {
     pub faces: &'a [FaceOverride],
 }
 
-/// Anchors kept per face.
-const MAX_ANCHORS: usize = 48;
+/// Anchors kept per person.
+const MAX_ANCHORS: usize = 96;
 /// Side of a face thumbnail (pixels).
 const THUMBNAIL_SIZE: u32 = 96;
 /// Faces on screen shorter than this (seconds) aren't listed.
@@ -602,12 +602,44 @@ fn bind_with_overrides(
     (bindings, resolved, ignored)
 }
 
-/// The faces in `clips` (one per camera setup and seat), most seen first,
-/// with what binding (under the cast's overrides) made of them.
+/// One seat's face as listed: its tracks and its best view.
+struct SeatFace<'a> {
+    setup: usize,
+    tracks: Vec<&'a Track>,
+    seconds: f64,
+    /// The largest, most frontal view: (time, face).
+    best: (f64, Face),
+}
+
+/// How far the nose sits from the middle of the eyes, in eye distances
+/// (0 = looking straight at the camera).
+fn turned(face: &Face) -> f32 {
+    let [right, left, nose, ..] = face.landmarks;
+    let eyes = (left.0 - right.0).hypot(left.1 - right.1).max(1e-3);
+    (nose.0 - (right.0 + left.0) / 2.0).abs() / eyes
+}
+
+/// The view of a seat to show and recognise: the most frontal face among
+/// its larger ones (any of its tracks).
+fn best_view(tracks: &[&Track]) -> (f64, Face) {
+    let observations = || tracks.iter().flat_map(|t| t.observations.iter());
+    let tallest = observations().map(|o| o.face.height).fold(0.0f32, f32::max);
+    let view = observations()
+        .filter(|o| o.face.height >= 0.8 * tallest)
+        .min_by(|a, b| turned(&a.face).total_cmp(&turned(&b.face)))
+        .expect("a seat has tracks");
+    (view.time, view.face)
+}
+
+/// The people in `clips`, most seen first, with what binding (under the
+/// cast's overrides) made of them. A person is a seat (a face's place in a
+/// camera setup) or, with `embedder`, every seat whose face looks like
+/// theirs: the same person in the wide shot and in their close-up.
 pub(crate) fn detect_faces(
     input: &Path,
     clips: &[Vec<(f64, f64)>],
     cast: Cast<'_>,
+    mut embedder: Option<&mut FaceEmbedder>,
     cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut dyn FnMut(f64),
@@ -620,8 +652,7 @@ pub(crate) fn detect_faces(
     let mut seats: Vec<(usize, usize)> = resolved.seats.clone();
     seats.sort_unstable();
     seats.dedup();
-    // (setup, horizontal position, face)
-    let mut faces: Vec<(usize, f64, DetectedFace)> = Vec::new();
+    let mut faces: Vec<SeatFace> = Vec::new();
     for seat in seats {
         let tracks: Vec<&Track> = analysis
             .tracks
@@ -629,64 +660,85 @@ pub(crate) fn detect_faces(
             .filter(|track| resolved.seats[track.id] == seat)
             .collect();
         let seconds: f64 = tracks.iter().map(|t| t.end() - t.start()).sum();
-        if seconds < MIN_LISTED_SECONDS {
-            continue;
-        }
-        let binding = bindings
-            .iter()
-            .find(|b| tracks.iter().any(|t| t.id == b.track));
-        // The face where it is largest.
-        let largest = tracks
-            .iter()
-            .max_by(|a, b| median_height(a).total_cmp(&median_height(b)))
-            .expect("a seat has tracks");
-        let middle = &largest.observations[largest.observations.len() / 2];
-        let thumbnail = frame_at(input, middle.time, analysis.analysis_width, run)
-            .and_then(|frame| face_thumbnail(&frame, &middle.face))
-            .unwrap_or_else(|error| {
-                log::warn!("vertical: no face thumbnail: {error}");
-                String::new()
+        if seconds >= MIN_LISTED_SECONDS {
+            let best = best_view(&tracks);
+            faces.push(SeatFace {
+                setup: seat.0,
+                tracks,
+                seconds,
+                best,
             });
-        let anchors = anchors_of(&tracks, size);
-        let x = anchors.first().map_or(0.0, |a| a.x);
-        faces.push((
-            seat.0,
-            x,
+        }
+    }
+
+    // One frame per seat: the thumbnail, and the embedding.
+    let mut thumbnails = Vec::with_capacity(faces.len());
+    let mut embeddings: Vec<Option<Embedding>> = Vec::with_capacity(faces.len());
+    for face in &faces {
+        let (time, view) = face.best;
+        match frame_at(input, time, analysis.analysis_width, run) {
+            Ok(frame) => {
+                thumbnails.push(face_thumbnail(&frame, &view).unwrap_or_else(|error| {
+                    log::warn!("vertical: no face thumbnail: {error}");
+                    String::new()
+                }));
+                embeddings.push(embedder.as_mut().and_then(|embedder| {
+                    embedder
+                        .embed(&frame, &view)
+                        .inspect_err(|error| log::warn!("vertical: no face embedding: {error}"))
+                        .ok()
+                }));
+            }
+            Err(error) => {
+                log::warn!("vertical: no frame for a face: {error}");
+                thumbnails.push(String::new());
+                embeddings.push(None);
+            }
+        }
+    }
+    let people = group_people(
+        &faces
+            .iter()
+            .zip(&embeddings)
+            .map(|(face, embedding)| (face.setup, embedding.as_deref()))
+            .collect::<Vec<_>>(),
+        SAME_PERSON,
+    );
+
+    let count = people.iter().map(|p| p + 1).max().unwrap_or(0);
+    let mut listed: Vec<DetectedFace> = (0..count)
+        .map(|person| {
+            let members: Vec<usize> = (0..faces.len()).filter(|&i| people[i] == person).collect();
+            let tracks: Vec<&Track> = members
+                .iter()
+                .flat_map(|&i| faces[i].tracks.iter().copied())
+                .collect();
+            // Shown where the face is largest.
+            let shown = *members
+                .iter()
+                .max_by(|&&a, &&b| faces[a].best.1.height.total_cmp(&faces[b].best.1.height))
+                .expect("people have faces");
+            // A trusted binding over an unsure one.
+            let binding = bindings
+                .iter()
+                .filter(|b| tracks.iter().any(|t| t.id == b.track))
+                .max_by(|a, b| a.affinity.total_cmp(&b.affinity));
             DetectedFace {
-                anchors,
-                thumbnail,
+                anchors: anchors_of(&tracks, size),
+                thumbnail: thumbnails[shown].clone(),
                 speaker: binding.map(|b| b.speaker.clone()),
                 confident: binding.is_some_and(|b| b.affinity >= min_affinity),
-                setup: 0,
-                seconds,
-                applied: resolved.applied[tracks[0].id].map(|rule| rule as u32),
-            },
-        ));
-    }
-    // The most seen setups first, each left to right, numbered in that order.
-    let mut setups: Vec<(usize, f64)> = Vec::new();
-    for (setup, _, face) in &faces {
-        match setups.iter_mut().find(|(s, _)| s == setup) {
-            Some(entry) => entry.1 = entry.1.max(face.seconds),
-            None => setups.push((*setup, face.seconds)),
-        }
-    }
-    setups.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    let rank = |setup: usize| setups.iter().position(|(s, _)| *s == setup).unwrap_or(0);
-    faces.sort_by(|a, b| rank(a.0).cmp(&rank(b.0)).then(a.1.total_cmp(&b.1)));
-    Ok(faces
-        .into_iter()
-        .map(|(setup, _, face)| DetectedFace {
-            setup: rank(setup) as u32 + 1,
-            ..face
+                views: members.len() as u32,
+                seconds: members.iter().map(|&i| faces[i].seconds).sum(),
+                applied: tracks
+                    .iter()
+                    .find_map(|t| resolved.applied[t.id])
+                    .map(|rule| rule as u32),
+            }
         })
-        .collect())
-}
-
-fn median_height(track: &Track) -> f32 {
-    let mut heights: Vec<f32> = track.observations.iter().map(|o| o.face.height).collect();
-    heights.sort_by(f32::total_cmp);
-    heights[heights.len() / 2]
+        .collect();
+    listed.sort_by(|a, b| b.seconds.total_cmp(&a.seconds));
+    Ok(listed)
 }
 
 /// A square PNG (data URL) of `face` in `frame` with some room around it.
@@ -1567,6 +1619,40 @@ mod tests {
     }
 
     #[test]
+    fn the_shown_view_is_large_and_frontal() {
+        let face = |height: f32, nose_x: f32| Face {
+            x: 0.0,
+            y: 0.0,
+            width: height,
+            height,
+            score: 0.9,
+            landmarks: [
+                (30.0, 40.0),
+                (70.0, 40.0),
+                (nose_x, 60.0),
+                (35.0, 80.0),
+                (65.0, 80.0),
+            ],
+        };
+        let observation = |time: f64, face: Face| Observation {
+            time,
+            face,
+            mouth_motion: None,
+        };
+        let a = Track::for_tests(
+            0,
+            0,
+            vec![
+                observation(1.0, face(100.0, 68.0)),
+                observation(2.0, face(60.0, 50.0)),
+            ],
+        );
+        let b = Track::for_tests(1, 0, vec![observation(5.0, face(95.0, 52.0))]);
+        // Frontal but small loses; the frontal large one of the other track wins.
+        assert_eq!(best_view(&[&a, &b]).0, 5.0);
+    }
+
+    #[test]
     fn face_thumbnails_are_small_squares() {
         let frame = Frame {
             time: 0.0,
@@ -1844,29 +1930,38 @@ mod evaluation {
                 speaker: segment["speaker"].as_str().unwrap_or("?").to_string(),
             })
             .collect();
-        let started = std::time::Instant::now();
-        let faces = detect_faces(
-            Path::new(&source),
-            &clips,
-            Cast {
-                turns: &turns,
-                faces: &[],
-            },
-            None,
-            None,
-            &mut |_| {},
-        )
-        .unwrap();
-        println!(
-            "{} faces in {:.1} s",
-            faces.len(),
-            started.elapsed().as_secs_f64()
-        );
+        // Twice: cold, then with the analysis cached (as after a preview).
+        // Faces are grouped into people with SHORTS_SFACE (the model file).
+        let mut embedder = std::env::var_os("SHORTS_SFACE")
+            .map(|model| FaceEmbedder::new(Path::new(&model)).unwrap());
+        let cache = AnalysisCache::default();
+        let mut faces = Vec::new();
+        for pass in ["cold", "cached"] {
+            let started = std::time::Instant::now();
+            faces = detect_faces(
+                Path::new(&source),
+                &clips,
+                Cast {
+                    turns: &turns,
+                    faces: &[],
+                },
+                embedder.as_mut(),
+                Some(&cache),
+                None,
+                &mut |_| {},
+            )
+            .unwrap();
+            println!(
+                "{pass}: {} faces in {:.1} s",
+                faces.len(),
+                started.elapsed().as_secs_f64()
+            );
+        }
         let keep = PathBuf::from(keep);
         for (index, face) in faces.iter().enumerate() {
             println!(
-                "face {index:>2}: setup {} {:>5.1} s on screen, {} anchors, speaker {:?}{}",
-                face.setup,
+                "face {index:>2}: {} views {:>5.1} s on screen, {} anchors, speaker {:?}{}",
+                face.views,
                 face.seconds,
                 face.anchors.len(),
                 face.speaker,

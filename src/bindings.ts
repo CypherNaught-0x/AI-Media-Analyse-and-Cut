@@ -71,9 +71,9 @@ export const commands = {
 	 */
 	planVerticalClips: (runId: number, request: VerticalRequest) => __TAURI_INVOKE<VerticalPreview>("plan_vertical_clips", { runId, request }),
 	/**
-	 *  The faces in clips (one per camera setup and seat) with the speakers
-	 *  bound to them, so the user can rule out faces (a picture on a screen) and
-	 *  name them. Analyses like the 9:16 preview and shares its cache.
+	 *  The people in clips (a face, recognised across camera angles) with the
+	 *  speakers bound to them, so the user can rule out faces (a picture on a
+	 *  screen) and name them. Analyses like the 9:16 preview and shares its cache.
 	 */
 	detectVerticalFaces: (runId: number, request: VerticalRequest) => __TAURI_INVOKE<DetectedFace[]>("detect_vertical_faces", { runId, request }),
 	/**
@@ -274,8 +274,8 @@ export type CrisperOptions = {
 };
 
 /**
- *  A face (a seat of a camera setup) found in the clips, for the user to
- *  check.
+ *  A person found in the clips, for the user to check: one face, or the
+ *  same face recognised in several camera setups.
  */
 export type DetectedFace = {
 	/**  Where it was seen; an override with these finds it again. */
@@ -286,11 +286,8 @@ export type DetectedFace = {
 	speaker: string | null,
 	/**  The binding is trusted for framing. */
 	confident: boolean,
-	/**
-	 *  The camera setup it was seen in (faces of one setup share a number);
-	 *  the same person has a face per setup.
-	 */
-	setup: number,
+	/**  Camera setups (angles) the person was recognised in. */
+	views: number,
 	/**  Seconds on screen in the clips. */
 	seconds: number,
 	/**  Index of the request's override that applies to it. */

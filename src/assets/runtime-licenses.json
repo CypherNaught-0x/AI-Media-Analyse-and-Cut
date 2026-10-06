@@ -72,6 +72,16 @@
       "notice": "YuNet, Copyright (c) 2020 Shiqi Yu, licensed under the MIT License."
     },
     {
+      "id": "sface",
+      "name": "SFace face recognizer (face_recognition_sface_2021dec.onnx)",
+      "kind": "model-weights",
+      "usedBy": "Recognising the same person across camera angles in vertical shorts (downloaded on first use)",
+      "source": "huggingface.co/opencv/face_recognition_sface at 3d708243 (OpenCV Zoo)",
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/opencv/opencv_zoo/blob/main/models/face_recognition_sface/LICENSE",
+      "notice": "SFace, Copyright (C) 2021, Shenzhen Institute of Artificial Intelligence and Robotics for Society, licensed under the Apache License 2.0."
+    },
+    {
       "id": "sortformer",
       "name": "Streaming Sortformer 4spk v2 (ONNX export)",
       "kind": "model-weights",
