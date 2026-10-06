@@ -220,6 +220,41 @@ describe('ViralClipsGenerator', () => {
         expect(commandsCalled).not.toContain('tighten_clips');
     });
 
+    it('searches for faces on its own in 9:16 mode, once per set of clips', async () => {
+        vi.useFakeTimers();
+        try {
+            const [clip] = fromCandidates([candidate]);
+            vi.mocked(invoke).mockImplementation((command) => {
+                if (command === 'begin_run') return Promise.resolve(123);
+                if (command === 'detect_vertical_faces') return Promise.resolve([]);
+                return Promise.resolve(null);
+            });
+            const searches = () =>
+                vi.mocked(invoke).mock.calls.filter(([c]) => c === 'detect_vertical_faces').length;
+
+            const wrapper = mountWith({ clips: [clip], vertical: false });
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(searches()).toBe(0);
+
+            await wrapper.setProps({ state: { ...wrapper.props('state'), vertical: true } });
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(searches()).toBe(1);
+
+            // Nothing changed: no second search.
+            await wrapper.setProps({ state: { ...wrapper.props('state'), captions: false } });
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(searches()).toBe(1);
+
+            const trimmed = { ...clip, ranges: [{ ...clip.ranges[0], end: 12.5 }] };
+            await wrapper.setProps({ state: { ...wrapper.props('state'), clips: [trimmed] } });
+            await vi.advanceTimersByTimeAsync(2000);
+            expect(searches()).toBe(2);
+            wrapper.unmount();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('lists detected faces and saves turning one off or naming one', async () => {
         const [clip] = fromCandidates([candidate]);
         const anchor = { time: 11, x: 0.8, y: 0.3 };

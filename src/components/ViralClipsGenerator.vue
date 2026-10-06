@@ -440,9 +440,52 @@ function setFaceSpeaker(index: number, value: string) {
     changeFace(index, { speaker });
 }
 
+/** The clips a face search looks at: the included ones, else all. */
+const clipsToScan = computed(() =>
+    selectedClips.value.length ? selectedClips.value : clips.value,
+);
+
+/** What a face search depends on; empty when there's nothing to search. */
+const faceScanSignature = computed(() => {
+    if (!props.state.vertical || !props.hasMediaFile || clipsToScan.value.length === 0) return '';
+    const ranges = clipsToScan.value.map((clip) =>
+        clip.ranges.map((range) => `${range.start}-${range.end}`).join(','),
+    );
+    return `${props.inputPath}|${ranges.join(';')}`;
+});
+
+/** The signature the last search started with (so a failed one doesn't loop). */
+let scannedSignature = '';
+let scanTimer: ReturnType<typeof setTimeout> | null = null;
+/** Quiet time before an automatic search, so trimming word by word doesn't start one per click. */
+const FACE_SCAN_DELAY_MS = 800;
+
+// In 9:16 mode faces are searched for on their own whenever the clips
+// change, once nothing else runs and no preview plays.
+watch(
+    [faceScanSignature, () => props.busy, isProcessing, previewing],
+    () => {
+        if (scanTimer !== null) clearTimeout(scanTimer);
+        scanTimer = null;
+        const signature = faceScanSignature.value;
+        if (!signature || signature === scannedSignature) return;
+        scanTimer = setTimeout(() => {
+            scanTimer = null;
+            if (props.busy || isProcessing.value || previewing.value) return;
+            void detectFaces();
+        }, FACE_SCAN_DELAY_MS);
+    },
+    { immediate: true },
+);
+
+onBeforeUnmount(() => {
+    if (scanTimer !== null) clearTimeout(scanTimer);
+});
+
 async function detectFaces() {
-    const toScan = selectedClips.value.length ? selectedClips.value : clips.value;
+    const toScan = clipsToScan.value;
     if (props.busy || isProcessing.value || toScan.length === 0 || !props.hasMediaFile) return;
+    scannedSignature = faceScanSignature.value;
 
     const runId = await beginRun();
     activeRunId.value = runId;
