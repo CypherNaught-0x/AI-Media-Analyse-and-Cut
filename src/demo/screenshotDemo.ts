@@ -182,6 +182,32 @@ export function setupDemoMode() {
                     ]),
                 };
             }
+            case 'detect_vertical_faces': {
+                // Two speakers in a wide shot and a face on a screen behind
+                // them, as plain silhouettes.
+                const silhouette = (colour: string) =>
+                    'data:image/svg+xml,' +
+                    encodeURIComponent(
+                        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">` +
+                            `<rect width="96" height="96" fill="#1f2937"/>` +
+                            `<circle cx="48" cy="40" r="20" fill="${colour}"/>` +
+                            `<ellipse cx="48" cy="96" rx="34" ry="28" fill="${colour}"/></svg>`,
+                    );
+                const face = (x: number, colour: string, speaker: string | null) => ({
+                    anchors: [{ time: 30, x, y: 0.4 }],
+                    thumbnail: silhouette(colour),
+                    speaker,
+                    confident: speaker !== null,
+                    setup: 1,
+                    seconds: 23,
+                    applied: null,
+                });
+                return [
+                    face(0.25, '#f472b6', 'Speaker 1'),
+                    face(0.5, '#94a3b8', null),
+                    face(0.75, '#60a5fa', 'Speaker 2'),
+                ];
+            }
             case 'export_vertical_clips':
                 return null;
             case 'tighten_clips':

@@ -71,6 +71,12 @@ export const commands = {
 	 */
 	planVerticalClips: (runId: number, request: VerticalRequest) => __TAURI_INVOKE<VerticalPreview>("plan_vertical_clips", { runId, request }),
 	/**
+	 *  The faces in clips (one per camera setup and seat) with the speakers
+	 *  bound to them, so the user can rule out faces (a picture on a screen) and
+	 *  name them. Analyses like the 9:16 preview and shares its cache.
+	 */
+	detectVerticalFaces: (runId: number, request: VerticalRequest) => __TAURI_INVOKE<DetectedFace[]>("detect_vertical_faces", { runId, request }),
+	/**
 	 *  Tighten clips (shorter pauses, no fillers or stutters) for the normal
 	 *  export and its preview: the same clips with more, shorter segments.
 	 */
@@ -268,6 +274,30 @@ export type CrisperOptions = {
 };
 
 /**
+ *  A face (a seat of a camera setup) found in the clips, for the user to
+ *  check.
+ */
+export type DetectedFace = {
+	/**  Where it was seen; an override with these finds it again. */
+	anchors: FaceAnchor[],
+	/**  A PNG data URL of the face. */
+	thumbnail: string,
+	/**  The speaker bound to it (pinned or from the evidence). */
+	speaker: string | null,
+	/**  The binding is trusted for framing. */
+	confident: boolean,
+	/**
+	 *  The camera setup it was seen in (faces of one setup share a number);
+	 *  the same person has a face per setup.
+	 */
+	setup: number,
+	/**  Seconds on screen in the clips. */
+	seconds: number,
+	/**  Index of the request's override that applies to it. */
+	applied: number | null,
+};
+
+/**
  *  What kind of failure an [`AppError`] is, so the frontend can react to it
  *  (e.g. stay quiet on cancellation) without matching message text.
  */
@@ -285,6 +315,36 @@ export type ExportQuality =
 "balanced" | 
 /**  Fast and small; previews and drafts. */
 "draft";
+
+/**
+ *  A point on a face at one moment: where the user's word about the face
+ *  applies. Coordinates are shares (0-1) of the picture's width and height.
+ */
+export type FaceAnchor = {
+	time: number,
+	x: number,
+	y: number,
+};
+
+/**
+ *  The user's word on a face, found again by its anchors: it applies to
+ *  every face of the camera setup and seat an anchor lands on.
+ */
+export type FaceOverride = {
+	anchors: FaceAnchor[],
+	/**  Never frame this face: a picture on a screen, a poster. */
+	ignored: boolean,
+	speaker: FaceSpeaker,
+};
+
+/**  Who a face is. */
+export type FaceSpeaker = 
+/**  As the mouth motion says. */
+{ kind: "auto" } | 
+/**  This transcript speaker. */
+{ kind: "named"; name: string } | 
+/**  Someone who doesn't speak (a listener). */
+{ kind: "nobody" };
 
 /**  How hard to tighten, as in the plan's intensity presets. */
 export type Intensity = "off" | "chill" | "punchy" | "hyper";
@@ -523,5 +583,7 @@ export type VerticalRequest = {
 	captions: boolean,
 	/**  Per clip: a looped short (its end runs into its start). */
 	looped: boolean[],
+	/**  The user's word on faces: ignored ones, named ones. */
+	faces?: FaceOverride[],
 };
 

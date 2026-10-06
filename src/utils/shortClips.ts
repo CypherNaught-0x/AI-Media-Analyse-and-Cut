@@ -1,4 +1,4 @@
-import type { CaptionWord, SpeakerTurn } from '../bindings';
+import type { CaptionWord, DetectedFace, FaceOverride, SpeakerTurn } from '../bindings';
 import type { ClipCandidate, ShortClip, ShortClipRange, TranscriptSegment } from '../types';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
 
@@ -174,6 +174,38 @@ export function playbackStep(
     const next = rangeIndex + 1;
     if (next >= ranges.length) return { action: 'stop' };
     return { action: 'seek', to: ranges[next].start, rangeIndex: next };
+}
+
+/** Anchors kept per face override (old ones first make way). */
+const MAX_FACE_ANCHORS = 96;
+
+/**
+ * `overrides` with the user's word on `face` changed: the override that
+ * applied to it, or a new one, now also anchored where the face was just
+ * seen. Overrides keep their places, so `applied` indices stay valid.
+ */
+export function setFaceOverride(
+    overrides: FaceOverride[],
+    face: DetectedFace,
+    change: Partial<Pick<FaceOverride, 'ignored' | 'speaker'>>,
+): FaceOverride[] {
+    const existing = face.applied === null ? undefined : overrides[face.applied];
+    const anchors = [...(existing?.anchors ?? []), ...face.anchors].slice(-MAX_FACE_ANCHORS);
+    const updated: FaceOverride = {
+        ignored: existing?.ignored ?? false,
+        speaker: existing?.speaker ?? { kind: 'auto' },
+        ...change,
+        anchors,
+    };
+    if (existing) {
+        return overrides.map((override, i) => (i === face.applied ? updated : override));
+    }
+    return [...overrides, updated];
+}
+
+/** The transcript's speakers, in order of first appearance. */
+export function speakerNames(segments: TranscriptSegment[]): string[] {
+    return [...new Set(speakerTurns(segments).map((turn) => turn.speaker))];
 }
 
 /**
