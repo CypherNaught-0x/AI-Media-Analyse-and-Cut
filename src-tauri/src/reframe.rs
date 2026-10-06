@@ -307,6 +307,9 @@ fn camera_filter(
     (filter, script)
 }
 
+/// How far before the earliest stretch the input is seeked (seconds).
+pub(crate) const SEEK_MARGIN: f64 = 1.0;
+
 /// Integrated loudness of the delivered audio (LUFS).
 const LOUDNESS: f64 = -14.0;
 
@@ -343,7 +346,14 @@ fn render_graph(
     for (i, range) in ranges.iter().enumerate() {
         let head = morph_half(i);
         let tail = morph_half(i + 1);
-        let (start, end) = (range.start + head - seek, range.end - tail - seek);
+        // Half a frame early: the trim then takes exactly the frames that
+        // start inside the stretch (frame boundaries, see `snap_pieces`),
+        // whatever the rounding of their timestamps.
+        let half_frame = 0.5 / render.fps;
+        let (start, end) = (
+            range.start + head - seek - half_frame,
+            range.end - tail - seek - half_frame,
+        );
         let duration = range.end - range.start - head - tail;
         let audio_duration = range.end - range.start;
         let (audio_start, audio_end) = (range.start - seek, range.end - seek);
@@ -544,11 +554,16 @@ pub(crate) fn render_vertical(
     if render.ranges.is_empty() || render.ranges.iter().any(|r| r.end <= r.start) {
         return Err("A vertical clip needs non-empty source ranges".to_string());
     }
-    let seek = render
+    // A second early: right at a piece's start, the input seek can hand
+    // over audio that starts late (half a second on the PODIUM recording),
+    // which shortens that piece's audio and shifts everything after it.
+    let seek = (render
         .ranges
         .iter()
         .map(|range| range.start)
-        .fold(f64::INFINITY, f64::min);
+        .fold(f64::INFINITY, f64::min)
+        - SEEK_MARGIN)
+        .max(0.0);
     // sendcmd and the caption list read files; keep their paths free of
     // characters that need escaping (e.g. ':' in Windows paths) by running
     // in their directory.
