@@ -220,6 +220,58 @@ describe('ViralClipsGenerator', () => {
         expect(commandsCalled).not.toContain('tighten_clips');
     });
 
+    it('lists detected faces and saves turning one off or naming one', async () => {
+        const [clip] = fromCandidates([candidate]);
+        const anchor = { time: 11, x: 0.8, y: 0.3 };
+        vi.mocked(invoke).mockImplementation((command) => {
+            if (command === 'begin_run') return Promise.resolve(123);
+            if (command === 'detect_vertical_faces')
+                return Promise.resolve([
+                    {
+                        anchors: [anchor],
+                        thumbnail: 'data:image/png;base64,AA==',
+                        speaker: 'Host',
+                        confident: false,
+                        setup: 1,
+                        seconds: 3,
+                        applied: null,
+                    },
+                ]);
+            return Promise.resolve(null);
+        });
+        const wrapper = mountWith({ clips: [clip], vertical: true });
+
+        await wrapper.get('[data-testid="clips-detect-faces"]').trigger('click');
+        await flushPromises();
+        const call = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'detect_vertical_faces');
+        expect(call?.[1]).toMatchObject({ request: { faces: [] } });
+        const speaker = wrapper.get('[data-testid="clips-face-speaker-0"]');
+        expect(speaker.text()).toContain('Auto (Host, unsure)');
+
+        await wrapper.get('[data-testid="clips-face-speaker-0"]').setValue('named:Host');
+        expect(lastState(wrapper).faces).toEqual([
+            { anchors: [anchor], ignored: false, speaker: { kind: 'named', name: 'Host' } },
+        ]);
+
+        await wrapper.setProps({ state: lastState(wrapper) });
+        await wrapper.get('[data-testid="clips-face-enabled-0"]').setValue(false);
+        // The same override changes; the face doesn't get a second one.
+        expect(lastState(wrapper).faces).toEqual([
+            {
+                anchors: [anchor, anchor],
+                ignored: true,
+                speaker: { kind: 'named', name: 'Host' },
+            },
+        ]);
+        await wrapper.setProps({ state: lastState(wrapper) });
+        expect(
+            (wrapper.get('[data-testid="clips-face-speaker-0"]').element as HTMLSelectElement)
+                .disabled,
+        ).toBe(true);
+    });
+
     it('previews the planned 9:16 framing when vertical is on', async () => {
         const [clip] = fromCandidates([candidate]);
         vi.mocked(invoke).mockImplementation((command) => {

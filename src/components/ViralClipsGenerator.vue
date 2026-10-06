@@ -16,6 +16,8 @@ import {
     fromCandidates,
     captionWords,
     playbackStep,
+    setFaceOverride,
+    speakerNames,
     speakerTurns,
     toExportSegments,
     trimClip,
@@ -28,6 +30,9 @@ import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
 import {
     commands,
     type ClipSegment,
+    type DetectedFace,
+    type FaceOverride,
+    type FaceSpeaker,
     type Intensity,
     type VerticalPreview,
     type VerticalRequest,
@@ -154,6 +159,7 @@ function verticalRequest(clipSegments: ClipSegment[], clips: ShortClip[]): Verti
         intensity: props.state.intensity,
         captions: props.state.captions,
         looped: clips.map((clip) => clip.looped),
+        faces: props.state.faces,
     };
 }
 
@@ -218,7 +224,8 @@ let frameRequest: number | null = null;
 
 function previewSignature(clip: ShortClip): string {
     const ranges = clip.ranges.map((range) => `${range.start}-${range.end}`).join(',');
-    return `${props.state.vertical ? '9:16' : 'source'}|${props.state.intensity}|${ranges}`;
+    const framing = props.state.vertical ? `9:16|${JSON.stringify(props.state.faces)}` : 'source';
+    return `${framing}|${props.state.intensity}|${ranges}`;
 }
 
 function clipSegment(clip: ShortClip): ClipSegment {
@@ -378,6 +385,94 @@ function onTimeUpdate() {
         video.currentTime = step.to;
     } else if (step.action === 'stop') {
         stopPreview();
+    }
+}
+
+// ---- Faces: what 9:16 framing found, for the user to rule out (a face on
+// a TV) or name. Overrides live in the workspace state and go with every
+// plan and export. ----
+const detectedFaces = ref<DetectedFace[]>([]);
+const speakers = computed(() => speakerNames(props.segments));
+
+watch(
+    () => props.inputPath,
+    () => {
+        detectedFaces.value = [];
+    },
+);
+
+function faceOverride(face: DetectedFace): FaceOverride | null {
+    return face.applied === null ? null : (props.state.faces[face.applied] ?? null);
+}
+
+function faceIgnored(face: DetectedFace): boolean {
+    return faceOverride(face)?.ignored ?? false;
+}
+
+/** The speaker select's value: `auto`, `nobody` or `named:<name>`. */
+function faceSpeakerValue(face: DetectedFace): string {
+    const speaker = faceOverride(face)?.speaker ?? { kind: 'auto' };
+    return speaker.kind === 'named' ? `named:${speaker.name}` : speaker.kind;
+}
+
+function autoLabel(face: DetectedFace): string {
+    const pinned = faceOverride(face)?.speaker.kind;
+    if (pinned && pinned !== 'auto') return 'Auto';
+    if (!face.speaker) return 'Auto (no speaker found)';
+    return `Auto (${face.speaker}${face.confident ? '' : ', unsure'})`;
+}
+
+function changeFace(index: number, change: Partial<Pick<FaceOverride, 'ignored' | 'speaker'>>) {
+    const face = detectedFaces.value[index];
+    if (!face) return;
+    const faces = setFaceOverride(props.state.faces, face, change);
+    const applied = face.applied ?? faces.length - 1;
+    detectedFaces.value = detectedFaces.value.map((f, i) => (i === index ? { ...f, applied } : f));
+    updateState({ faces });
+}
+
+function setFaceSpeaker(index: number, value: string) {
+    const speaker: FaceSpeaker = value.startsWith('named:')
+        ? { kind: 'named', name: value.slice('named:'.length) }
+        : value === 'nobody'
+          ? { kind: 'nobody' }
+          : { kind: 'auto' };
+    changeFace(index, { speaker });
+}
+
+async function detectFaces() {
+    const toScan = selectedClips.value.length ? selectedClips.value : clips.value;
+    if (props.busy || isProcessing.value || toScan.length === 0 || !props.hasMediaFile) return;
+
+    const runId = await beginRun();
+    activeRunId.value = runId;
+    isProcessing.value = true;
+    emit('update:processing', true);
+    emit('update:status', 'Finding faces...');
+    stopPreview();
+    try {
+        const faces = await commands.detectVerticalFaces(
+            runId,
+            verticalRequest(toScan.map(clipSegment), toScan),
+        );
+        assertActiveRun(runId);
+        detectedFaces.value = faces;
+        emit(
+            'update:status',
+            `Found ${faces.length} face${faces.length === 1 ? '' : 's'} in ${toScan.length} clip${toScan.length === 1 ? '' : 's'}.`,
+        );
+    } catch (e) {
+        if (isRunCancelled(e)) {
+            emit('update:status', 'Run cancelled.');
+            return;
+        }
+        emit('update:status', `Error finding faces: ${errorMessage(e)}`);
+    } finally {
+        if (activeRunId.value === runId) {
+            activeRunId.value = null;
+            isProcessing.value = false;
+            emit('update:processing', false);
+        }
     }
 }
 
@@ -739,6 +834,111 @@ async function openExportFolder() {
                     </p>
                 </div>
             </div>
+
+            <!-- Faces the 9:16 framing works with -->
+            <section
+                v-if="state.vertical && hasMediaFile"
+                class="mb-6 rounded-2xl border border-white/10 bg-black/20 p-5"
+                data-testid="clips-faces"
+            >
+                <div class="mb-3 flex flex-wrap items-center gap-3">
+                    <h3 class="text-sm font-bold uppercase tracking-wider text-gray-300">Faces</h3>
+                    <span class="flex-1 text-xs text-gray-500">
+                        The camera follows these in 9:16. Turn off faces that aren't people in the
+                        room (a TV, a poster); name a face if the wrong one gets followed.
+                    </span>
+                    <button
+                        type="button"
+                        class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-40"
+                        :disabled="isProcessing || busy"
+                        data-testid="clips-detect-faces"
+                        @click="detectFaces"
+                    >
+                        {{ detectedFaces.length ? 'Refresh faces' : 'Find faces' }}
+                    </button>
+                </div>
+                <p v-if="!detectedFaces.length && state.faces.length" class="text-xs text-gray-500">
+                    {{ state.faces.length }} face setting{{ state.faces.length === 1 ? '' : 's' }}
+                    saved; find faces to review them.
+                </p>
+                <ul
+                    v-if="detectedFaces.length"
+                    class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+                >
+                    <template v-for="(face, index) in detectedFaces" :key="index">
+                        <!-- One group per camera setup: the same person has a face in each. -->
+                        <li
+                            v-if="index === 0 || detectedFaces[index - 1].setup !== face.setup"
+                            class="col-span-full mt-1 text-[11px] font-semibold uppercase tracking-wider text-gray-500"
+                        >
+                            Camera setup {{ face.setup }}
+                        </li>
+                        <li
+                            class="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-3"
+                            :data-testid="`clips-face-${index}`"
+                        >
+                            <div class="flex items-center gap-3">
+                                <img
+                                    v-if="face.thumbnail"
+                                    :src="face.thumbnail"
+                                    alt=""
+                                    class="h-16 w-16 rounded-lg object-cover transition"
+                                    :class="faceIgnored(face) ? 'opacity-30 grayscale' : ''"
+                                />
+                                <div
+                                    v-else
+                                    class="h-16 w-16 rounded-lg bg-white/5"
+                                    :class="faceIgnored(face) ? 'opacity-30' : ''"
+                                />
+                                <label class="flex flex-col gap-1 text-xs text-gray-300">
+                                    <span class="flex items-center gap-1.5">
+                                        <input
+                                            type="checkbox"
+                                            role="switch"
+                                            :checked="!faceIgnored(face)"
+                                            :data-testid="`clips-face-enabled-${index}`"
+                                            class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
+                                            @change="
+                                                changeFace(index, {
+                                                    ignored: !($event.target as HTMLInputElement)
+                                                        .checked,
+                                                })
+                                            "
+                                        />
+                                        Follow
+                                    </span>
+                                    <span class="text-gray-500"
+                                        >{{ Math.round(face.seconds) }} s on screen</span
+                                    >
+                                </label>
+                            </div>
+                            <select
+                                :value="faceSpeakerValue(face)"
+                                :disabled="faceIgnored(face)"
+                                :aria-label="`Speaker of face ${index + 1}`"
+                                :data-testid="`clips-face-speaker-${index}`"
+                                class="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-white disabled:opacity-40"
+                                @change="
+                                    setFaceSpeaker(
+                                        index,
+                                        ($event.target as HTMLSelectElement).value,
+                                    )
+                                "
+                            >
+                                <option value="auto">{{ autoLabel(face) }}</option>
+                                <option
+                                    v-for="name in speakers"
+                                    :key="name"
+                                    :value="`named:${name}`"
+                                >
+                                    {{ name }}
+                                </option>
+                                <option value="nobody">Not a speaker</option>
+                            </select>
+                        </li>
+                    </template>
+                </ul>
+            </section>
 
             <!-- Clip cards -->
             <ul class="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="clip-cards">

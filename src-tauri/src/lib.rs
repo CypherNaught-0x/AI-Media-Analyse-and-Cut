@@ -855,6 +855,9 @@ pub struct VerticalRequest {
     pub captions: bool,
     /// Per clip: a looped short (its end runs into its start).
     pub looped: Vec<bool>,
+    /// The user's word on faces: ignored ones, named ones.
+    #[serde(default)]
+    pub faces: Vec<vertical::FaceOverride>,
 }
 
 /// Per clip, its source ranges (seconds) in playback order.
@@ -961,7 +964,10 @@ async fn export_vertical_clips(
         vertical::export_vertical(
             &input,
             &clips,
-            &speech_turns(request.turns.clone()),
+            vertical::Cast {
+                turns: &speech_turns(request.turns.clone()),
+                faces: &request.faces,
+            },
             vertical::RenderOptions {
                 quality,
                 cuts,
@@ -1002,7 +1008,10 @@ async fn plan_vertical_clips(
         vertical::plan_vertical(
             &input,
             &ranges,
-            &speech_turns(request.turns.clone()),
+            vertical::Cast {
+                turns: &speech_turns(request.turns.clone()),
+                faces: &request.faces,
+            },
             vertical::CutStyle::from(request.intensity),
             Some(&analysis),
             run,
@@ -1022,6 +1031,47 @@ async fn plan_vertical_clips(
                 preview
             }
         })
+    })
+    .await
+    .map_err(AppError::from)
+}
+
+/// The faces in clips (one per camera setup and seat) with the speakers
+/// bound to them, so the user can rule out faces (a picture on a screen) and
+/// name them. Analyses like the 9:16 preview and shares its cache.
+#[tauri::command]
+#[specta::specta]
+async fn detect_vertical_faces(
+    run_id: u64,
+    window: tauri::Window,
+    request: VerticalRequest,
+    run_control: State<'_, RunControl>,
+    analysis: State<'_, std::sync::Arc<vertical::AnalysisCache>>,
+) -> Result<Vec<vertical::DetectedFace>, AppError> {
+    run_control.ensure_active(run_id)?;
+    let input = PathBuf::from(&request.input_path);
+    let run_control = run_control.inner().clone();
+    let analysis = analysis.inner().clone();
+    run_blocking(move || {
+        let run = Some((run_id, &run_control));
+        let (ranges, _) = prepare_vertical(&request, &input, run)?;
+        vertical::detect_faces(
+            &input,
+            &ranges,
+            vertical::Cast {
+                turns: &speech_turns(request.turns.clone()),
+                faces: &request.faces,
+            },
+            Some(&analysis),
+            run,
+            &mut |fraction| {
+                emit_progress(
+                    &window,
+                    fraction,
+                    format!("Finding faces ({:.0}%)", fraction * 100.0),
+                )
+            },
+        )
     })
     .await
     .map_err(AppError::from)
@@ -1412,6 +1462,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             export_clips,
             export_vertical_clips,
             plan_vertical_clips,
+            detect_vertical_faces,
             tighten_clips,
             read_file_as_base64,
             open_folder,

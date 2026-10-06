@@ -10,7 +10,7 @@ use crate::camera::{listener_framing, plan_camera, CameraSettings, Frame as Came
 use crate::captions::{chunk_words, tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_tracks::{Track, Tracker};
-use crate::faces::FaceDetector;
+use crate::faces::{Face, FaceDetector};
 use crate::frames::Frame;
 use crate::frames::{decode_frames, FrameRequest, PixelFormat};
 use crate::media_probe::probe_media;
@@ -21,7 +21,7 @@ use crate::reframe::{
 };
 use crate::run_control::RunControl;
 use crate::shots::detect_cuts;
-use crate::speaker_faces::{bind_speakers, Binding, SpeechTurn};
+use crate::speaker_faces::{assign_seats, bind_speakers, Binding, Pin, SpeechTurn};
 use crate::tighten::Intensity;
 use std::path::{Path, PathBuf};
 
@@ -314,17 +314,113 @@ impl From<&VerticalPlan> for VerticalPreview {
     }
 }
 
-/// Analyse and plan the framing of clips given as source ranges. Blocks.
-/// `on_progress` gets the analysed fraction (0-1).
-pub(crate) fn plan_vertical(
+/// A point on a face at one moment: where the user's word about the face
+/// applies. Coordinates are shares (0-1) of the picture's width and height.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct FaceAnchor {
+    #[specta(type = specta_typescript::Number)]
+    pub time: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub x: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub y: f64,
+}
+
+/// Who a face is.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum FaceSpeaker {
+    /// As the mouth motion says.
+    Auto,
+    /// This transcript speaker.
+    Named { name: String },
+    /// Someone who doesn't speak (a listener).
+    Nobody,
+}
+
+/// The user's word on a face, found again by its anchors: it applies to
+/// every face of the camera setup and seat an anchor lands on.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceOverride {
+    pub anchors: Vec<FaceAnchor>,
+    /// Never frame this face: a picture on a screen, a poster.
+    pub ignored: bool,
+    pub speaker: FaceSpeaker,
+}
+
+/// A face (a seat of a camera setup) found in the clips, for the user to
+/// check.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedFace {
+    /// Where it was seen; an override with these finds it again.
+    pub anchors: Vec<FaceAnchor>,
+    /// A PNG data URL of the face.
+    pub thumbnail: String,
+    /// The speaker bound to it (pinned or from the evidence).
+    pub speaker: Option<String>,
+    /// The binding is trusted for framing.
+    pub confident: bool,
+    /// The camera setup it was seen in (faces of one setup share a number);
+    /// the same person has a face per setup.
+    pub setup: u32,
+    /// Seconds on screen in the clips.
+    #[specta(type = specta_typescript::Number)]
+    pub seconds: f64,
+    /// Index of the request's override that applies to it.
+    pub applied: Option<u32>,
+}
+
+/// Who is in the clips: who speaks when (the camera follows them), and the
+/// user's word on faces.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Cast<'a> {
+    pub turns: &'a [SpeechTurn],
+    pub faces: &'a [FaceOverride],
+}
+
+/// Anchors kept per face.
+const MAX_ANCHORS: usize = 48;
+/// Side of a face thumbnail (pixels).
+const THUMBNAIL_SIZE: u32 = 96;
+/// Faces on screen shorter than this (seconds) aren't listed.
+const MIN_LISTED_SECONDS: f64 = 1.0;
+
+/// Clips analysed together: their tracks with globally unique ids (equal to
+/// their index) and shots.
+struct ClipsAnalysis {
+    source_size: (u32, u32),
+    fps: f64,
+    has_audio: bool,
+    /// Width of the analysed frames; source pixels per analysis pixel.
+    analysis_width: u32,
+    scale: f64,
+    tracks: Vec<Track>,
+    /// Per clip, per range: the range without flash frames, and indices
+    /// into `tracks`.
+    range_tracks: Vec<Vec<RangeTracks>>,
+}
+
+impl ClipsAnalysis {
+    /// Size of the analysed frames.
+    fn analysis_size(&self) -> (f64, f64) {
+        (
+            f64::from(self.analysis_width),
+            f64::from(self.source_size.1) / self.scale,
+        )
+    }
+}
+
+/// Analyse every range of `clips`. `on_progress` gets the analysed fraction
+/// (0-1).
+fn analyse_clips(
     input: &Path,
     clips: &[Vec<(f64, f64)>],
-    turns: &[SpeechTurn],
-    cuts: CutStyle,
     cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut dyn FnMut(f64),
-) -> Result<VerticalPlan, String> {
+) -> Result<ClipsAnalysis, String> {
     let media = probe_media(input)?;
     let video = media
         .video
@@ -338,11 +434,6 @@ pub(crate) fn plan_vertical(
     };
     let analysis_w = (source_w.min(ANALYSIS_WIDTH)) & !1;
     let scale = f64::from(source_w) / f64::from(analysis_w);
-    let camera_frame = CameraFrame {
-        height: f64::from(source_h) / scale,
-        min_crop_height: f64::from(OUTPUT_SIZE.1) / MAX_UPSCALE / scale,
-        fps,
-    };
 
     let total_seconds: f64 = clips
         .iter()
@@ -351,12 +442,9 @@ pub(crate) fn plan_vertical(
         .sum::<f64>()
         .max(1e-6);
 
-    // 1. Analyse every range, giving tracks globally unique ids and shots.
     let source_key = crate::media_cache::source_key(input)?;
     let mut detector = None;
     let mut tracks: Vec<Track> = Vec::new();
-    // Per clip, per range: the range without flash frames, and indices into
-    // `tracks`.
     let mut range_tracks: Vec<Vec<RangeTracks>> = Vec::new();
     let mut analysed = 0.0;
     let mut next_shot = 0;
@@ -397,9 +485,317 @@ pub(crate) fn plan_vertical(
         }
         range_tracks.push(per_range);
     }
+    Ok(ClipsAnalysis {
+        source_size: (source_w, source_h),
+        fps,
+        has_audio: media.audio.is_some(),
+        analysis_width: analysis_w,
+        scale,
+        tracks,
+        range_tracks,
+    })
+}
 
-    // 2. Who is who, over all clips together.
-    let bindings = bind_speakers(&tracks, turns);
+/// Whether `anchor` lands on `track`: a face of it at that moment covers
+/// the point. `size` is the analysed picture's.
+fn anchored(track: &Track, anchor: &FaceAnchor, size: (f64, f64)) -> bool {
+    let (x, y) = (anchor.x * size.0, anchor.y * size.1);
+    track.observations.iter().any(|o| {
+        let face = &o.face;
+        (o.time - anchor.time).abs() <= 1.0 / ANALYSIS_FPS
+            && (f64::from(face.x)..=f64::from(face.x + face.width)).contains(&x)
+            && (f64::from(face.y)..=f64::from(face.y + face.height)).contains(&y)
+    })
+}
+
+/// The anchors of a face seen as `tracks`: the middle of each track (at
+/// most `MAX_ANCHORS`, spread over them).
+fn anchors_of(tracks: &[&Track], size: (f64, f64)) -> Vec<FaceAnchor> {
+    let step = tracks.len().div_ceil(MAX_ANCHORS).max(1);
+    tracks
+        .iter()
+        .step_by(step)
+        .map(|track| {
+            let middle = &track.observations[track.observations.len() / 2];
+            let (x, y) = middle.face.center();
+            FaceAnchor {
+                time: middle.time,
+                x: f64::from(x) / size.0,
+                y: f64::from(y) / size.1,
+            }
+        })
+        .collect()
+}
+
+/// The user's overrides resolved to tracks.
+struct Resolved {
+    /// Per track (by index): the override that applies to it.
+    applied: Vec<Option<usize>>,
+    /// Per track: its (setup, seat).
+    seats: Vec<(usize, usize)>,
+}
+
+impl Resolved {
+    /// Overrides apply to whole seats: a face behind one anchor is the same
+    /// face wherever its camera setup comes back. Later overrides win.
+    fn new(tracks: &[Track], overrides: &[FaceOverride], size: (f64, f64)) -> Self {
+        let seats = assign_seats(tracks);
+        let mut by_seat: std::collections::HashMap<(usize, usize), usize> = Default::default();
+        for (index, rule) in overrides.iter().enumerate() {
+            for (track, &seat) in tracks.iter().zip(&seats) {
+                if rule.anchors.iter().any(|a| anchored(track, a, size)) {
+                    by_seat.insert(seat, index);
+                }
+            }
+        }
+        Self {
+            applied: seats
+                .iter()
+                .map(|seat| by_seat.get(seat).copied())
+                .collect(),
+            seats,
+        }
+    }
+
+    fn ignored(&self, overrides: &[FaceOverride], track: usize) -> bool {
+        self.applied[track].is_some_and(|rule| overrides[rule].ignored)
+    }
+
+    fn pins(&self, overrides: &[FaceOverride]) -> Vec<Pin> {
+        self.applied
+            .iter()
+            .enumerate()
+            .filter_map(|(track, rule)| {
+                let rule = &overrides[(*rule)?];
+                let speaker = match &rule.speaker {
+                    FaceSpeaker::Auto => return None,
+                    FaceSpeaker::Named { name } => Some(name.clone()),
+                    FaceSpeaker::Nobody => None,
+                };
+                (!rule.ignored).then_some(Pin { track, speaker })
+            })
+            .collect()
+    }
+}
+
+/// Bind speakers to the faces the user didn't rule out. Returns the
+/// bindings and which tracks are ignored (by index).
+fn bind_with_overrides(
+    analysis: &ClipsAnalysis,
+    cast: Cast<'_>,
+) -> (Vec<Binding>, Resolved, Vec<bool>) {
+    let Cast {
+        turns,
+        faces: overrides,
+    } = cast;
+    let resolved = Resolved::new(&analysis.tracks, overrides, analysis.analysis_size());
+    let ignored: Vec<bool> = (0..analysis.tracks.len())
+        .map(|track| resolved.ignored(overrides, track))
+        .collect();
+    let kept: Vec<Track> = analysis
+        .tracks
+        .iter()
+        .filter(|track| !ignored[track.id])
+        .cloned()
+        .collect();
+    let bindings = bind_speakers(&kept, turns, &resolved.pins(overrides));
+    (bindings, resolved, ignored)
+}
+
+/// The faces in `clips` (one per camera setup and seat), most seen first,
+/// with what binding (under the cast's overrides) made of them.
+pub(crate) fn detect_faces(
+    input: &Path,
+    clips: &[Vec<(f64, f64)>],
+    cast: Cast<'_>,
+    cache: Option<&AnalysisCache>,
+    run: Option<(u64, &RunControl)>,
+    on_progress: &mut dyn FnMut(f64),
+) -> Result<Vec<DetectedFace>, String> {
+    let analysis = analyse_clips(input, clips, cache, run, on_progress)?;
+    let (bindings, resolved, _) = bind_with_overrides(&analysis, cast);
+    let size = analysis.analysis_size();
+    let min_affinity = CameraSettings::default().min_affinity;
+
+    let mut seats: Vec<(usize, usize)> = resolved.seats.clone();
+    seats.sort_unstable();
+    seats.dedup();
+    // (setup, horizontal position, face)
+    let mut faces: Vec<(usize, f64, DetectedFace)> = Vec::new();
+    for seat in seats {
+        let tracks: Vec<&Track> = analysis
+            .tracks
+            .iter()
+            .filter(|track| resolved.seats[track.id] == seat)
+            .collect();
+        let seconds: f64 = tracks.iter().map(|t| t.end() - t.start()).sum();
+        if seconds < MIN_LISTED_SECONDS {
+            continue;
+        }
+        let binding = bindings
+            .iter()
+            .find(|b| tracks.iter().any(|t| t.id == b.track));
+        // The face where it is largest.
+        let largest = tracks
+            .iter()
+            .max_by(|a, b| median_height(a).total_cmp(&median_height(b)))
+            .expect("a seat has tracks");
+        let middle = &largest.observations[largest.observations.len() / 2];
+        let thumbnail = frame_at(input, middle.time, analysis.analysis_width, run)
+            .and_then(|frame| face_thumbnail(&frame, &middle.face))
+            .unwrap_or_else(|error| {
+                log::warn!("vertical: no face thumbnail: {error}");
+                String::new()
+            });
+        let anchors = anchors_of(&tracks, size);
+        let x = anchors.first().map_or(0.0, |a| a.x);
+        faces.push((
+            seat.0,
+            x,
+            DetectedFace {
+                anchors,
+                thumbnail,
+                speaker: binding.map(|b| b.speaker.clone()),
+                confident: binding.is_some_and(|b| b.affinity >= min_affinity),
+                setup: 0,
+                seconds,
+                applied: resolved.applied[tracks[0].id].map(|rule| rule as u32),
+            },
+        ));
+    }
+    // The most seen setups first, each left to right, numbered in that order.
+    let mut setups: Vec<(usize, f64)> = Vec::new();
+    for (setup, _, face) in &faces {
+        match setups.iter_mut().find(|(s, _)| s == setup) {
+            Some(entry) => entry.1 = entry.1.max(face.seconds),
+            None => setups.push((*setup, face.seconds)),
+        }
+    }
+    setups.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let rank = |setup: usize| setups.iter().position(|(s, _)| *s == setup).unwrap_or(0);
+    faces.sort_by(|a, b| rank(a.0).cmp(&rank(b.0)).then(a.1.total_cmp(&b.1)));
+    Ok(faces
+        .into_iter()
+        .map(|(setup, _, face)| DetectedFace {
+            setup: rank(setup) as u32 + 1,
+            ..face
+        })
+        .collect())
+}
+
+fn median_height(track: &Track) -> f32 {
+    let mut heights: Vec<f32> = track.observations.iter().map(|o| o.face.height).collect();
+    heights.sort_by(f32::total_cmp);
+    heights[heights.len() / 2]
+}
+
+/// A square PNG (data URL) of `face` in `frame` with some room around it.
+fn face_thumbnail(frame: &Frame, face: &Face) -> Result<String, String> {
+    use base64::Engine;
+    let side = (face.width.max(face.height) * 1.6).min(frame.width.min(frame.height) as f32);
+    let (cx, cy) = face.center();
+    let clamp = |centre: f32, limit: u32| {
+        (centre - side / 2.0).clamp(0.0, (limit as f32 - side).max(0.0)) as u32
+    };
+    let rect = CropRect {
+        x: clamp(cx, frame.width),
+        y: clamp(cy, frame.height),
+        width: side as u32,
+        height: side as u32,
+    };
+    let square = crop(frame, rect);
+    let small = resize(&square, THUMBNAIL_SIZE);
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, small.width, small.height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .and_then(|mut writer| writer.write_image_data(&small.data))
+            .map_err(|e| format!("Failed to encode a face thumbnail: {e}"))?;
+    }
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    ))
+}
+
+/// An RGB frame scaled to `side`x`side` by averaging boxes of pixels.
+fn resize(frame: &Frame, side: u32) -> Frame {
+    let (w, h) = (frame.width.max(1), frame.height.max(1));
+    let mut data = Vec::with_capacity((side * side * 3) as usize);
+    for y in 0..side {
+        let (y0, y1) = (
+            y * h / side,
+            ((y + 1) * h / side).max(y * h / side + 1).min(h),
+        );
+        for x in 0..side {
+            let (x0, x1) = (
+                x * w / side,
+                ((x + 1) * w / side).max(x * w / side + 1).min(w),
+            );
+            let mut sum = [0u32; 3];
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = ((sy * frame.width + sx) * 3) as usize;
+                    for (channel, total) in sum.iter_mut().enumerate() {
+                        *total += u32::from(frame.data[i + channel]);
+                    }
+                }
+            }
+            let count = ((y1 - y0) * (x1 - x0)).max(1);
+            data.extend(sum.iter().map(|total| (total / count) as u8));
+        }
+    }
+    Frame {
+        time: frame.time,
+        width: side,
+        height: side,
+        data,
+    }
+}
+
+/// Analyse and plan the framing of clips given as source ranges, with the
+/// user's word on faces. Blocks. `on_progress` gets the analysed fraction
+/// (0-1).
+pub(crate) fn plan_vertical(
+    input: &Path,
+    clips: &[Vec<(f64, f64)>],
+    cast: Cast<'_>,
+    cuts: CutStyle,
+    cache: Option<&AnalysisCache>,
+    run: Option<(u64, &RunControl)>,
+    on_progress: &mut dyn FnMut(f64),
+) -> Result<VerticalPlan, String> {
+    // 1. Analyse every range.
+    let analysis = analyse_clips(input, clips, cache, run, on_progress)?;
+    let (source_w, source_h) = analysis.source_size;
+    let (fps, scale) = (analysis.fps, analysis.scale);
+    let camera_frame = CameraFrame {
+        height: analysis.analysis_size().1,
+        min_crop_height: f64::from(OUTPUT_SIZE.1) / MAX_UPSCALE / scale,
+        fps,
+    };
+
+    // 2. Who is who, over all clips together. Ignored faces are gone from
+    // here on: never framed, never a listener to cut away to.
+    let (bindings, _, ignored) = bind_with_overrides(&analysis, cast);
+    let turns = cast.turns;
+    let tracks = &analysis.tracks;
+    let range_tracks: Vec<Vec<RangeTracks>> = analysis
+        .range_tracks
+        .iter()
+        .map(|per_range| {
+            per_range
+                .iter()
+                .map(|(range, indices)| {
+                    let kept = indices.iter().copied().filter(|&i| !ignored[i]).collect();
+                    (*range, kept)
+                })
+                .collect()
+        })
+        .collect();
 
     // 3. Camera path per range, cutaways over jump cuts, then the cuts'
     // punch-ins and transitions.
@@ -484,7 +880,7 @@ pub(crate) fn plan_vertical(
     Ok(VerticalPlan {
         source_size: (source_w, source_h),
         fps,
-        has_audio: media.audio.is_some(),
+        has_audio: analysis.has_audio,
         clips: planned,
         bindings,
     })
@@ -722,7 +1118,7 @@ pub(crate) struct RenderOptions<'a> {
 pub(crate) fn export_vertical(
     input: &Path,
     clips: &[VerticalClip],
-    turns: &[SpeechTurn],
+    cast: Cast<'_>,
     options: RenderOptions<'_>,
     cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
@@ -732,7 +1128,7 @@ pub(crate) fn export_vertical(
     let plan = plan_vertical(
         input,
         &ranges,
-        turns,
+        cast,
         options.cuts,
         cache,
         run,
@@ -1069,6 +1465,144 @@ mod tests {
         assert_eq!(chunks, [vec!["Erst", "das."], vec!["Dann"]]);
     }
 
+    /// A still 60 px face at `x` in `shot`, sampled at 10 fps over `range`.
+    fn face_track(id: usize, shot: usize, x: f32, range: (f64, f64)) -> Track {
+        let face = Face {
+            x,
+            y: 100.0,
+            width: 60.0,
+            height: 60.0,
+            score: 0.9,
+            landmarks: [(x + 30.0, 130.0); 5],
+        };
+        let observations = (0..)
+            .map(|i| range.0 + f64::from(i) / 10.0)
+            .take_while(|&time| time < range.1)
+            .map(|time| Observation {
+                time,
+                face,
+                mouth_motion: Some(0.1),
+            })
+            .collect();
+        Track::for_tests(id, shot, observations)
+    }
+
+    #[test]
+    fn an_ignored_face_is_ignored_wherever_its_seat_comes_back() {
+        // One camera setup cut to twice: a person at x 100, a face on a TV
+        // at x 500. The user ignored the TV as seen in the first shot only.
+        let analysis = ClipsAnalysis {
+            source_size: (1280, 720),
+            fps: 25.0,
+            has_audio: true,
+            analysis_width: 1280,
+            scale: 1.0,
+            tracks: vec![
+                face_track(0, 0, 100.0, (0.0, 5.0)),
+                face_track(1, 0, 500.0, (0.0, 5.0)),
+                face_track(2, 1, 102.0, (20.0, 25.0)),
+                face_track(3, 1, 498.0, (20.0, 25.0)),
+            ],
+            range_tracks: Vec::new(),
+        };
+        let size = analysis.analysis_size();
+        let tv = anchors_of(&[&analysis.tracks[1]], size);
+        assert!(anchored(&analysis.tracks[1], &tv[0], size));
+        assert!(!anchored(&analysis.tracks[0], &tv[0], size));
+
+        let overrides = [FaceOverride {
+            anchors: tv,
+            ignored: true,
+            speaker: FaceSpeaker::Auto,
+        }];
+        let (_, resolved, ignored) = bind_with_overrides(
+            &analysis,
+            Cast {
+                turns: &[],
+                faces: &overrides,
+            },
+        );
+        assert_eq!(ignored, [false, true, false, true]);
+        assert_eq!(resolved.applied, [None, Some(0), None, Some(0)]);
+    }
+
+    #[test]
+    fn a_named_face_is_bound_without_evidence() {
+        let analysis = ClipsAnalysis {
+            source_size: (1280, 720),
+            fps: 25.0,
+            has_audio: true,
+            analysis_width: 1280,
+            scale: 1.0,
+            tracks: vec![
+                face_track(0, 0, 100.0, (0.0, 5.0)),
+                face_track(1, 0, 500.0, (0.0, 5.0)),
+            ],
+            range_tracks: Vec::new(),
+        };
+        let overrides = [FaceOverride {
+            anchors: anchors_of(&[&analysis.tracks[0]], analysis.analysis_size()),
+            ignored: false,
+            speaker: FaceSpeaker::Named {
+                name: "Host".to_string(),
+            },
+        }];
+        let turns = [SpeechTurn {
+            start: 0.0,
+            end: 5.0,
+            speaker: "Host".to_string(),
+        }];
+        let (bindings, _, _) = bind_with_overrides(
+            &analysis,
+            Cast {
+                turns: &turns,
+                faces: &overrides,
+            },
+        );
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(
+            (bindings[0].track, bindings[0].speaker.as_str()),
+            (0, "Host")
+        );
+    }
+
+    #[test]
+    fn face_thumbnails_are_small_squares() {
+        let frame = Frame {
+            time: 0.0,
+            width: 320,
+            height: 180,
+            data: vec![128; 320 * 180 * 3],
+        };
+        let face = Face {
+            x: 280.0,
+            y: 10.0,
+            width: 40.0,
+            height: 50.0,
+            score: 0.9,
+            landmarks: [(300.0, 30.0); 5],
+        };
+        let small = resize(
+            &crop(
+                &frame,
+                CropRect {
+                    x: 0,
+                    y: 0,
+                    width: 80,
+                    height: 80,
+                },
+            ),
+            96,
+        );
+        assert_eq!(
+            (small.width, small.height, small.data.len()),
+            (96, 96, 96 * 96 * 3)
+        );
+        assert!(small.data.iter().all(|&v| v == 128));
+        let url = face_thumbnail(&frame, &face).unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
     #[test]
     fn clip_edges_next_to_a_cut_move_onto_it() {
         assert_eq!(
@@ -1197,7 +1731,10 @@ mod evaluation {
                 output: output.clone(),
                 title: Some("Wie weit vertrauen Patienten der KI?".to_string()),
             }],
-            &turns,
+            Cast {
+                turns: &turns,
+                faces: &[],
+            },
             RenderOptions {
                 quality: ExportQuality::Balanced,
                 cuts: CutStyle::from(intensity),
@@ -1268,5 +1805,79 @@ mod evaluation {
             started.elapsed().as_secs_f64(),
             output.display()
         );
+    }
+
+    /// Lists the faces of clips on a real recording and writes each one's
+    /// thumbnail to `SHORTS_PROFILE_KEEP/face_NN.png`.
+    /// `SHORTS_PROFILE_SOURCE=… SHORTS_PROFILE_TRANSCRIPT=… SHORTS_PROFILE_KEEP=…
+    ///  SHORTS_PROFILE_RANGES=830-870,1200-1260
+    ///  cargo test --release --lib faces_of_a_recording -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn faces_of_a_recording() {
+        use base64::Engine;
+        let (Some(source), Some(transcript), Some(keep)) = (
+            std::env::var_os("SHORTS_PROFILE_SOURCE"),
+            std::env::var_os("SHORTS_PROFILE_TRANSCRIPT"),
+            std::env::var_os("SHORTS_PROFILE_KEEP"),
+        ) else {
+            eprintln!("SHORTS_PROFILE_SOURCE / _TRANSCRIPT / _KEEP not set; skipping");
+            return;
+        };
+        let clips: Vec<Vec<(f64, f64)>> = std::env::var("SHORTS_PROFILE_RANGES")
+            .unwrap_or_else(|_| "830-870".to_string())
+            .split(',')
+            .map(|range| {
+                let (start, end) = range.split_once('-').unwrap();
+                vec![(start.parse().unwrap(), end.parse().unwrap())]
+            })
+            .collect();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(transcript).unwrap()).unwrap();
+        let turns: Vec<SpeechTurn> = json["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|segment| SpeechTurn {
+                start: crate::time_utils::parse_time(segment["start"].as_str().unwrap()),
+                end: crate::time_utils::parse_time(segment["end"].as_str().unwrap()),
+                speaker: segment["speaker"].as_str().unwrap_or("?").to_string(),
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let faces = detect_faces(
+            Path::new(&source),
+            &clips,
+            Cast {
+                turns: &turns,
+                faces: &[],
+            },
+            None,
+            None,
+            &mut |_| {},
+        )
+        .unwrap();
+        println!(
+            "{} faces in {:.1} s",
+            faces.len(),
+            started.elapsed().as_secs_f64()
+        );
+        let keep = PathBuf::from(keep);
+        for (index, face) in faces.iter().enumerate() {
+            println!(
+                "face {index:>2}: setup {} {:>5.1} s on screen, {} anchors, speaker {:?}{}",
+                face.setup,
+                face.seconds,
+                face.anchors.len(),
+                face.speaker,
+                if face.confident { "" } else { " (unsure)" }
+            );
+            if let Some(data) = face.thumbnail.strip_prefix("data:image/png;base64,") {
+                let png = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap();
+                std::fs::write(keep.join(format!("face_{index:02}.png")), png).unwrap();
+            }
+        }
     }
 }

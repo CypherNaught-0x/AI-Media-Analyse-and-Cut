@@ -56,6 +56,7 @@ export function createDefaultViralClipsWorkspaceState(): ViralClipsWorkspaceStat
         vertical: false,
         captions: true,
         intensity: 'punchy',
+        faces: [],
         clips: [],
         lastExportPath: '',
         trimBoundarySilence: false,
@@ -317,6 +318,10 @@ export function normalizeEditSession(candidate: unknown): EditSessionV1 | null {
         viralClipsWorkspace: {
             ...defaults.viralClipsWorkspace,
             ...(isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace : {}),
+            faces:
+                isRecord(raw.viralClipsWorkspace) && Array.isArray(raw.viralClipsWorkspace.faces)
+                    ? raw.viralClipsWorkspace.faces
+                    : [],
             // Older sessions stored unscored clips with timestamp strings.
             clips: normalizeShortClips(
                 isRecord(raw.viralClipsWorkspace) ? raw.viralClipsWorkspace.clips : [],

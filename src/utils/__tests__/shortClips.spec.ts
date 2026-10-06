@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { DetectedFace } from '../../bindings';
 import type { ClipCandidate, ShortClip, TranscriptSegment } from '../../types';
 import {
     clipDuration,
@@ -6,6 +7,8 @@ import {
     normalizeShortClips,
     captionWords,
     playbackStep,
+    setFaceOverride,
+    speakerNames,
     speakerTurns,
     toExportSegments,
     trimClip,
@@ -172,5 +175,48 @@ describe('captionWords', () => {
             { start: 20, end: 21, text: 'three' },
             { start: 21, end: 22, text: 'four' },
         ]);
+    });
+});
+
+describe('setFaceOverride', () => {
+    const face = (applied: number | null, time: number): DetectedFace => ({
+        anchors: [{ time, x: 0.5, y: 0.3 }],
+        thumbnail: '',
+        speaker: null,
+        confident: false,
+        setup: 1,
+        seconds: 4,
+        applied,
+    });
+
+    it('adds an override for a face none applied to', () => {
+        const overrides = setFaceOverride([], face(null, 10), { ignored: true });
+        expect(overrides).toEqual([
+            { anchors: [{ time: 10, x: 0.5, y: 0.3 }], ignored: true, speaker: { kind: 'auto' } },
+        ]);
+    });
+
+    it('changes the applied override in place, keeping its anchors', () => {
+        const first = setFaceOverride([], face(null, 10), { ignored: true });
+        const other = setFaceOverride(first, face(null, 50), {
+            speaker: { kind: 'named', name: 'Host' },
+        });
+        const changed = setFaceOverride(other, face(0, 30), { ignored: false });
+        expect(changed).toHaveLength(2);
+        expect(changed[0].ignored).toBe(false);
+        expect(changed[0].anchors.map((a) => a.time)).toEqual([10, 30]);
+        expect(changed[1]).toBe(other[1]);
+    });
+});
+
+describe('speakerNames', () => {
+    it('lists each speaker once, in order of appearance', () => {
+        expect(
+            speakerNames([
+                { start: '00:10.000', end: '00:12.000', speaker: 'Host', text: 'Hi' },
+                { start: '00:20.000', end: '00:22.000', speaker: 'Guest', text: 'Hello' },
+                { start: '00:30.000', end: '00:32.000', speaker: 'Host', text: 'So' },
+            ]),
+        ).toEqual(['Host', 'Guest']);
     });
 });

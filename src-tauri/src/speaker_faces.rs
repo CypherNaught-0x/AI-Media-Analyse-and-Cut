@@ -94,7 +94,7 @@ struct Setup {
 }
 
 /// (setup, seat) for every track, by index.
-fn assign_seats(tracks: &[Track]) -> Vec<(usize, usize)> {
+pub(crate) fn assign_seats(tracks: &[Track]) -> Vec<(usize, usize)> {
     let mut by_shot: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for (index, track) in tracks.iter().enumerate() {
         by_shot.entry(track.shot).or_default().push(index);
@@ -294,21 +294,61 @@ fn affinities(tracks: &[Track], turns: &[SpeechTurn]) -> (Vec<Affinity>, Vec<(us
     (table, seats)
 }
 
+/// What the user said about a face: the seat of track `track` (by id)
+/// belongs to `speaker`, or with `None` to nobody who speaks.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Pin {
+    pub track: usize,
+    pub speaker: Option<String>,
+}
+
 /// Speaker ↔ face bindings, one-to-one within each camera setup. Faces of
 /// speakers who don't talk while on screen (or whose mouth isn't the one
-/// moving) stay unbound.
-pub(crate) fn bind_speakers(tracks: &[Track], turns: &[SpeechTurn]) -> Vec<Binding> {
+/// moving) stay unbound. `pins` come first and bind with infinite affinity;
+/// the evidence decides only the seats and speakers they leave open.
+pub(crate) fn bind_speakers(tracks: &[Track], turns: &[SpeechTurn], pins: &[Pin]) -> Vec<Binding> {
     let (mut table, seats) = affinities(tracks, turns);
-    table.sort_by(|a, b| b.affinity.total_cmp(&a.affinity));
     let mut bound: Vec<Affinity> = Vec::new();
+    let mut nobody: Vec<(usize, usize)> = Vec::new();
+    for pin in pins {
+        let Some(index) = tracks.iter().position(|t| t.id == pin.track) else {
+            continue;
+        };
+        let (setup, seat) = seats[index];
+        let Some(speaker) = &pin.speaker else {
+            nobody.push((setup, seat));
+            continue;
+        };
+        if bound
+            .iter()
+            .any(|b| b.setup == setup && (b.seat == seat || b.speaker == *speaker))
+        {
+            continue;
+        }
+        let evidence = table
+            .iter()
+            .find(|a| (a.setup, a.seat) == (setup, seat) && a.speaker == *speaker)
+            .map_or(0.0, |a| a.evidence);
+        bound.push(Affinity {
+            setup,
+            seat,
+            speaker: speaker.clone(),
+            affinity: f32::INFINITY,
+            evidence,
+        });
+    }
+
+    table.sort_by(|a, b| b.affinity.total_cmp(&a.affinity));
     for candidate in table {
         if candidate.affinity < MIN_AFFINITY {
             break;
         }
-        if bound.iter().any(|b| {
-            b.setup == candidate.setup
-                && (b.seat == candidate.seat || b.speaker == candidate.speaker)
-        }) {
+        if nobody.contains(&(candidate.setup, candidate.seat))
+            || bound.iter().any(|b| {
+                b.setup == candidate.setup
+                    && (b.seat == candidate.seat || b.speaker == candidate.speaker)
+            })
+        {
             continue;
         }
         bound.push(candidate);
@@ -399,7 +439,7 @@ mod tests {
             track(1, 0, (0.0, 10.0), |t| if t >= 5.0 { 2.5 } else { 0.4 }),
             track(2, 0, (0.0, 10.0), |_| 0.3),
         ];
-        let mut bindings = bind_speakers(&tracks, &turns);
+        let mut bindings = bind_speakers(&tracks, &turns, &[]);
         bindings.sort_by_key(|b| b.track);
         let pairs: Vec<(usize, &str)> = bindings
             .iter()
@@ -417,7 +457,7 @@ mod tests {
             track(0, 3, (0.0, 10.0), |_| 0.4),
             track(1, 3, (0.0, 10.0), |_| 2.0),
         ];
-        let bindings = bind_speakers(&tracks, &turns);
+        let bindings = bind_speakers(&tracks, &turns, &[]);
         assert_eq!(bindings.len(), 1);
         assert_eq!((bindings[0].track, bindings[0].speaker.as_str()), (1, "A"));
     }
@@ -456,7 +496,7 @@ mod tests {
             track_at(3, 2, 104.0, (10.0, 15.0), speaks),
             track_at(4, 2, 297.0, (10.0, 15.0), |_| 0.2),
         ];
-        let mut bindings = bind_speakers(&tracks, &turns);
+        let mut bindings = bind_speakers(&tracks, &turns, &[]);
         bindings.sort_by_key(|b| b.track);
         let bound: Vec<(usize, &str)> = bindings
             .iter()
@@ -479,8 +519,41 @@ mod tests {
             // Moves all the time: no contrast for B.
             track(1, 0, (0.0, 10.0), |_| 1.0),
         ];
-        let bindings = bind_speakers(&tracks, &turns);
+        let bindings = bind_speakers(&tracks, &turns, &[]);
         assert!(bindings.iter().all(|b| b.speaker != "A"), "{bindings:?}");
+    }
+
+    #[test]
+    fn pins_override_the_evidence() {
+        // Track 0's mouth follows A, but the user says it is B; A's evidence
+        // then can't take that seat, and A stays unbound in the setup.
+        let turns = [turn(0.0, 5.0, "A"), turn(5.0, 10.0, "B")];
+        let tracks = [
+            track(0, 0, (0.0, 10.0), |t| if t < 5.0 { 3.0 } else { 0.5 }),
+            track(1, 0, (0.0, 10.0), |_| 0.3),
+        ];
+        let pins = [Pin {
+            track: 0,
+            speaker: Some("B".to_string()),
+        }];
+        let bindings = bind_speakers(&tracks, &turns, &pins);
+        assert_eq!(bindings.len(), 1, "{bindings:?}");
+        assert_eq!((bindings[0].track, bindings[0].speaker.as_str()), (0, "B"));
+        assert!(bindings[0].affinity.is_infinite());
+    }
+
+    #[test]
+    fn a_face_pinned_to_nobody_stays_unbound() {
+        let turns = [turn(0.0, 10.0, "A")];
+        let tracks = [
+            track(0, 0, (0.0, 10.0), |_| 0.4),
+            track(1, 0, (0.0, 10.0), |_| 2.0),
+        ];
+        let pins = [Pin {
+            track: 1,
+            speaker: None,
+        }];
+        assert!(bind_speakers(&tracks, &turns, &pins).is_empty());
     }
 }
 
@@ -579,7 +652,7 @@ mod evaluation {
         .unwrap();
         let total = started.elapsed().as_secs_f64();
         let tracks = tracker.finish(1.0);
-        let bindings = bind_speakers(&tracks, &turns);
+        let bindings = bind_speakers(&tracks, &turns, &[]);
         let (mut table, _) = affinities(&tracks, &turns);
         table.sort_by(|a, b| (a.setup, a.seat, &a.speaker).cmp(&(b.setup, b.seat, &b.speaker)));
         for row in &table {

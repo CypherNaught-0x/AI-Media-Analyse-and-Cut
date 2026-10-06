@@ -1,4 +1,4 @@
-import type { ClipRatings, ClipRole, ClipSignals, Intensity } from '../bindings';
+import type { ClipRatings, ClipRole, ClipSignals, FaceOverride, Intensity } from '../bindings';
 // IPC payloads generated from the Rust commands (src/bindings.ts) are the
 // source of truth for the shapes the backend sends and accepts.
 export type {
@@ -283,6 +283,8 @@ export interface ViralClipsWorkspaceState {
     captions: boolean;
     /** How hard to tighten pauses, fillers and stutters on export. */
     intensity: Intensity;
+    /** The user's word on faces in 9:16 exports: ignored ones, named ones. */
+    faces: FaceOverride[];
     clips: ShortClip[];
     lastExportPath: string;
     trimBoundarySilence: boolean;
