@@ -28,32 +28,32 @@ pub(crate) struct TightenSettings {
     pub min_cut: f64,
     /// Kept stretches without speech shorter than this are dropped.
     pub min_keep: f64,
+    /// Air kept before the first word at a range's start and after the last
+    /// word at its end (seconds).
+    pub lead_air: f64,
+    pub trail_air: f64,
 }
+
+/// Air at the seam of a looped short: the end runs straight into the start,
+/// so it should sound like one jump cut, not a pause.
+const SEAM_AIR: f64 = 0.02;
 
 impl Intensity {
     pub(crate) fn settings(self) -> Option<TightenSettings> {
-        let base = TightenSettings {
-            max_pause: 0.35,
+        let preset = |max_pause: f64, repeats: bool, min_cut: f64| TightenSettings {
+            max_pause,
             fillers: true,
-            repeats: false,
-            min_cut: 0.15,
+            repeats,
+            min_cut,
             min_keep: 0.5,
+            lead_air: max_pause / 2.0,
+            trail_air: max_pause / 2.0,
         };
         match self {
             Intensity::Off => None,
-            Intensity::Chill => Some(base),
-            Intensity::Punchy => Some(TightenSettings {
-                max_pause: 0.18,
-                repeats: true,
-                min_cut: 0.12,
-                ..base
-            }),
-            Intensity::Hyper => Some(TightenSettings {
-                max_pause: 0.09,
-                repeats: true,
-                min_cut: 0.1,
-                ..base
-            }),
+            Intensity::Chill => Some(preset(0.35, false, 0.15)),
+            Intensity::Punchy => Some(preset(0.18, true, 0.12)),
+            Intensity::Hyper => Some(preset(0.09, true, 0.1)),
         }
     }
 }
@@ -131,8 +131,23 @@ fn removals(
         }
         // At the clip's edges keep a breath before the first word and after
         // the last one; between words, half the allowed pause on each side.
-        let from = if a <= start + 1e-6 { start } else { a + air };
-        let to = if b >= end - 1e-6 { end } else { b - air };
+        let from = if a <= start + 1e-6 {
+            start
+        } else if b >= end - 1e-6 {
+            a + settings.trail_air
+        } else {
+            a + air
+        };
+        let to = if b >= end - 1e-6 {
+            end
+        } else if a <= start + 1e-6 {
+            b - settings.lead_air
+        } else {
+            b - air
+        };
+        if to <= from {
+            continue;
+        }
         spans.push((from, to));
     }
     if settings.fillers {
@@ -208,11 +223,14 @@ pub(crate) fn tighten_range(
 }
 
 /// Tighten every range of every clip. Blocks.
+/// Tighten every range of every clip. `looped[i]`: clip `i` is a looped
+/// short, whose end runs into its start: its seam keeps almost no air. Blocks.
 pub(crate) fn tighten_clips(
     input: &Path,
     clips: &[Vec<(f64, f64)>],
     words: &[TimedWord],
     intensity: Intensity,
+    looped: &[bool],
     run: Option<(u64, &RunControl)>,
 ) -> Result<Vec<Vec<(f64, f64)>>, String> {
     let Some(settings) = intensity.settings() else {
@@ -220,9 +238,18 @@ pub(crate) fn tighten_clips(
     };
     clips
         .iter()
-        .map(|ranges| {
+        .enumerate()
+        .map(|(clip, ranges)| {
+            let seam = looped.get(clip).copied().unwrap_or(false);
             let mut tightened = Vec::new();
-            for &range in ranges {
+            for (index, &range) in ranges.iter().enumerate() {
+                let mut settings = settings;
+                if seam && index == 0 {
+                    settings.lead_air = SEAM_AIR;
+                }
+                if seam && index + 1 == ranges.len() {
+                    settings.trail_air = SEAM_AIR;
+                }
                 let pauses = detect_pauses(input, range.0, range.1, settings.max_pause, run)?;
                 tightened.extend(tighten_range(range, &pauses, words, &settings));
             }
@@ -281,6 +308,23 @@ mod tests {
         // The leading pause is cut down to the 0.09 s of air before the
         // word; the trailing one likewise.
         assert!(close(&kept, &[(10.46, 12.14)]), "{kept:?}");
+    }
+
+    #[test]
+    fn a_loop_seam_keeps_almost_no_air() {
+        let words = [word(10.6, 12.0, "Also")];
+        let settings = TightenSettings {
+            lead_air: SEAM_AIR,
+            trail_air: SEAM_AIR,
+            ..punchy()
+        };
+        let kept = tighten_range(
+            (10.0, 12.5),
+            &[(10.0, 10.55), (12.05, 12.5)],
+            &words,
+            &settings,
+        );
+        assert!(close(&kept, &[(10.53, 12.07)]), "{kept:?}");
     }
 
     #[test]
@@ -374,8 +418,15 @@ mod evaluation {
             })
             .collect();
         for intensity in [Intensity::Chill, Intensity::Punchy, Intensity::Hyper] {
-            let kept =
-                tighten_clips(Path::new(&source), &[vec![range]], &words, intensity, None).unwrap();
+            let kept = tighten_clips(
+                Path::new(&source),
+                &[vec![range]],
+                &words,
+                intensity,
+                &[],
+                None,
+            )
+            .unwrap();
             let total: f64 = kept[0].iter().map(|(a, b)| b - a).sum();
             println!(
                 "{intensity:?}: {:.1} s -> {total:.1} s ({:.0}% shorter), {} cuts",

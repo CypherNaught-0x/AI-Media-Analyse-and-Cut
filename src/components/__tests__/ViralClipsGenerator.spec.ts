@@ -168,6 +168,7 @@ describe('ViralClipsGenerator', () => {
             .mock.calls.find(([command]) => command === 'tighten_clips');
         expect(tighten?.[1]).toMatchObject({
             intensity: 'hyper',
+            looped: [false],
             segments: [{ segments: [{ start: '00:10.000', end: '00:13.000' }] }],
             words: [{ text: 'one' }, { text: 'two' }, { text: 'three' }],
         });
@@ -212,6 +213,7 @@ describe('ViralClipsGenerator', () => {
                 ],
                 intensity: 'punchy',
                 captions: true,
+                looped: [false],
             },
         });
         // The backend tightens vertical clips itself.

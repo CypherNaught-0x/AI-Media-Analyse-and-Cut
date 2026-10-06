@@ -929,10 +929,16 @@ mod evaluation {
             Ok("hyper") => crate::tighten::Intensity::Hyper,
             _ => crate::tighten::Intensity::Punchy,
         };
-        let ranges =
-            crate::tighten::tighten_clips(Path::new(&source), &[ranges], &words, intensity, None)
-                .unwrap()
-                .remove(0);
+        let ranges = crate::tighten::tighten_clips(
+            Path::new(&source),
+            &[ranges],
+            &words,
+            intensity,
+            &[],
+            None,
+        )
+        .unwrap()
+        .remove(0);
         let removed = crate::tighten::removed_words(&words, intensity);
         let words: Vec<TimedWord> = words.into_iter().filter(|w| !removed.contains(w)).collect();
         println!("{intensity:?}: {} ranges", ranges.len());
