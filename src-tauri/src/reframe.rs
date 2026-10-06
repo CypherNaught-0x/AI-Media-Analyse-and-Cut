@@ -638,6 +638,104 @@ pub(crate) fn render_vertical(
     )
 }
 
+/// A cover image for a vertical clip.
+pub(crate) struct Cover<'a> {
+    pub input: &'a Path,
+    /// The framing to use.
+    pub range: &'a VerticalRange,
+    /// Source time of the picture (seconds).
+    pub time: f64,
+    pub source_size: (u32, u32),
+    pub output_size: (u32, u32),
+    pub title: &'a str,
+    pub output: &'a Path,
+}
+
+/// Render `cover`: the source at its time, framed like its range, with the
+/// title drawn in the upper part (no captions). Blocks.
+pub(crate) fn render_cover(
+    cover: &Cover<'_>,
+    run: Option<(u64, &RunControl)>,
+) -> Result<(), String> {
+    let Cover {
+        input,
+        range,
+        time,
+        source_size,
+        output_size,
+        title,
+        output,
+    } = *cover;
+    let (out_w, out_h) = output_size;
+    let aspect = f64::from(out_w) / f64::from(out_h);
+    let picture = match &range.framing {
+        Framing::Follow(keys) => {
+            let zoom = range.zoom.max(1.0);
+            let keys: Vec<CropKey> = keys
+                .iter()
+                .map(|key| CropKey {
+                    height: key.height / zoom,
+                    ..*key
+                })
+                .collect();
+            let crop = crop_at(&keys, time - range.start, source_size, aspect);
+            format!(
+                "[0:v]crop={}:{}:{}:{},scale={out_w}:{out_h}:flags=lanczos,setsar=1[pic]",
+                crop.width, crop.height, crop.x, crop.y
+            )
+        }
+        Framing::Fit => {
+            let (bg_w, bg_h) = ((out_w / 4) & !1, (out_h / 4) & !1);
+            format!(
+                "[0:v]split=2[bg][fg];[bg]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,\
+                 crop={bg_w}:{bg_h},boxblur=8:2,scale={out_w}:{out_h},eq=brightness=-0.08[bgb];\
+                 [fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=lanczos[fgs];\
+                 [bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1[pic]"
+            )
+        }
+    };
+
+    let dir = tempfile::tempdir().map_err(|e| format!("Failed to create a temp folder: {e}"))?;
+    let style = CaptionStyle {
+        font_px: 104.0,
+        ..CaptionStyle::default()
+    };
+    let painter = crate::captions::CaptionPainter::with_lines(style, out_w, 4)?;
+    let band = painter.paint_text(title.trim());
+    crate::captions::write_png(&dir.path().join("title.png"), &band)?;
+    // The title sits near the top, above the head (the eye line is at the
+    // upper third).
+    let y = ((f64::from(out_h) * 0.13 - f64::from(band.height) / 2.0).max(0.0)) as u32;
+
+    let mut command = FfmpegCommand::new();
+    command
+        .args(["-y", "-ss", &format!("{time:.6}")])
+        .input(input.to_string_lossy())
+        .input("title.png")
+        .args([
+            "-filter_complex",
+            &format!("{picture};[pic][1:v]overlay=0:{y}[v]"),
+            "-map",
+            "[v]",
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+        ])
+        .output(output.to_string_lossy());
+    command.as_inner_mut().current_dir(dir.path());
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "render the cover image",
+            input,
+            output: Some(output),
+            run,
+        },
+        |_| {},
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,6 +1104,72 @@ mod morph_tests {
         assert!(green_at("1.5"), "morph frames at the cut");
         assert!(!green_at("1.2"), "source before");
         assert!(!green_at("1.8"), "source after");
+    }
+}
+
+#[cfg(test)]
+mod cover_tests {
+    use super::*;
+
+    #[test]
+    fn covers_are_portrait_stills_with_the_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("grey.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=2"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let range = VerticalRange::new(
+            0.0,
+            2.0,
+            Framing::Follow(vec![CropKey {
+                time: 0.0,
+                center_x: 320.0,
+                center_y: 180.0,
+                height: 360.0,
+            }]),
+        );
+        let output = dir.path().join("cover.jpg");
+        render_cover(
+            &Cover {
+                input: &source,
+                range: &range,
+                time: 1.0,
+                source_size: (640, 360),
+                output_size: (360, 640),
+                title: "A title",
+                output: &output,
+            },
+            None,
+        )
+        .unwrap();
+        let info = crate::media_probe::probe_media(&output).unwrap();
+        let video = info.video.unwrap();
+        assert_eq!((video.width, video.height), (360, 640));
+        // White title text near the top of a grey picture.
+        let top = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&output)
+            .args([
+                "-vf",
+                "crop=360:120:0:20",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-",
+            ])
+            .output()
+            .unwrap()
+            .stdout;
+        assert!(
+            top.iter().filter(|&&v| v > 240).count() > 200,
+            "title pixels"
+        );
     }
 }
 
