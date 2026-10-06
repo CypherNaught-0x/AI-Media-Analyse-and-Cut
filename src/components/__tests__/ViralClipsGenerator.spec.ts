@@ -228,6 +228,7 @@ describe('ViralClipsGenerator', () => {
                     sourceHeight: 720,
                     outputWidth: 1080,
                     outputHeight: 1920,
+                    captions: [[[{ start: 10, end: 10.8, text: 'one' }]]],
                     clips: [
                         [
                             {
@@ -266,6 +267,8 @@ describe('ViralClipsGenerator', () => {
         expect(video.style.left).toBe('-505px');
         expect(video.style.top).toBe('-120px');
         expect(video.controls).toBe(false);
+        // Captions as the export burns them in.
+        expect(wrapper.get('[data-testid="clips-player-caption"]').text()).toBe('one');
 
         // Stopping returns to the normal player.
         await wrapper.get(`[data-testid="clip-preview-${clip.id}"]`).trigger('click');

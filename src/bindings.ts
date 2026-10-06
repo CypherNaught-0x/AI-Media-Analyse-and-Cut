@@ -326,6 +326,13 @@ export type PreviewPiece = {
 	zoom: number,
 };
 
+/**  A caption word on the source timeline. */
+export type PreviewWord = {
+	start: number,
+	end: number,
+	text: string,
+};
+
 export type ProcessedAudio = {
 	path: string,
 	silence_intervals: SilenceInterval[],
@@ -466,6 +473,11 @@ export type VerticalPreview = {
 	outputHeight: number,
 	/**  Per clip: its pieces in playback order. */
 	clips: PreviewPiece[][],
+	/**
+	 *  Per clip: caption chunks on the source timeline (empty without
+	 *  captions), as the export burns them in.
+	 */
+	captions: PreviewWord[][][],
 };
 
 /**

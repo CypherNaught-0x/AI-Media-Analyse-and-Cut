@@ -174,6 +174,12 @@ export function setupDemoMode() {
                     outputWidth: 1080,
                     outputHeight: 1920,
                     clips,
+                    captions: clips.map(() => [
+                        [
+                            { start: 0, end: 0.5, text: 'Edit' },
+                            { start: 0.5, end: 1.0, text: 'video' },
+                        ],
+                    ]),
                 };
             }
             case 'export_vertical_clips':
