@@ -238,6 +238,9 @@ fn smooth(path: &[(f64, f64)], sigma_samples: f64) -> Vec<(f64, f64)> {
         .collect()
 }
 
+/// A static framing: crop centre x, y and height.
+pub(crate) type Framed = (f64, f64, f64);
+
 /// A listener to cut away to over `window` (absolute source seconds): the
 /// largest face on screen throughout that isn't the one framed around
 /// `subject_x`. Returns a static framing (centre and height) like any
@@ -248,7 +251,7 @@ pub(crate) fn listener_framing(
     subject_x: f64,
     frame: &Frame,
     settings: &CameraSettings,
-) -> Option<((f64, f64, f64), (f64, f64))> {
+) -> Option<(Framed, (f64, f64))> {
     let times: Vec<f64> = (0..)
         .map(|i| window.0 + f64::from(i) * STEP)
         .take_while(|&time| time <= window.1)
