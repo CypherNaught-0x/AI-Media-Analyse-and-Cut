@@ -13,8 +13,11 @@ import { trimClipBoundarySilence } from '../utils/clipSilence';
 import { padClipSegments } from '../utils/clips';
 import {
     clipDuration,
+    clipWords,
+    editWord,
     fromCandidates,
     captionWords,
+    type ClipWord,
     playbackStep,
     ratingTone,
     setFaceOverride,
@@ -45,6 +48,7 @@ import {
 } from '../bindings';
 import { captionAt, videoBox, type ShownWord, type VideoBox } from '../utils/verticalFraming';
 import { errorMessage } from '../utils/appError';
+import ClipText from './ClipText.vue';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -62,6 +66,8 @@ const emit = defineEmits<{
     'update:status': [message: string];
     'update:processing': [isProcessing: boolean];
     'update:state': [state: ViralClipsWorkspaceState];
+    /** The transcript with a word corrected from a clip's text. */
+    'update:segments': [segments: TranscriptSegment[]];
 }>();
 
 const { settings } = useSettings();
@@ -251,6 +257,8 @@ const prepared = ref(new Map<string, PreparedPreview>());
 const verticalBox = ref<VideoBox | null>(null);
 const verticalCaption = ref<ShownWord[] | null>(null);
 let frameRequest: number | null = null;
+/** Player time while a clip previews, for its live text. */
+const playhead = ref<number | null>(null);
 
 function previewSignature(clip: ShortClip): string {
     const ranges = clip.ranges.map((range) => `${range.start}-${range.end}`).join(',');
@@ -292,7 +300,8 @@ function followFrames() {
     const video = player.value as
         | (HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number })
         | null;
-    if (!video || !verticalPlan.value) return;
+    if (!video || !previewing.value) return;
+    playhead.value = video.currentTime;
     updateVerticalBox();
     // Per decoded frame where supported, so the crop moves with the picture.
     frameRequest = video.requestVideoFrameCallback
@@ -399,6 +408,7 @@ async function preview(clip: ShortClip) {
 
 function stopPreview() {
     previewing.value = null;
+    playhead.value = null;
     player.value?.pause();
     stopFollowingFrames();
     verticalBox.value = null;
@@ -508,7 +518,7 @@ watch(
         scanTimer = setTimeout(() => {
             scanTimer = null;
             if (props.busy || isProcessing.value || previewing.value) return;
-            void detectFaces();
+            void detectFaces('Clips changed; finding faces...');
         }, FACE_SCAN_DELAY_MS);
     },
     { immediate: true },
@@ -518,7 +528,7 @@ onBeforeUnmount(() => {
     if (scanTimer !== null) clearTimeout(scanTimer);
 });
 
-async function detectFaces() {
+async function detectFaces(status = 'Finding faces...') {
     const toScan = clipsToScan.value;
     if (props.busy || isProcessing.value || toScan.length === 0 || !props.hasMediaFile) return;
     const signature = faceScanSignature.value;
@@ -528,7 +538,7 @@ async function detectFaces() {
     activeRunId.value = runId;
     isProcessing.value = true;
     emit('update:processing', true);
-    emit('update:status', 'Finding faces...');
+    emit('update:status', status);
     stopPreview();
     try {
         const faces = await commands.detectVerticalFaces(
@@ -554,6 +564,41 @@ async function detectFaces() {
             emit('update:processing', false);
         }
     }
+}
+
+// ---- Clip text: what a clip says, with the spoken word highlighted while
+// it previews. Words are edited in the transcript itself, so captions,
+// subtitles and every other clip get the correction. ----
+const openTexts = ref(new Set<string>());
+
+function toggleText(clip: ShortClip) {
+    const next = new Set(openTexts.value);
+    if (!next.delete(clip.id)) next.add(clip.id);
+    openTexts.value = next;
+}
+
+/** What the clip's prepared preview plays, if prepared for its current settings. */
+function keptRanges(clip: ShortClip): PlaybackRange[] | null {
+    const entry = prepared.value.get(clip.id);
+    return entry && entry.signature === previewSignature(clip) ? entry.ranges : null;
+}
+
+function editClipWord(word: ClipWord, text: string) {
+    emit('update:segments', editWord(props.segments, word, text));
+    // Prepared previews show the correction right away.
+    const next = new Map(prepared.value);
+    for (const [id, entry] of next) {
+        if (!entry.plan) continue;
+        const captions = entry.plan.captions.map((chunks) =>
+            chunks.map((chunk) =>
+                chunk.map((w) =>
+                    w.start === word.start && w.end === word.end ? { ...w, text } : w,
+                ),
+            ),
+        );
+        next.set(id, { ...entry, plan: { ...entry.plan, captions } });
+    }
+    prepared.value = next;
 }
 
 // ---- Generation ----
@@ -932,7 +977,7 @@ async function openExportFolder() {
                         class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-40"
                         :disabled="isProcessing || busy"
                         data-testid="clips-detect-faces"
-                        @click="detectFaces"
+                        @click="detectFaces()"
                     >
                         {{ detectedFaces.length ? 'Refresh faces' : 'Find faces' }}
                     </button>
@@ -1044,6 +1089,15 @@ async function openExportFolder() {
                     </p>
                     <p class="mb-3 text-xs leading-relaxed text-gray-400">{{ clip.reason }}</p>
 
+                    <ClipText
+                        v-if="openTexts.has(clip.id)"
+                        class="mb-3"
+                        :words="clipWords(segments, clip.ranges)"
+                        :kept="keptRanges(clip)"
+                        :playhead="previewing?.id === clip.id ? playhead : null"
+                        @edit="editClipWord"
+                    />
+
                     <!-- Facts, ratings and actions sit at the bottom, so cards in a row line up. -->
                     <div class="mt-auto">
                         <div class="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
@@ -1124,6 +1178,20 @@ async function openExportFolder() {
                                 @click="preview(clip)"
                             >
                                 {{ previewing?.id === clip.id ? 'Stop' : 'Preview' }}
+                            </button>
+                            <button
+                                type="button"
+                                class="rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-white/20"
+                                :class="
+                                    openTexts.has(clip.id)
+                                        ? 'bg-pink-600/60 text-white'
+                                        : 'bg-white/10 text-white'
+                                "
+                                :aria-pressed="openTexts.has(clip.id)"
+                                :data-testid="`clip-text-toggle-${clip.id}`"
+                                @click="toggleText(clip)"
+                            >
+                                Text
                             </button>
 
                             <div

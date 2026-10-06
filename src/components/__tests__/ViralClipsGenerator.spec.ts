@@ -276,6 +276,24 @@ describe('ViralClipsGenerator', () => {
         }
     });
 
+    it("shows a clip's text and corrects a word in the transcript", async () => {
+        const [clip] = fromCandidates([candidate]);
+        const wrapper = mountWith({ clips: [clip] });
+        expect(wrapper.find('[data-testid="clip-text"]').exists()).toBe(false);
+
+        await wrapper.get(`[data-testid="clip-text-toggle-${clip.id}"]`).trigger('click');
+        expect(wrapper.get('[data-testid="clip-text"]').text()).toContain('one two three');
+
+        await wrapper.get('[data-testid="clip-word-1"]').trigger('click');
+        const input = wrapper.get('[data-testid="clip-text-input"]');
+        await input.setValue('TWO');
+        await input.trigger('keydown', { key: 'Enter' });
+
+        const [edited] = wrapper.emitted('update:segments')!.at(-1) as [TranscriptSegment[]];
+        expect(edited[0].text).toBe('one TWO three');
+        expect(edited[0].words?.[1]).toEqual({ start: '00:11.000', end: '00:11.900', text: 'TWO' });
+    });
+
     it('lists detected faces and saves turning one off or naming one', async () => {
         const [clip] = fromCandidates([candidate]);
         const anchor = { time: 11, x: 0.8, y: 0.3 };

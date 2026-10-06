@@ -271,6 +271,64 @@ export function speakerTurns(segments: TranscriptSegment[]): SpeakerTurn[] {
     return turns;
 }
 
+/** A transcript word in a clip, and where it lives in the transcript. */
+export interface ClipWord {
+    /** Index of its segment. */
+    segment: number;
+    /** Index in the segment's `words`, or of its token in `text` when the segment has no word timings. */
+    index: number;
+    start: number;
+    end: number;
+    text: string;
+    speaker: string;
+}
+
+/**
+ * Transcript words overlapping `ranges` (source seconds), with where each
+ * one lives. Segments without word timings spread their words evenly.
+ */
+export function clipWords(
+    segments: TranscriptSegment[],
+    ranges: { start: number; end: number }[],
+): ClipWord[] {
+    const overlaps = (start: number, end: number) =>
+        ranges.some((range) => start < range.end && end > range.start);
+    const words: ClipWord[] = [];
+    segments.forEach((segment, segmentIndex) => {
+        const start = seconds(segment.start);
+        const end = seconds(segment.end);
+        if (start === null || end === null || !overlaps(start, end)) return;
+        const speaker = segment.speaker;
+        const timed = (segment.words ?? []).flatMap((word, index): ClipWord[] => {
+            const wordStart = seconds(word.start);
+            const wordEnd = seconds(word.end);
+            const text = word.text.trim();
+            if (wordStart === null || wordEnd === null || text === '') return [];
+            return [
+                { segment: segmentIndex, index, start: wordStart, end: wordEnd, text, speaker },
+            ];
+        });
+        if (timed.length > 0) {
+            words.push(...timed.filter((word) => overlaps(word.start, word.end)));
+            return;
+        }
+        const texts = segment.text.split(/\s+/).filter(Boolean);
+        const step = (end - start) / Math.max(texts.length, 1);
+        texts.forEach((text, index) => {
+            const word = {
+                segment: segmentIndex,
+                index,
+                start: start + index * step,
+                end: start + (index + 1) * step,
+                text,
+                speaker,
+            };
+            if (overlaps(word.start, word.end)) words.push(word);
+        });
+    });
+    return words;
+}
+
 /**
  * Transcript words overlapping `ranges` (source seconds), for burned-in
  * captions. Segments without word timings spread their words evenly.
@@ -279,33 +337,48 @@ export function captionWords(
     segments: TranscriptSegment[],
     ranges: { start: number; end: number }[],
 ): CaptionWord[] {
-    const overlaps = (start: number, end: number) =>
-        ranges.some((range) => start < range.end && end > range.start);
-    const words: CaptionWord[] = [];
-    for (const segment of segments) {
-        const start = seconds(segment.start);
-        const end = seconds(segment.end);
-        if (start === null || end === null || !overlaps(start, end)) continue;
-        const timed = (segment.words ?? [])
-            .map((word) => ({
-                start: seconds(word.start),
-                end: seconds(word.end),
-                text: word.text.trim(),
-            }))
-            .filter(
-                (word): word is CaptionWord =>
-                    word.start !== null && word.end !== null && word.text !== '',
-            );
-        if (timed.length > 0) {
-            words.push(...timed.filter((word) => overlaps(word.start, word.end)));
-            continue;
+    return clipWords(segments, ranges).map(({ start, end, text }) => ({ start, end, text }));
+}
+
+/**
+ * `segments` with one word's text changed (timings stay). The segment's
+ * text follows: its matching token is replaced when text and words line
+ * up, else the old word where it occurs exactly once.
+ */
+export function editWord(
+    segments: TranscriptSegment[],
+    word: Pick<ClipWord, 'segment' | 'index'>,
+    text: string,
+): TranscriptSegment[] {
+    const segment = segments[word.segment];
+    const replacement = text.trim();
+    if (!segment || replacement === '') return segments;
+    const tokens = segment.text.split(/\s+/).filter(Boolean);
+
+    let updated: TranscriptSegment;
+    if (segment.words?.length) {
+        const old = segment.words[word.index];
+        if (!old) return segments;
+        const words = segment.words.map((w, i) =>
+            i === word.index ? { ...w, text: replacement } : w,
+        );
+        // Position among the words that have text, as tokens are.
+        const position = segment.words
+            .slice(0, word.index)
+            .filter((w) => w.text.trim() !== '').length;
+        const spoken = segment.words.filter((w) => w.text.trim() !== '').length;
+        let segmentText = segment.text;
+        if (tokens.length === spoken) {
+            tokens[position] = replacement;
+            segmentText = tokens.join(' ');
+        } else if (segment.text.split(old.text.trim()).length === 2) {
+            segmentText = segment.text.replace(old.text.trim(), replacement);
         }
-        const texts = segment.text.split(/\s+/).filter(Boolean);
-        const step = (end - start) / Math.max(texts.length, 1);
-        texts.forEach((text, index) => {
-            const word = { start: start + index * step, end: start + (index + 1) * step, text };
-            if (overlaps(word.start, word.end)) words.push(word);
-        });
+        updated = { ...segment, words, text: segmentText };
+    } else {
+        if (word.index >= tokens.length) return segments;
+        tokens[word.index] = replacement;
+        updated = { ...segment, text: tokens.join(' ') };
     }
-    return words;
+    return segments.map((s, i) => (i === word.segment ? updated : s));
 }

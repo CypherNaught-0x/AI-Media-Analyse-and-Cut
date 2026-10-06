@@ -1611,6 +1611,7 @@ function updateProcessing(processing: boolean) {
                         @update:status="updateStatus"
                         @update:processing="updateProcessing"
                         @update:state="viralClipsState = $event"
+                        @update:segments="segments = $event"
                     />
                 </transition>
             </div>
