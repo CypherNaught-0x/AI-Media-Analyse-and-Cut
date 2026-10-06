@@ -7,7 +7,7 @@
 //! for the others.
 
 use crate::camera::{plan_camera, CameraSettings, Frame as CameraFrame};
-use crate::captions::{tightened_output_words, CaptionStyle, TimedWord};
+use crate::captions::{chunk_words, tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_tracks::{Track, Tracker};
 use crate::faces::FaceDetector;
@@ -227,6 +227,54 @@ pub struct VerticalPreview {
     pub output_height: u32,
     /// Per clip: its pieces in playback order.
     pub clips: Vec<Vec<PreviewPiece>>,
+    /// Per clip: caption chunks on the source timeline (empty without
+    /// captions), as the export burns them in.
+    pub captions: Vec<Vec<Vec<PreviewWord>>>,
+}
+
+/// A caption word on the source timeline.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct PreviewWord {
+    #[specta(type = specta_typescript::Number)]
+    pub start: f64,
+    #[specta(type = specta_typescript::Number)]
+    pub end: f64,
+    pub text: String,
+}
+
+impl VerticalPreview {
+    /// Add caption chunks for each clip from `words` (source timeline): the
+    /// words shown in its pieces, chunked like the export.
+    pub(crate) fn with_captions(mut self, words: &[TimedWord], style: &CaptionStyle) -> Self {
+        self.captions = self
+            .clips
+            .iter()
+            .map(|pieces| {
+                let shown: Vec<TimedWord> = words
+                    .iter()
+                    .filter(|word| {
+                        let middle = (word.start + word.end) / 2.0;
+                        pieces.iter().any(|p| p.start <= middle && middle < p.end)
+                    })
+                    .cloned()
+                    .collect();
+                chunk_words(&shown, style)
+                    .into_iter()
+                    .map(|chunk| {
+                        chunk
+                            .into_iter()
+                            .map(|word| PreviewWord {
+                                start: word.start,
+                                end: word.end,
+                                text: word.text,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        self
+    }
 }
 
 impl From<&VerticalPlan> for VerticalPreview {
@@ -259,6 +307,7 @@ impl From<&VerticalPlan> for VerticalPreview {
                 .iter()
                 .map(|pieces| pieces.iter().map(piece).collect())
                 .collect(),
+            captions: Vec::new(),
         }
     }
 }
@@ -746,6 +795,35 @@ mod tests {
         });
         assert!(calm.iter().all(|p| p.zoom == 1.0));
         assert_eq!(calm[2].transition, Transition::Fade);
+    }
+
+    #[test]
+    fn the_preview_carries_caption_chunks_for_what_is_shown() {
+        let plan = VerticalPlan {
+            source_size: (1280, 720),
+            fps: 25.0,
+            has_audio: true,
+            clips: vec![vec![piece(10.0, 12.0), piece(13.0, 14.0)]],
+            bindings: Vec::new(),
+        };
+        let word = |start: f64, end: f64, text: &str| TimedWord {
+            start,
+            end,
+            text: text.to_string(),
+        };
+        let words = [
+            word(10.0, 10.4, "Erst"),
+            word(10.4, 10.8, "das."),
+            // Cut away by tightening: not captioned.
+            word(12.2, 12.6, "weg"),
+            word(13.1, 13.5, "Dann"),
+        ];
+        let preview = VerticalPreview::from(&plan).with_captions(&words, &CaptionStyle::default());
+        let chunks: Vec<Vec<&str>> = preview.captions[0]
+            .iter()
+            .map(|chunk| chunk.iter().map(|w| w.text.as_str()).collect())
+            .collect();
+        assert_eq!(chunks, [vec!["Erst", "das."], vec!["Dann"]]);
     }
 
     #[test]

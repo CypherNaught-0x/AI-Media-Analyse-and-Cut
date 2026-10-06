@@ -33,7 +33,7 @@ import {
     type VerticalPreview,
     type VerticalRequest,
 } from '../bindings';
-import { videoBox, type VideoBox } from '../utils/verticalFraming';
+import { captionAt, videoBox, type ShownWord, type VideoBox } from '../utils/verticalFraming';
 import { errorMessage } from '../utils/appError';
 
 interface Props {
@@ -213,6 +213,7 @@ const previewing = ref<{ id: string; rangeIndex: number; ranges: PlaybackRange[]
 const mediaSrc = computed(() => (props.hasMediaFile ? mediaUrl(props.inputPath) : ''));
 const prepared = ref(new Map<string, PreparedPreview>());
 const verticalBox = ref<VideoBox | null>(null);
+const verticalCaption = ref<ShownWord[] | null>(null);
 let frameRequest: number | null = null;
 
 function previewSignature(clip: ShortClip): string {
@@ -246,6 +247,8 @@ function updateVerticalBox() {
     const plan = verticalPlan.value;
     verticalBox.value =
         video && plan ? videoBox(plan, plan.clips[0], video.currentTime, VERTICAL_FRAME) : null;
+    verticalCaption.value =
+        video && plan ? captionAt(plan.captions[0] ?? [], video.currentTime) : null;
 }
 
 function followFrames() {
@@ -361,6 +364,7 @@ function stopPreview() {
     player.value?.pause();
     stopFollowingFrames();
     verticalBox.value = null;
+    verticalCaption.value = null;
 }
 
 function onTimeUpdate() {
@@ -718,6 +722,19 @@ async function openExportFolder() {
                         data-testid="clips-player"
                         @timeupdate="onTimeUpdate"
                     />
+                    <!-- Captions as the export burns them in (68% down). -->
+                    <p
+                        v-if="verticalBox && verticalCaption"
+                        class="vertical-caption pointer-events-none absolute inset-x-3 text-center"
+                        data-testid="clips-player-caption"
+                    >
+                        <span
+                            v-for="(word, i) in verticalCaption"
+                            :key="i"
+                            :class="word.active ? 'text-[#ffd60a]' : 'text-white'"
+                            >{{ word.text }}{{ i < verticalCaption.length - 1 ? ' ' : '' }}</span
+                        >
+                    </p>
                 </div>
             </div>
 
@@ -899,3 +916,20 @@ async function openExportFolder() {
         </div>
     </div>
 </template>
+
+<style scoped>
+.vertical-caption {
+    top: 68%;
+    transform: translateY(-50%);
+    font-family: Poppins, ui-sans-serif, system-ui, sans-serif;
+    font-size: 23px;
+    font-weight: 800;
+    line-height: 1.15;
+    /* A dark outline and soft shadow, like the burned-in captions. */
+    text-shadow:
+        0 0 3px #000,
+        0 0 3px #000,
+        0 0 3px #000,
+        1px 1px 2px rgb(0 0 0 / 0.6);
+}
+</style>

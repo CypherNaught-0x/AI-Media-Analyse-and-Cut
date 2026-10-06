@@ -986,7 +986,7 @@ async fn plan_vertical_clips(
     let analysis = analysis.inner().clone();
     run_blocking(move || {
         let run = Some((run_id, &run_control));
-        let (ranges, _) = prepare_vertical(&request, &input, run)?;
+        let (ranges, words) = prepare_vertical(&request, &input, run)?;
         vertical::plan_vertical(
             &input,
             &ranges,
@@ -1002,7 +1002,14 @@ async fn plan_vertical_clips(
                 )
             },
         )
-        .map(|plan| vertical::VerticalPreview::from(&plan))
+        .map(|plan| {
+            let preview = vertical::VerticalPreview::from(&plan);
+            if request.captions {
+                preview.with_captions(&words, &captions::CaptionStyle::default())
+            } else {
+                preview
+            }
+        })
     })
     .await
     .map_err(AppError::from)

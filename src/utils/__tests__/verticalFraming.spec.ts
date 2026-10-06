@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PreviewPiece } from '../../bindings';
-import { cropAt, pieceAt, videoBox } from '../verticalFraming';
+import { captionAt, cropAt, pieceAt, videoBox } from '../verticalFraming';
 
 const SOURCE = { width: 1280, height: 720 };
 const PORTRAIT = 9 / 16;
@@ -66,5 +66,25 @@ describe('verticalFraming', () => {
         expect(box.height).toBeCloseTo(151.875);
         expect(box.left).toBeCloseTo(0);
         expect(box.top).toBeCloseTo((480 - 151.875) / 2);
+    });
+
+    it('shows the caption chunk being spoken with its active word', () => {
+        const word = (start: number, end: number, text: string) => ({ start, end, text });
+        const chunks = [
+            [word(10, 10.4, 'Erst'), word(10.5, 10.9, 'das.')],
+            [word(11.0, 11.4, 'Dann')],
+            [word(20, 20.5, 'Später')],
+        ];
+        expect(captionAt(chunks, 10.6)).toEqual([
+            { text: 'Erst', active: false },
+            { text: 'das.', active: true },
+        ]);
+        // Until the next chunk starts.
+        expect(captionAt(chunks, 10.95)?.[1].text).toBe('das.');
+        expect(captionAt(chunks, 11.1)?.[0].text).toBe('Dann');
+        // Held briefly after the last word, then gone.
+        expect(captionAt(chunks, 11.6)?.[0].text).toBe('Dann');
+        expect(captionAt(chunks, 12.5)).toBeNull();
+        expect(captionAt([], 10)).toBeNull();
     });
 });

@@ -1,4 +1,4 @@
-import type { PreviewKey, PreviewPiece, VerticalPreview } from '../bindings';
+import type { PreviewKey, PreviewPiece, PreviewWord, VerticalPreview } from '../bindings';
 
 /** A crop of the source, in source pixels. */
 export interface CropRect {
@@ -97,4 +97,35 @@ export function videoBox(
         left: -crop.x * scale,
         top: -crop.y * scale,
     };
+}
+
+/** A caption word as shown: highlighted while it is being spoken. */
+export interface ShownWord {
+    text: string;
+    active: boolean;
+}
+
+/** Captions stay up this long (seconds) after their last word... */
+const CAPTION_HOLD = 0.4;
+
+/**
+ * The caption chunk on screen at source time `time`, with the word being
+ * spoken highlighted (the last one that has started), as the export burns
+ * it in. A chunk stays up after its last word until the next one starts,
+ * at most `CAPTION_HOLD`.
+ */
+export function captionAt(chunks: PreviewWord[][], time: number): ShownWord[] | null {
+    const index = chunks.findIndex((chunk, i) => {
+        const start = chunk[0]?.start ?? Infinity;
+        const last = chunk[chunk.length - 1]?.end ?? -Infinity;
+        const next = chunks[i + 1]?.[0]?.start ?? Infinity;
+        return start <= time && time < Math.min(last + CAPTION_HOLD, next);
+    });
+    if (index === -1) return null;
+    const chunk = chunks[index];
+    let active = 0;
+    chunk.forEach((word, i) => {
+        if (word.start <= time) active = i;
+    });
+    return chunk.map((word, i) => ({ text: word.text, active: i === active }));
 }
