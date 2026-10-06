@@ -3,7 +3,9 @@
 //! The LLM sees the transcript as numbered lines (`S12 [03:21-03:27] Speaker 1:
 //! ...`) and answers, under a JSON schema, with segment IDs rather than
 //! timestamps. Every clip therefore starts and ends on a real segment
-//! boundary, and a made-up timestamp can't occur. Responses are validated;
+//! boundary, and a made-up timestamp can't occur; the one exception is the
+//! opening, which moves onto the hook line's first word when the segment
+//! opens with the end of the sentence before. Responses are validated;
 //! anything malformed is dropped rather than guessed at.
 //!
 //! Long transcripts are handled map-reduce style: overlapping windows are
@@ -114,6 +116,8 @@ pub(crate) struct Line {
     speaker: String,
     text: String,
     word_count: usize,
+    /// Start time and text of each timed word.
+    words: Vec<(f64, String)>,
 }
 
 pub(crate) fn lines_of(transcript: &[TranscriptSegment]) -> Result<Vec<Line>> {
@@ -136,6 +140,15 @@ pub(crate) fn lines_of(transcript: &[TranscriptSegment]) -> Result<Vec<Line>> {
                     .as_ref()
                     .map(Vec::len)
                     .unwrap_or_else(|| segment.text.split_whitespace().count()),
+                words: segment
+                    .words
+                    .iter()
+                    .flatten()
+                    .filter_map(|word| {
+                        let start = parse_timestamp_to_seconds_raw(&word.start).ok()?;
+                        Some((start, word.text.clone()))
+                    })
+                    .collect(),
             })
         })
         .collect()
@@ -424,6 +437,8 @@ fn validate(clip: RawClip, lines: &[Line], request: &ClipRequest) -> Result<Clip
         }];
     }
 
+    align_to_hook(&mut ranges, lines, &clip.hook_line);
+
     let duration: f64 = ranges.iter().map(|range| range.end - range.start).sum();
     let (min, max) = (
         request.min_seconds * (1.0 - DURATION_TOLERANCE),
@@ -463,6 +478,87 @@ fn validate(clip: RawClip, lines: &[Line], request: &ClipRequest) -> Result<Clip
         duration,
         looped: request.looped,
     })
+}
+
+/// Hook words that must match in a row to find the hook in a segment.
+const HOOK_MATCH_WORDS: usize = 3;
+
+/// A word compared loosely: lower case, letters and digits only.
+fn loose(word: &str) -> String {
+    word.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Leading hook words that may differ from the transcript (the LLM writes
+/// "60%" where the transcript says "60 Prozent").
+const HOOK_SKIP_WORDS: usize = 2;
+
+/// Where `hook` starts inside `line` (seconds), if it starts after the
+/// line's first word: `HOOK_MATCH_WORDS` of its first words found in a row
+/// among the line's, if need be from its second or third word on (then the
+/// start goes back to its first word, if that is near).
+fn hook_start(line: &Line, hook: &str) -> Option<f64> {
+    let hook: Vec<String> = hook
+        .split_whitespace()
+        .map(loose)
+        .filter(|w| !w.is_empty())
+        .collect();
+    let words: Vec<(f64, String)> = line
+        .words
+        .iter()
+        .map(|(start, text)| (*start, loose(text)))
+        .filter(|(_, w)| !w.is_empty())
+        .collect();
+    for skip in 0..=HOOK_SKIP_WORDS.min(hook.len().saturating_sub(1)) {
+        let rest = &hook[skip..];
+        let need = rest.len().min(HOOK_MATCH_WORDS);
+        if need == 0 || (skip > 0 && need < HOOK_MATCH_WORDS) || words.len() < need {
+            break;
+        }
+        let Some(found) = (0..=words.len().saturating_sub(need)).find(|&k| {
+            words[k..k + need]
+                .iter()
+                .zip(rest)
+                .all(|((_, word), hook)| word == hook)
+        }) else {
+            continue;
+        };
+        // Back to where the hook's first word is, else as many words back
+        // as were skipped.
+        let first = (found.saturating_sub(skip + 2)..=found)
+            .rev()
+            .find(|&k| words[k].1.starts_with(&hook[0]))
+            .unwrap_or(found.saturating_sub(skip));
+        return (first > 0).then(|| words[first].0);
+    }
+    None
+}
+
+/// Segments are transcription chunks, not sentences, so the first one may
+/// open with the end of the previous sentence. Where the opening segment
+/// contains the hook line after its start, the clip starts on the hook; the
+/// skipped words go to the range that ends where the opening segment starts
+/// (a looped clip's closing, which then leads into the hook), or are cut.
+fn align_to_hook(ranges: &mut [ClipRange], lines: &[Line], hook: &str) {
+    let Some(first) = ranges.first() else {
+        return;
+    };
+    let segment = first.first_segment;
+    let Some(start) = hook_start(&lines[segment as usize], hook) else {
+        return;
+    };
+    if start <= first.start || start >= first.end {
+        return;
+    }
+    ranges[0].start = start;
+    if let Some(before) = ranges[1..]
+        .iter_mut()
+        .find(|range| range.last_segment + 1 == segment)
+    {
+        before.end = start;
+    }
 }
 
 fn signals(ranges: &[ClipRange], lines: &[Line], duration: f64) -> ClipSignals {
@@ -649,6 +745,106 @@ mod tests {
             "ranges": ranges,
             "ratings": { "hook": hook, "standalone": 7, "emotion": 6, "info": 5, "loop_continuity": 8 }
         })
+    }
+
+    /// A segment whose words are spread evenly over it.
+    fn worded(start: f64, end: f64, text: &str) -> TranscriptSegment {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let step = (end - start) / words.len() as f64;
+        let time = |t: f64| format!("{:02}:{:06.3}", (t / 60.0) as u32, t % 60.0);
+        TranscriptSegment {
+            start: time(start),
+            end: time(end),
+            speaker: "Annette".into(),
+            text: text.into(),
+            words: Some(
+                words
+                    .iter()
+                    .enumerate()
+                    .map(|(i, word)| crate::video::TranscriptWord {
+                        start: time(start + i as f64 * step),
+                        end: time(start + (i + 1) as f64 * step),
+                        text: (*word).into(),
+                        speaker: None,
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    /// The PODIUM case: the opener's segment starts with the end of the
+    /// sentence before the hook.
+    fn survey_transcript() -> Vec<TranscriptSegment> {
+        vec![
+            worded(0.0, 10.0, "Wir haben sehr viele Ärzte in den Systemen"),
+            worded(10.0, 20.0, "wo das noch mehr genutzt wird. Es gibt eine Umfrage aktuell:"),
+            worded(
+                20.0,
+                30.0,
+                "von vor zwei Monaten. 60 Prozent aller Ärzte nutzen Schatten KI einfach als Zugang.",
+            ),
+        ]
+    }
+
+    fn hooked(ranges: Value, hook_line: &str) -> String {
+        let mut clip = clip(ranges, 8);
+        clip["hook_line"] = json!(hook_line);
+        response(json!([clip]))
+    }
+
+    #[test]
+    fn a_loop_opens_on_its_hook_and_the_closing_keeps_the_words_before_it() {
+        let lines = lines_of(&survey_transcript()).unwrap();
+        let parsed = parse_candidates(
+            &hooked(
+                json!([
+                    { "from": "S2", "to": "S2", "role": "loop_opener" },
+                    { "from": "S0", "to": "S0", "role": "body" },
+                    { "from": "S1", "to": "S1", "role": "closing" }
+                ]),
+                "60 Prozent aller Ärzte nutzen Schatten-KI einfach als Zugang.",
+            ),
+            &lines,
+            &request(true, false),
+        )
+        .unwrap();
+        // "60" is the 5th of 14 words in 20-30 s.
+        let hook = 20.0 + 4.0 * 10.0 / 14.0;
+        let ranges = &parsed[0].ranges;
+        assert!((ranges[0].start - hook).abs() < 1e-3, "{ranges:?}");
+        assert_eq!(ranges[0].end, 30.0);
+        // "…Es gibt eine Umfrage aktuell: von vor zwei Monaten." -> hook.
+        assert!((ranges[2].end - hook).abs() < 1e-3, "{ranges:?}");
+        assert_eq!((ranges[1].start, ranges[1].end), (0.0, 10.0));
+        assert!((parsed[0].duration - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_clip_drops_the_fragment_before_its_hook_and_keeps_a_hook_at_the_start() {
+        let lines = lines_of(&survey_transcript()).unwrap();
+        let mut request = request(false, false);
+        request.min_seconds = 15.0;
+        let parse = |hook: &str| {
+            parse_candidates(
+                &hooked(json!([{ "from": "S1", "to": "S2", "role": "body" }]), hook),
+                &lines,
+                &request,
+            )
+            .unwrap()
+            .remove(0)
+            .ranges
+        };
+        // The hook starts mid-segment: "Es" is the 7th of 11 words in 10-20 s.
+        let ranges = parse("Es gibt eine Umfrage aktuell");
+        assert!((ranges[0].start - (10.0 + 6.0 * 10.0 / 11.0)).abs() < 1e-3);
+        // The LLM's "60%" for the transcript's "60 Prozent".
+        let loop_lines = lines_of(&survey_transcript()).unwrap();
+        let start = hook_start(&loop_lines[2], "60% aller Ärzte nutzen Schatten-KI").unwrap();
+        assert!((start - (20.0 + 4.0 * 10.0 / 14.0)).abs() < 1e-3, "{start}");
+        // At the segment start, or not found: unchanged.
+        assert_eq!(parse("Wo das noch mehr genutzt wird.")[0].start, 10.0);
+        assert_eq!(parse("Something else entirely")[0].start, 10.0);
     }
 
     #[test]
