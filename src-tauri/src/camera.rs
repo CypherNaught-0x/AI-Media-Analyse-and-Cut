@@ -185,6 +185,15 @@ fn absorb_short_runs(choices: &mut [Choice], times: &[f64], tracks: &[Track], mi
         };
         let before = position.checked_sub(1).map(|p| choices[all_runs[p].2 - 1]);
         let after = all_runs.get(position + 1).map(|run| run.0);
+        // A sample or two at a range edge (a range starting just before the
+        // first face sample of a new shot) joins its neighbour as is.
+        let at_edge = position == 0 || position + 1 == all_runs.len();
+        if at_edge && end - first <= 2 {
+            if let Some(neighbour) = before.or(after) {
+                choices[first..end].fill(neighbour);
+                continue;
+            }
+        }
         if let Some(replacement) = [before, after].into_iter().flatten().find(|&c| covers(c)) {
             choices[first..end].fill(replacement);
         }
@@ -647,6 +656,20 @@ mod tests {
         };
         assert_eq!((keys[0].time, keys[0].center_x), (0.0, 260.0));
         assert_eq!(plan[1].end, 10.0);
+    }
+
+    #[test]
+    fn a_face_appearing_just_after_the_range_start_is_framed_from_the_start() {
+        // The face's first sample is 0.1 s in (the shot starts just before).
+        let tracks = [track(0, (10.1, 15.0), |_| (200.0, 100.0))];
+        let keys = plan(
+            (10.0, 15.0),
+            &tracks,
+            &[bind(0, "A")],
+            &[turn(10.0, 15.0, "A")],
+        );
+        assert_eq!(keys[0].time, 0.0);
+        assert_eq!(keys[0].center_x, 260.0);
     }
 
     #[test]
