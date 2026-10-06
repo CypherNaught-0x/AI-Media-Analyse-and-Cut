@@ -114,40 +114,171 @@ fn current_speaker(turns: &[SpeechTurn], time: f64, bridge: f64) -> Option<&str>
     None
 }
 
+/// One sample of the planner: a source time in one stretch.
+#[derive(Debug, Clone, Copy)]
+struct Sample {
+    time: f64,
+    stretch: usize,
+}
+
+/// The faces of a group of stretches joined by jump cuts. Each track lies
+/// in one stretch; the tracks of one face on either side of a cut are the
+/// same person, so the camera can stay on them across it.
+struct Faces {
+    tracks: Vec<Track>,
+    stretch: Vec<usize>,
+    person: Vec<usize>,
+}
+
+impl Faces {
+    /// `stretches`: each one's range and the tracks analysed around it.
+    fn new(stretches: &[((f64, f64), &[Track])]) -> Self {
+        let mut faces = Faces {
+            tracks: Vec::new(),
+            stretch: Vec::new(),
+            person: Vec::new(),
+        };
+        // Per stretch: (index in `faces`, the whole analysed track).
+        let mut previous: Vec<(usize, &Track)> = Vec::new();
+        for (index, &((start, end), tracks)) in stretches.iter().enumerate() {
+            let mut current = Vec::new();
+            for track in tracks {
+                // A sample beyond the edges still finds the nearest face.
+                let Some(clipped) = track.within(start - STEP, end + STEP) else {
+                    continue;
+                };
+                let position = faces.tracks.len();
+                faces.tracks.push(clipped);
+                faces.stretch.push(index);
+                faces.person.push(position);
+                current.push((position, track));
+            }
+            let mut taken = vec![false; previous.len()];
+            for &(position, track) in &current {
+                let found = previous
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| !taken[i])
+                    .filter_map(|(i, &(before, whole))| {
+                        let seam = (stretches[index - 1].0 .1, start);
+                        same_face(whole, &faces.tracks[before], track, seam).map(|d| (i, before, d))
+                    })
+                    .min_by(|a, b| a.2.total_cmp(&b.2));
+                if let Some((i, before, _)) = found {
+                    taken[i] = true;
+                    faces.person[position] = faces.person[before];
+                }
+            }
+            previous = current;
+        }
+        faces
+    }
+
+    /// The tracks on screen at `sample`.
+    fn on_screen(&self, sample: Sample) -> Vec<usize> {
+        (0..self.tracks.len())
+            .filter(|&t| self.stretch[t] == sample.stretch && visible(&self.tracks[t], sample.time))
+            .collect()
+    }
+
+    /// `person`'s track on screen at `sample`.
+    fn track_of(&self, person: usize, sample: Sample) -> Option<usize> {
+        self.on_screen(sample)
+            .into_iter()
+            .find(|&t| self.person[t] == person)
+    }
+
+    /// Where the crop should be to frame `person` at `sample`: from their
+    /// nearest face in the sample's stretch.
+    fn target(
+        &self,
+        person: usize,
+        sample: Sample,
+        frame: &Frame,
+        settings: &CameraSettings,
+    ) -> Option<(f64, f64, f64)> {
+        (0..self.tracks.len())
+            .filter(|&t| self.person[t] == person && self.stretch[t] == sample.stretch)
+            .map(|t| nearest(&self.tracks[t], sample.time))
+            .min_by(|a, b| {
+                (a.time - sample.time)
+                    .abs()
+                    .total_cmp(&(b.time - sample.time).abs())
+            })
+            .map(|observation| target(observation, frame, settings))
+    }
+}
+
+/// How far apart (in face heights) `before`'s face and `after`'s are, if
+/// they are the same face across the jump cut `seam` (end of one stretch,
+/// start of the next). `whole` is `before` as analysed, beyond its
+/// stretch: the analyses overlap around the cut, so the same face shows at
+/// the same times in both. Without that overlap, the faces either side of
+/// the cut must nearly coincide. A source cut ends tracks, so faces in
+/// another shot never match.
+fn same_face(whole: &Track, before: &Track, after: &Track, seam: (f64, f64)) -> Option<f64> {
+    let apart = |a: &Observation, b: &Observation| {
+        let (ax, ay) = a.face.center();
+        let (bx, by) = b.face.center();
+        f64::from((ax - bx).hypot(ay - by) / a.face.height.max(1.0))
+    };
+    let common: Vec<f64> = whole
+        .observations
+        .iter()
+        .filter(|o| after.start() <= o.time && o.time <= after.end())
+        .map(|o| (o, nearest(after, o.time)))
+        .filter(|(o, n)| (o.time - n.time).abs() < STEP / 2.0)
+        .map(|(o, n)| apart(o, n))
+        .collect();
+    if common.len() >= 3 {
+        let distance = median(common);
+        return (distance <= 0.25).then_some(distance);
+    }
+    // Faces on screen at the cut, about the same size and place.
+    let (last, first) = (before.observations.last()?, after.observations.first()?);
+    let size = f64::from(first.face.height / last.face.height.max(1.0));
+    let distance = apart(last, first);
+    (last.time >= seam.0 - 3.0 * STEP
+        && first.time <= seam.1 + 3.0 * STEP
+        && (0.8..=1.25).contains(&size)
+        && distance <= 0.35)
+        .then_some(distance)
+}
+
 /// What to show at each sample:
 /// 1. the speaker's (confidently bound, visible) face;
 /// 2. while someone else speaks: the only face on screen, or the whole shot;
 /// 3. in silence: the previous subject if still visible, else as in 2.
 fn choose(
-    times: &[f64],
-    tracks: &[Track],
+    samples: &[Sample],
+    faces: &Faces,
     bindings: &[Binding],
     turns: &[SpeechTurn],
     settings: &CameraSettings,
 ) -> Vec<Choice> {
     let mut previous = Choice::Fit;
-    times
+    samples
         .iter()
-        .map(|&time| {
-            let on_screen: Vec<usize> = (0..tracks.len())
-                .filter(|&index| visible(&tracks[index], time))
-                .collect();
-            let speaker = current_speaker(turns, time, settings.speech_bridge);
+        .map(|&sample| {
+            let on_screen = faces.on_screen(sample);
+            let speaker = current_speaker(turns, sample.time, settings.speech_bridge);
             let speaker_face = speaker.and_then(|speaker| {
                 bindings
                     .iter()
                     .filter(|b| b.speaker == speaker && b.affinity >= settings.min_affinity)
-                    .filter_map(|b| tracks.iter().position(|t| t.id == b.track))
-                    .find(|index| on_screen.contains(index))
+                    .find_map(|b| on_screen.iter().find(|&&t| faces.tracks[t].id == b.track))
+                    .map(|&t| faces.person[t])
             });
             let unsure = || match on_screen.as_slice() {
-                [only] => Choice::Face(*only),
+                [only] => Choice::Face(faces.person[*only]),
                 _ => Choice::Fit,
             };
             let choice = match (speaker_face, speaker, previous) {
-                (Some(face), _, _) => Choice::Face(face),
+                (Some(person), _, _) => Choice::Face(person),
                 (None, Some(_), _) => unsure(),
-                (None, None, Choice::Face(face)) if on_screen.contains(&face) => previous,
+                (None, None, Choice::Face(person)) if faces.track_of(person, sample).is_some() => {
+                    previous
+                }
                 (None, None, _) => unsure(),
             };
             previous = choice;
@@ -170,7 +301,7 @@ fn runs(choices: &[Choice]) -> Vec<(Choice, usize, usize)> {
 
 /// Give short runs to a neighbour that can show the whole run (a face on
 /// screen throughout, or the whole shot).
-fn absorb_short_runs(choices: &mut [Choice], times: &[f64], tracks: &[Track], min_hold: f64) {
+fn absorb_short_runs(choices: &mut [Choice], samples: &[Sample], faces: &Faces, min_hold: f64) {
     let min_samples = (min_hold / STEP).round() as usize;
     let all_runs = runs(choices);
     for (position, &(_, first, end)) in all_runs.iter().enumerate() {
@@ -178,9 +309,9 @@ fn absorb_short_runs(choices: &mut [Choice], times: &[f64], tracks: &[Track], mi
             continue;
         }
         let covers = |candidate: Choice| match candidate {
-            Choice::Face(track) => times[first..end]
+            Choice::Face(person) => samples[first..end]
                 .iter()
-                .all(|&time| visible(&tracks[track], time)),
+                .all(|&sample| faces.track_of(person, sample).is_some()),
             Choice::Fit => true,
         };
         let before = position.checked_sub(1).map(|p| choices[all_runs[p].2 - 1]);
@@ -294,25 +425,40 @@ pub(crate) fn listener_framing(
     ))
 }
 
-/// Crop keys following `track` over `times` (absolute), relative to
-/// `origin`, appended to `keys`.
+/// The camera path following `person` over `run` (consecutive samples,
+/// possibly across jump cuts): crop centres per sample, and one height.
 ///
 /// The camera is planned, not reactive: first the positions it holds (a
 /// new hold whenever the face leaves the dead zone), then the whole path is
 /// smoothed. Pans therefore begin before the subject has fully moved, ease in
-/// and out, and nearby moves merge into one.
+/// and out, and nearby moves merge into one. Across a jump cut the path
+/// simply continues, so both sides share their framing.
 fn follow(
-    keys: &mut Vec<CropKey>,
-    track: &Track,
-    times: &[f64],
-    origin: f64,
+    run: &[Sample],
+    person: usize,
+    faces: &Faces,
     frame: &Frame,
     aspect: f64,
     settings: &CameraSettings,
-) {
-    let targets: Vec<(f64, f64, f64)> = times
+) -> (Vec<(f64, f64)>, f64) {
+    let mut found: Vec<Option<(f64, f64, f64)>> = run
         .iter()
-        .map(|&time| target(nearest(track, time), frame, settings))
+        .map(|&sample| faces.target(person, sample, frame, settings))
+        .collect();
+    // A sample without the face (a run's edge) takes its neighbour's.
+    for i in 1..found.len() {
+        if found[i].is_none() {
+            found[i] = found[i - 1];
+        }
+    }
+    for i in (0..found.len().saturating_sub(1)).rev() {
+        if found[i].is_none() {
+            found[i] = found[i + 1];
+        }
+    }
+    let targets: Vec<(f64, f64, f64)> = found
+        .into_iter()
+        .map(|t| t.unwrap_or((0.0, frame.height / 2.0, frame.height)))
         .collect();
     // One zoom per run keeps the subject's size steady.
     let height = median(targets.iter().map(|t| t.2).collect());
@@ -340,120 +486,129 @@ fn follow(
         })
         .collect();
 
-    // 2. Smooth, and key only where the camera moves (plus where it stops).
-    let path = smooth(&holds, settings.pan_sigma / STEP);
-    const STILL: f64 = 0.05;
-    let mut moving = false;
-    for (index, &(x, y)) in path.iter().enumerate() {
-        let step = index.checked_sub(1).map_or(f64::INFINITY, |previous| {
-            (x - path[previous].0)
-                .abs()
-                .max((y - path[previous].1).abs())
-        });
-        let moves = step > STILL;
-        if index == 0 || moves || moving {
-            keys.push(CropKey {
-                time: times[index] - origin,
-                center_x: x,
-                center_y: y,
-                height,
-            });
-        }
-        moving = moves && index > 0;
-    }
+    // 2. Smooth.
+    (smooth(&holds, settings.pan_sigma / STEP), height)
 }
 
-/// The framing of the source range `range`, as consecutive pieces covering
-/// it. `tracks` and `bindings` come from analysing the range; coordinates
-/// are in `frame`'s pixels.
+/// The framing of a group of source ranges played back to back (`stretches`:
+/// each range with the tracks analysed around it; consecutive ones are
+/// joined by jump cuts), per range as consecutive pieces covering it.
+/// Coordinates are in `frame`'s pixels.
+///
+/// The group is planned as one shot: a subject seen on both sides of a cut
+/// keeps their framing, zoom and any pan across it, so jump cuts don't jolt
+/// the picture and a morph can hide them.
 pub(crate) fn plan_camera(
-    range: (f64, f64),
-    tracks: &[Track],
+    stretches: &[((f64, f64), &[Track])],
     bindings: &[Binding],
     turns: &[SpeechTurn],
     frame: &Frame,
     aspect: f64,
     settings: &CameraSettings,
-) -> Vec<Piece> {
-    let (start, end) = range;
-    let times: Vec<f64> = (0..)
-        .map(|i| start + f64::from(i) * STEP)
-        .take_while(|&time| time < end)
+) -> Vec<Vec<Piece>> {
+    let faces = Faces::new(stretches);
+    let samples: Vec<Sample> = stretches
+        .iter()
+        .enumerate()
+        .flat_map(|(stretch, &((start, end), _))| {
+            (0..)
+                .map(move |i| start + f64::from(i) * STEP)
+                .take_while(move |&time| time < end)
+                .map(move |time| Sample { time, stretch })
+        })
         .collect();
-    if times.is_empty() {
-        return vec![Piece {
-            start,
-            end,
-            framing: Framing::Fit,
-        }];
-    }
-    let mut choices = choose(&times, tracks, bindings, turns, settings);
-    absorb_short_runs(&mut choices, &times, tracks, settings.min_hold);
+    let mut plans: Vec<Vec<Piece>> = vec![Vec::new(); stretches.len()];
+    let mut choices = choose(&samples, &faces, bindings, turns, settings);
+    absorb_short_runs(&mut choices, &samples, &faces, settings.min_hold);
 
-    // Pieces change on frame boundaries, so trims and audio stay in sync.
-    let snap = |time: f64| start + ((time - start) * frame.fps).round() / frame.fps;
-    let mut pieces: Vec<Piece> = Vec::new();
+    const STILL: f64 = 0.05;
     for (choice, first, run_end) in runs(&choices) {
-        let run_start = if first == 0 {
-            start
-        } else {
-            snap(times[first])
+        let path = match choice {
+            Choice::Face(person) => Some(follow(
+                &samples[first..run_end],
+                person,
+                &faces,
+                frame,
+                aspect,
+                settings,
+            )),
+            Choice::Fit => None,
         };
-        match choice {
-            Choice::Fit => pieces.push(Piece {
-                start: run_start,
-                end,
-                framing: Framing::Fit,
-            }),
-            Choice::Face(track) => {
-                // Consecutive faces share a piece, with a hard switch.
-                let continuing = matches!(
-                    pieces.last(),
-                    Some(Piece {
-                        framing: Framing::Follow(_),
-                        ..
-                    })
-                );
-                if !continuing {
-                    pieces.push(Piece {
-                        start: run_start,
-                        end,
-                        framing: Framing::Follow(Vec::new()),
-                    });
+        let mut moving = false;
+        for index in first..run_end {
+            let sample = samples[index];
+            let ((start, end), _) = stretches[sample.stretch];
+            let pieces = &mut plans[sample.stretch];
+            let opens_stretch = pieces.is_empty();
+            // Pieces change on frame boundaries, so trims and audio stay in
+            // sync.
+            let time = if opens_stretch {
+                start
+            } else if index == first {
+                start + ((sample.time - start) * frame.fps).round() / frame.fps
+            } else {
+                sample.time
+            };
+            let follows = matches!(
+                pieces.last(),
+                Some(Piece {
+                    framing: Framing::Follow(_),
+                    ..
+                })
+            );
+            let opens_piece = opens_stretch || (index == first && (path.is_none() || !follows));
+            if opens_piece {
+                // The previous piece ends where this one starts.
+                if let Some(last) = pieces.last_mut() {
+                    last.end = time;
                 }
-                let piece = pieces.last_mut().expect("just pushed");
-                let origin = piece.start;
-                let Framing::Follow(keys) = &mut piece.framing else {
-                    unreachable!("a follow piece");
-                };
-                // Hard switch: hold the previous framing until just before.
+                pieces.push(Piece {
+                    start: time,
+                    end,
+                    framing: if path.is_some() {
+                        Framing::Follow(Vec::new())
+                    } else {
+                        Framing::Fit
+                    },
+                });
+            }
+            let Some((path, height)) = &path else {
+                continue;
+            };
+            let piece = pieces.last_mut().expect("just pushed");
+            let origin = piece.start;
+            let Framing::Follow(keys) = &mut piece.framing else {
+                unreachable!("a follow piece");
+            };
+            // Hard switch between faces: hold the previous framing until
+            // just before.
+            if index == first && !opens_piece {
                 if let Some(&last) = keys.last() {
                     keys.push(CropKey {
-                        time: (run_start - origin - 1e-3).max(last.time),
+                        time: (time - origin - 1e-3).max(last.time),
                         ..last
                     });
                 }
-                let mut run_times = times[first..run_end].to_vec();
-                run_times[0] = run_start;
-                follow(
-                    keys,
-                    &tracks[track],
-                    &run_times,
-                    origin,
-                    frame,
-                    aspect,
-                    settings,
-                );
             }
-        }
-        // The previous piece ends where this one starts.
-        let count = pieces.len();
-        if count >= 2 {
-            let next_start = pieces[count - 1].start;
-            pieces[count - 2].end = next_start;
+            // Key only where the camera moves (plus where it stops).
+            let (x, y) = path[index - first];
+            let step = (index > first).then(|| {
+                let (px, py) = path[index - first - 1];
+                (x - px).abs().max((y - py).abs())
+            });
+            let moves = step.is_none_or(|step| step > STILL);
+            if opens_piece || index == first || moves || moving {
+                keys.push(CropKey {
+                    time: time - origin,
+                    center_x: x,
+                    center_y: y,
+                    height: *height,
+                });
+            }
+            moving = moves && index > first;
         }
     }
-    pieces
+    plans
 }
 
 #[cfg(test)]
@@ -529,14 +684,14 @@ mod tests {
         turns: &[SpeechTurn],
     ) -> Vec<Piece> {
         plan_camera(
-            range,
-            tracks,
+            &[(range, tracks)],
             bindings,
             turns,
             &FRAME,
             PORTRAIT,
             &CameraSettings::default(),
         )
+        .remove(0)
     }
 
     /// The keys of a plan that follows faces throughout.
@@ -755,6 +910,117 @@ mod tests {
             &CameraSettings::default()
         )
         .is_none());
+    }
+
+    /// Plans `stretches` (ranges with their tracks) as one group of jump
+    /// cuts; each stretch must come out as one followed piece.
+    fn group_keys(
+        stretches: &[((f64, f64), &[Track])],
+        bindings: &[Binding],
+        turns: &[SpeechTurn],
+    ) -> Vec<Vec<CropKey>> {
+        plan_camera(
+            stretches,
+            bindings,
+            turns,
+            &FRAME,
+            PORTRAIT,
+            &CameraSettings::default(),
+        )
+        .into_iter()
+        .zip(stretches)
+        .map(|(pieces, (range, _))| {
+            assert_eq!(pieces.len(), 1, "{pieces:?}");
+            assert_eq!((pieces[0].start, pieces[0].end), *range);
+            match &pieces[0].framing {
+                Framing::Follow(keys) => keys.clone(),
+                Framing::Fit => panic!("expected a followed face"),
+            }
+        })
+        .collect()
+    }
+
+    /// The same face analysed around two ranges (each with its margins),
+    /// at `position(time)` with `size(time)`.
+    fn analysed_twice(
+        ranges: [(f64, f64); 2],
+        position: impl Fn(f64) -> (f32, f32) + Copy,
+        size: impl Fn(f64) -> f32,
+    ) -> [Track; 2] {
+        [0, 1].map(|i| {
+            let mut t = track(i, (ranges[i].0 - 2.0, ranges[i].1 + 2.0), position);
+            for o in &mut t.observations {
+                let (x, y) = position(o.time);
+                o.face = face(x, y, size(o.time));
+            }
+            t
+        })
+    }
+
+    #[test]
+    fn a_jump_cut_keeps_the_framing() {
+        // Drifting and leaning in a little: each side alone would get its
+        // own position and zoom.
+        let ranges = [(0.0, 3.0), (3.5, 6.5)];
+        let [a, b] = analysed_twice(
+            ranges,
+            |t| (200.0 + 3.0 * t as f32, 100.0),
+            |t| 120.0 + 2.0 * t as f32,
+        );
+        let keys = group_keys(
+            &[(ranges[0], &[a]), (ranges[1], &[b])],
+            &[bind(0, "A"), bind(1, "A")],
+            &[turn(0.0, 7.0, "A")],
+        );
+        let (before, after) = (keys[0].last().unwrap(), keys[1][0]);
+        assert_eq!(after.time, 0.0);
+        assert_eq!(
+            (before.center_x, before.center_y, before.height),
+            (after.center_x, after.center_y, after.height),
+            "{keys:?}"
+        );
+    }
+
+    #[test]
+    fn a_pan_carries_on_across_a_jump_cut() {
+        // Moves 200 px right just before the cut.
+        let ranges = [(0.0, 5.0), (5.4, 10.0)];
+        let [a, b] = analysed_twice(
+            ranges,
+            |t| (if t < 4.8 { 200.0 } else { 400.0 }, 100.0),
+            |_| 120.0,
+        );
+        let keys = group_keys(
+            &[(ranges[0], &[a]), (ranges[1], &[b])],
+            &[bind(0, "A"), bind(1, "A")],
+            &[turn(0.0, 10.0, "A")],
+        );
+        let (before, after) = (keys[0].last().unwrap(), keys[1][0]);
+        // Mid-pan at the cut, and the pan picks up where it was.
+        assert!(
+            before.center_x > 270.0 && before.center_x < 450.0,
+            "{keys:?}"
+        );
+        assert!(
+            (after.center_x - before.center_x).abs() < 40.0,
+            "{before:?} {after:?}"
+        );
+        assert!((keys[1].last().unwrap().center_x - 460.0).abs() < 5.0);
+    }
+
+    #[test]
+    fn another_shot_after_a_jump_cut_is_framed_afresh() {
+        // A source cut in the gap: the tracks end and start there, and the
+        // face sits elsewhere in the new shot.
+        let a = track(0, (-2.0, 3.2), |_| (200.0, 100.0));
+        let b = track(1, (3.2, 8.0), |_| (700.0, 100.0));
+        let keys = group_keys(
+            &[((0.0, 3.0), &[a]), ((3.5, 6.0), &[b])],
+            &[bind(0, "A"), bind(1, "A")],
+            &[turn(0.0, 7.0, "A")],
+        );
+        assert!(keys[0].iter().all(|k| k.center_x == 260.0), "{keys:?}");
+        assert!(keys[1].iter().all(|k| k.center_x == 760.0), "{keys:?}");
     }
 
     #[test]
