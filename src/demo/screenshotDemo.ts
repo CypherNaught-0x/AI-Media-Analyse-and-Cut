@@ -208,6 +208,15 @@ export function setupDemoMode() {
                     face(0.75, '#60a5fa', 'Speaker 2'),
                 ];
             }
+            case 'suggest_clip_cuts': {
+                // One aside per clip, a few words after its hook.
+                const { clips } = args as { clips: { words: unknown[] }[] };
+                return clips.map((clip) =>
+                    clip.words.length > 12
+                        ? [{ from: 8, to: 10, reason: 'Aside that repeats the point' }]
+                        : [],
+                );
+            }
             case 'export_vertical_clips':
                 return null;
             case 'tighten_clips':

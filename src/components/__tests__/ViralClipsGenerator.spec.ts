@@ -323,6 +323,61 @@ describe('ViralClipsGenerator', () => {
         });
     });
 
+    it('auto-edits new clips when the toggle is on, keeping them if that fails', async () => {
+        const defaultInvoke = vi.mocked(invoke).getMockImplementation()!;
+        vi.mocked(invoke).mockImplementation((command, args) => {
+            if (command === 'suggest_clip_cuts')
+                return Promise.resolve([[{ from: 1, to: 1, reason: 'Wiederholung' }]]);
+            return defaultInvoke(command, args);
+        });
+        const wrapper = mountWith({ autoEdit: true });
+        await wrapper.get('[data-testid="clips-generate"]').trigger('click');
+        await flushPromises();
+
+        const call = vi
+            .mocked(invoke)
+            .mock.calls.find(([command]) => command === 'suggest_clip_cuts');
+        expect(call?.[1]).toMatchObject({
+            clips: [
+                {
+                    title: 'The reveal',
+                    looped: false,
+                    words: [
+                        { text: 'one', speaker: 'Host', splice: false },
+                        { text: 'two', speaker: 'Host', splice: false },
+                        { text: 'three', speaker: 'Host', splice: false },
+                    ],
+                },
+            ],
+        });
+        const [clip] = lastState(wrapper).clips;
+        expect(clip.cutWords).toEqual([
+            { start: 11, end: 11.9, auto: true, reason: 'Wiederholung' },
+        ]);
+        expect(wrapper.emitted('update:status')!.at(-1)).toEqual([
+            'Found 1 clip; auto editing cut 1 word.',
+        ]);
+
+        vi.mocked(invoke).mockImplementation((command, args) => {
+            if (command === 'suggest_clip_cuts') return Promise.reject(new Error('quota'));
+            return defaultInvoke(command, args);
+        });
+        await wrapper.get('[data-testid="clips-generate"]').trigger('click');
+        await flushPromises();
+        expect(lastState(wrapper).clips).toHaveLength(1);
+        expect(wrapper.emitted('update:status')!.at(-1)?.[0]).toContain(
+            'Found 1 clip, but auto editing failed',
+        );
+    });
+
+    it("doesn't auto-edit when the toggle is off", async () => {
+        const wrapper = mountWith();
+        await wrapper.get('[data-testid="clips-generate"]').trigger('click');
+        await flushPromises();
+        const commands = vi.mocked(invoke).mock.calls.map(([command]) => command);
+        expect(commands).not.toContain('suggest_clip_cuts');
+    });
+
     it('lists detected faces and saves turning one off or naming one', async () => {
         const [clip] = fromCandidates([candidate]);
         const anchor = { time: 11, x: 0.8, y: 0.3 };

@@ -1,6 +1,14 @@
-import type { CaptionWord, DetectedFace, FaceOverride, SpeakerTurn } from '../bindings';
+import type {
+    CaptionWord,
+    DetectedFace,
+    EditClip,
+    FaceOverride,
+    SpeakerTurn,
+    WordCut,
+} from '../bindings';
 import type {
     ClipCandidate,
+    CutWord,
     FaceSearch,
     ShortClip,
     ShortClipRange,
@@ -80,7 +88,7 @@ export function normalizeShortClips(raw: unknown): ShortClip[] {
                 signals: (clip.signals as ShortClip['signals']) ?? null,
                 looped: clip.looped === true,
                 selected: clip.selected !== false,
-                ...(spans(clip.cutWords).length ? { cutWords: spans(clip.cutWords) } : {}),
+                ...(spans(clip.cutWords).length ? { cutWords: cutWordsOf(clip.cutWords) } : {}),
                 ...(spans(clip.cuts).length ? { cuts: spans(clip.cuts) } : {}),
             },
         ];
@@ -97,6 +105,19 @@ function spans(raw: unknown): TimeSpan[] {
             typeof span.end === 'number' &&
             span.end > span.start,
     );
+}
+
+/** Saved cut words, keeping why auto editing cut them. */
+function cutWordsOf(raw: unknown): CutWord[] {
+    return spans(raw).map((span) => {
+        const { auto, reason } = span as CutWord;
+        return {
+            start: span.start,
+            end: span.end,
+            ...(auto === true ? { auto } : {}),
+            ...(typeof reason === 'string' && reason ? { reason } : {}),
+        };
+    });
 }
 
 /** Pieces shorter than this (seconds) left between cuts are dropped. */
@@ -148,21 +169,95 @@ export function cutIntervals(words: ClipWord[], cutWords: TimeSpan[]): TimeSpan[
 
 /**
  * `clip` with `changed` words cut out (or restored), `words` being all of
- * its words in source order. Cutting everything that plays is refused.
+ * its words in source order. `mark` notes auto editing and why. Cutting
+ * everything that plays is refused.
  */
 export function setCutWords(
     clip: ShortClip,
     words: ClipWord[],
     changed: ClipWord[],
     cut: boolean,
+    mark: Pick<CutWord, 'auto' | 'reason'> = {},
 ): ShortClip {
     const same = (a: TimeSpan, b: TimeSpan) => a.start === b.start && a.end === b.end;
     const kept = (clip.cutWords ?? []).filter((span) => !changed.some((word) => same(span, word)));
-    const cutWords = cut ? [...kept, ...changed.map(({ start, end }) => ({ start, end }))] : kept;
+    const cutWords: CutWord[] = cut
+        ? [...kept, ...changed.map(({ start, end }) => ({ start, end, ...mark }))]
+        : kept;
     const cuts = cutIntervals(words, cutWords);
     if (playedRanges({ ranges: clip.ranges, cuts }).length === 0) return clip;
     const { cutWords: _old, cuts: _oldCuts, ...rest } = clip;
     return cutWords.length ? { ...rest, cutWords, cuts } : rest;
+}
+
+/**
+ * The clip's words in playback order (a looped clip opens with its later
+ * opener), each once, and which of them start a splice.
+ */
+export function playbackWords(
+    segments: TranscriptSegment[],
+    clip: Pick<ShortClip, 'ranges'>,
+): { words: ClipWord[]; splices: boolean[] } {
+    const seen = new Set<string>();
+    const words: ClipWord[] = [];
+    const splices: boolean[] = [];
+    clip.ranges.forEach((range, index) => {
+        const previous = clip.ranges[index - 1];
+        const splice = !!previous && Math.abs(range.start - previous.end) > 1e-3;
+        let first = true;
+        for (const word of clipWords(segments, [range])) {
+            const key = `${word.segment}:${word.index}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            words.push(word);
+            splices.push(splice && first);
+            first = false;
+        }
+    });
+    return { words, splices };
+}
+
+/** What auto editing gets to read for a clip. */
+export function editRequest(segments: TranscriptSegment[], clip: ShortClip): EditClip {
+    const { words, splices } = playbackWords(segments, clip);
+    return {
+        title: clip.title,
+        looped: clip.looped,
+        words: words.map((word, i) => ({
+            text: word.text,
+            speaker: word.speaker,
+            splice: splices[i],
+        })),
+    };
+}
+
+/**
+ * `clip` with auto editing's `cuts` (word ranges in playback order, as from
+ * `editRequest`) in place of its earlier auto cuts; the user's own cuts
+ * stay. Cuts that would leave nothing to play are skipped.
+ */
+export function applyAutoCuts(
+    segments: TranscriptSegment[],
+    clip: ShortClip,
+    cuts: WordCut[],
+): ShortClip {
+    const { words } = playbackWords(segments, clip);
+    const sourceOrder = clipWords(segments, clip.ranges);
+    const previous = sourceOrder.filter((word) =>
+        (clip.cutWords ?? []).some(
+            (cut) => cut.auto && cut.start === word.start && cut.end === word.end,
+        ),
+    );
+    let edited = setCutWords(clip, sourceOrder, previous, false);
+    for (const cut of cuts) {
+        const changed = words.slice(cut.from, cut.to + 1);
+        if (changed.length === 0) continue;
+        edited = setCutWords(edited, sourceOrder, changed, true, {
+            auto: true,
+            reason: cut.reason,
+        });
+    }
+    return edited;
 }
 
 export function clipDuration(clip: ShortClip): number {

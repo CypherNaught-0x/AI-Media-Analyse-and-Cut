@@ -80,4 +80,27 @@ describe('ClipText', () => {
             spellcheck: 'false',
         });
     });
+
+    it('marks auto cuts with their reason and asks for auto editing', async () => {
+        const wrapper = mount(ClipText, {
+            props: {
+                words,
+                kept: null,
+                playhead: null,
+                cutWords: [{ start: 11, end: 12, auto: true, reason: 'Füllwort' }],
+                canAutoEdit: true,
+            },
+        });
+        const cut = wrapper.get('[data-testid="clip-word-1"]');
+        expect(cut.attributes('data-cut')).toBe('auto');
+        expect(cut.attributes('title')).toBe('Cut by auto editing: Füllwort');
+        await wrapper.get('[data-testid="clip-text-auto-edit"]').trigger('click');
+        expect(wrapper.emitted('auto-edit')).toHaveLength(1);
+
+        await wrapper.setProps({ canAutoEdit: false });
+        expect(
+            (wrapper.get('[data-testid="clip-text-auto-edit"]').element as HTMLButtonElement)
+                .disabled,
+        ).toBe(true);
+    });
 });

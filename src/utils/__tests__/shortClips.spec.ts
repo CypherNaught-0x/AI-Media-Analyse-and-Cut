@@ -6,8 +6,10 @@ import {
     fromCandidates,
     normalizeShortClips,
     captionWords,
+    applyAutoCuts,
     clipWords,
     cutIntervals,
+    editRequest,
     editWord,
     playedRanges,
     setCutWords,
@@ -359,5 +361,83 @@ describe('cutting words out of a clip', () => {
 
         const cut = setCutWords(clip, words, [words[1]], true);
         expect(normalizeShortClips(JSON.parse(JSON.stringify([cut])))).toEqual([cut]);
+    });
+});
+
+describe('auto editing', () => {
+    const segments: TranscriptSegment[] = [
+        {
+            start: '00:00.000',
+            end: '00:04.000',
+            speaker: 'Host',
+            text: 'a b c d',
+            words: ['a', 'b', 'c', 'd'].map((text, i) => ({
+                start: `00:0${i}.000`,
+                end: `00:0${i}.900`,
+                text,
+            })),
+        },
+        {
+            start: '00:10.000',
+            end: '00:12.000',
+            speaker: 'Guest',
+            text: 'x y',
+            words: [
+                { start: '00:10.000', end: '00:10.900', text: 'x' },
+                { start: '00:11.000', end: '00:11.900', text: 'y' },
+            ],
+        },
+    ];
+    // Looped: the opener (10-12 s) plays before the body (0-4 s).
+    const clip = {
+        ...fromCandidates([
+            {
+                title: 'Loop',
+                hookLine: '',
+                reason: '',
+                ranges: [
+                    { start: 10, end: 12, role: 'loop_opener', firstSegment: 1, lastSegment: 1 },
+                    { start: 0, end: 4, role: 'closing', firstSegment: 0, lastSegment: 0 },
+                ],
+                ratings: null as never,
+                signals: null as never,
+                score: 50,
+                duration: 6,
+                looped: true,
+            },
+        ])[0],
+    };
+
+    it('sends the words in playback order and marks the splice', () => {
+        expect(editRequest(segments, clip)).toEqual({
+            title: 'Loop',
+            looped: true,
+            words: [
+                { text: 'x', speaker: 'Guest', splice: false },
+                { text: 'y', speaker: 'Guest', splice: false },
+                { text: 'a', speaker: 'Host', splice: true },
+                { text: 'b', speaker: 'Host', splice: false },
+                { text: 'c', speaker: 'Host', splice: false },
+                { text: 'd', speaker: 'Host', splice: false },
+            ],
+        });
+    });
+
+    it('maps playback word numbers to cuts and replaces only earlier auto cuts', () => {
+        // The user cut "d" (index 5) themselves; an earlier auto edit cut "x".
+        const words = clipWords(segments, clip.ranges);
+        let edited = setCutWords(clip, words, [words[3]], true);
+        edited = setCutWords(edited, words, [words[4]], true, { auto: true, reason: 'old' });
+
+        // Now auto editing cuts "b c" (playback 3-4).
+        const result = applyAutoCuts(segments, edited, [{ from: 3, to: 4, reason: 'Fehlstart' }]);
+        expect(result.cutWords).toEqual([
+            { start: 3, end: 3.9 },
+            { start: 1, end: 1.9, auto: true, reason: 'Fehlstart' },
+            { start: 2, end: 2.9, auto: true, reason: 'Fehlstart' },
+        ]);
+        expect(normalizeShortClips(JSON.parse(JSON.stringify([result])))[0].cutWords).toEqual(
+            result.cutWords,
+        );
     });
 });
