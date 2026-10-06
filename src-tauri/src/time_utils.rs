@@ -22,6 +22,17 @@ pub fn parse_time(time_str: &str) -> f64 {
 }
 
 /// Format seconds to time string (MM:SS.mmm or HH:MM:SS.mmm)
+/// `seconds` on the nearest frame boundary of a `fps` stream that starts
+/// at 0. Cutting video and audio at the same frame boundaries keeps them in
+/// sync: video can only be cut between frames, audio anywhere, so a cut
+/// between frames leaves the video up to a frame longer than its audio.
+pub fn snap_to_frame(seconds: f64, fps: f64) -> f64 {
+    if fps <= 0.0 {
+        return seconds;
+    }
+    (seconds * fps).round() / fps
+}
+
 pub fn format_time(seconds: f64) -> String {
     let h = (seconds / 3600.0).floor() as i32;
     let m = ((seconds % 3600.0) / 60.0).floor() as i32;

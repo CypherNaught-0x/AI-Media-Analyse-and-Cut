@@ -922,6 +922,7 @@ pub(crate) fn plan_vertical(
             per_piece.into_iter().flatten().collect::<Vec<_>>()
         })
         .map(|mut pieces| {
+            snap_pieces(&mut pieces, fps);
             dress_cuts(&mut pieces, cuts, &mut |a, b| {
                 morph_rect(input, a, b, (source_w, source_h), fps, run).is_some()
             });
@@ -936,6 +937,18 @@ pub(crate) fn plan_vertical(
         clips: planned,
         bindings,
     })
+}
+
+/// Pieces on the source's frame grid, so each one's video and audio are
+/// the same length (whole frames); otherwise the video of every piece can
+/// run up to a frame long and the audio drifts behind over many cuts.
+/// Pieces that snap to nothing are dropped.
+fn snap_pieces(pieces: &mut Vec<VerticalRange>, fps: f64) {
+    for piece in pieces.iter_mut() {
+        piece.start = crate::time_utils::snap_to_frame(piece.start, fps);
+        piece.end = crate::time_utils::snap_to_frame(piece.end, fps);
+    }
+    pieces.retain(|piece| piece.end > piece.start);
 }
 
 /// Source jumps up to this long (seconds, forward) are jump cuts within one
@@ -1690,6 +1703,22 @@ mod tests {
     }
 
     #[test]
+    fn pieces_are_snapped_to_frames_and_slivers_dropped() {
+        let mut pieces = vec![
+            piece(10.345, 12.019),
+            piece(12.019, 12.03),
+            piece(20.0, 21.0),
+        ];
+        snap_pieces(&mut pieces, 30.0);
+        let bounds: Vec<(f64, f64)> = pieces.iter().map(|p| (p.start, p.end)).collect();
+        assert_eq!(
+            bounds,
+            [(310.0 / 30.0, 361.0 / 30.0), (20.0, 21.0)],
+            "the 11 ms sliver snaps to nothing"
+        );
+    }
+
+    #[test]
     fn clip_edges_next_to_a_cut_move_onto_it() {
         assert_eq!(
             trim_slivers((10.0, 20.0), &[10.1, 15.0, 19.8]),
@@ -1792,16 +1821,25 @@ mod evaluation {
             Ok("hyper") => crate::tighten::Intensity::Hyper,
             _ => crate::tighten::Intensity::Punchy,
         };
-        let ranges = crate::tighten::tighten_clips(
-            Path::new(&source),
-            &[ranges],
-            &words,
-            intensity,
-            &[],
-            None,
-        )
-        .unwrap()
-        .remove(0);
+        // SHORTS_PROFILE_TIGHTENED: an exported clip's .json; its tightened
+        // ranges are rendered as they are (to reproduce an export).
+        let ranges: Vec<(f64, f64)> = match std::env::var_os("SHORTS_PROFILE_TIGHTENED") {
+            Some(path) => {
+                let json: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                serde_json::from_value(json["tightened"].clone()).unwrap()
+            }
+            None => crate::tighten::tighten_clips(
+                Path::new(&source),
+                &[ranges],
+                &words,
+                intensity,
+                &[],
+                None,
+            )
+            .unwrap()
+            .remove(0),
+        };
         let removed = crate::tighten::removed_words(&words, intensity);
         let words: Vec<TimedWord> = words.into_iter().filter(|w| !removed.contains(w)).collect();
         println!("{intensity:?}: {} ranges", ranges.len());
@@ -1885,6 +1923,12 @@ mod evaluation {
                 "setup {setup} seat {seat}: {speaker} (affinity {affinity:.2}, {evidence:.0} s)"
             );
         }
+        let pieces = &plan.clips[0];
+        println!(
+            "pieces: {} s in total, {} s planned output",
+            pieces.iter().map(|p| p.end - p.start).sum::<f64>(),
+            crate::reframe::output_duration(pieces)
+        );
         let seconds: f64 = ranges.iter().map(|(s, e)| e - s).sum();
         println!(
             "{seconds:.0} s clip in {:.1} s ({last}) -> {}",
