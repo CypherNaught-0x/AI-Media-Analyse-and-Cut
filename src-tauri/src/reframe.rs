@@ -375,6 +375,34 @@ const LOUDNESS: f64 = -14.0;
 /// hear.
 const CUT_FADE: f64 = 0.008;
 
+/// The whole picture fitted to the width of `output` over a blurred,
+/// darkened copy of itself, punched in by `zoom`. `name` keeps its labels
+/// apart from other chains'.
+fn fit_filter(name: &str, output: (u32, u32), zoom: f64) -> String {
+    let (out_w, out_h) = output;
+    // The background is blurred at quarter size: much cheaper than blurring
+    // 1080x1920, and it's a blur anyway.
+    let (bg_w, bg_h) = ((out_w / 4) & !1, (out_h / 4) & !1);
+    let punch = if zoom > 1.0 {
+        let (w, h) = (
+            (f64::from(out_w) * zoom).round() as u32 & !1,
+            (f64::from(out_h) * zoom).round() as u32 & !1,
+        );
+        format!(",scale={w}:{h},crop={out_w}:{out_h}")
+    } else {
+        String::new()
+    };
+    format!(
+        "split=2[bg{name}][fg{name}];\
+         [bg{name}]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,\
+         crop={bg_w}:{bg_h},boxblur=8:2,scale={out_w}:{out_h},\
+         eq=brightness=-0.08[bgb{name}];\
+         [fg{name}]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:\
+         flags=lanczos[fgs{name}];\
+         [bgb{name}][fgs{name}]overlay=(W-w)/2:(H-h)/2{punch}"
+    )
+}
+
 /// The `-filter_complex` graph for `render` (trims relative to the input
 /// seek) and the `sendcmd` scripts it reads, by file name.
 /// `caption_y`: top of the caption band if captions are laid over (input 1).
@@ -449,28 +477,8 @@ fn render_graph(
                 scripts.push((format!("{name}.cmd"), script));
             }
             Framing::Fit => {
-                // The background is blurred at quarter size: much cheaper
-                // than blurring 1080x1920, and it's a blur anyway.
-                let (bg_w, bg_h) = ((out_w / 4) & !1, (out_h / 4) & !1);
-                let punch = if zoom > 1.0 {
-                    let (w, h) = (
-                        (f64::from(out_w) * zoom).round() as u32 & !1,
-                        (f64::from(out_h) * zoom).round() as u32 & !1,
-                    );
-                    format!(",scale={w}:{h},crop={out_w}:{out_h}")
-                } else {
-                    String::new()
-                };
-                let _ = write!(
-                    graph,
-                    "{trim},split=2[bg{i}][fg{i}];\
-                     [bg{i}]scale={bg_w}:{bg_h}:force_original_aspect_ratio=increase,\
-                     crop={bg_w}:{bg_h},boxblur=8:2,scale={out_w}:{out_h},\
-                     eq=brightness=-0.08[bgb{i}];\
-                     [fg{i}]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:\
-                     flags=lanczos[fgs{i}];\
-                     [bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2{punch},{finish}"
-                );
+                let fit = fit_filter(&i.to_string(), render.output_size, zoom);
+                let _ = write!(graph, "{trim},{fit},{finish}");
             }
         }
         if render.has_audio {
@@ -497,10 +505,16 @@ fn render_graph(
         if let Some(input) = morph_inputs.get(i).copied().flatten() {
             // Exactly the interpolated frames: the list repeats the last one.
             let count = range.morph.as_ref().map_or(0, Vec::len);
+            // Whole-shot morphs are of the whole picture: framed like the
+            // stretches around them.
+            let framed = match range.framing {
+                Framing::Fit => fit_filter(&format!("m{i}"), render.output_size, zoom),
+                Framing::Follow(_) => format!("scale={out_w}:{out_h}:flags=lanczos"),
+            };
             let _ = write!(
                 graph,
-                "[{input}:v]scale={out_w}:{out_h}:flags=lanczos,setsar=1,fps={fps},\
-                 trim=end_frame={count},settb=AVTB,format=yuv420p[m{i}];",
+                "[{input}:v]fps={fps},trim=end_frame={count},{framed},setsar=1,\
+                 settb=AVTB,format=yuv420p[m{i}];",
                 fps = render.fps
             );
         }
@@ -1285,6 +1299,89 @@ mod morph_tests {
         assert!(green_at("1.5"), "morph frames at the cut");
         assert!(!green_at("1.2"), "source before");
         assert!(!green_at("1.8"), "source after");
+    }
+
+    /// In the whole-shot framing a morph is of the whole picture, framed
+    /// like the stretches around it: fitted over its blurred copy, at their
+    /// punch-in.
+    #[test]
+    fn whole_shot_morphs_are_framed_like_the_shot() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("grey.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=4"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+            .arg("-shortest")
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let green = Frame {
+            time: 0.0,
+            width: 640,
+            height: 360,
+            data: [0u8, 200, 0].repeat(640 * 360),
+        };
+        let mut ranges = vec![
+            VerticalRange::new(0.0, 1.5, Framing::Fit),
+            VerticalRange::new(1.8, 3.5, Framing::Fit),
+        ];
+        for range in &mut ranges {
+            range.zoom = 1.12;
+        }
+        ranges[1].transition = Transition::Morph;
+        ranges[1].morph = Some(vec![green; 6]);
+        let output = dir.path().join("morphed.mp4");
+        render_vertical(
+            &VerticalRender {
+                input: &source,
+                ranges: &ranges,
+                source_size: (640, 360),
+                fps: 25.0,
+                has_audio: true,
+                output_size: (360, 640),
+                output: &output,
+                quality: ExportQuality::Draft,
+                captions: None,
+            },
+            None,
+            |_| {},
+        )
+        .unwrap();
+
+        let duration = crate::media_probe::probe_media(&output)
+            .unwrap()
+            .duration_seconds
+            .unwrap();
+        assert!((duration - 3.2).abs() < 0.1, "{duration}");
+        // (red, green) of the pixel at y (of 640) in the middle column.
+        let pixel = |time: &str, y: u32| {
+            let out = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
+                .arg(&output)
+                .args(["-frames:v", "1", "-vf", &format!("crop=2:2:180:{y}")])
+                .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout;
+            (out[0], out[1])
+        };
+        // The picture in the middle, its blurred, darker copy above it.
+        let (red, middle) = pixel("1.5", 320);
+        assert!(
+            middle > 150 && red < 80,
+            "morph in the middle ({red},{middle})"
+        );
+        let (red, top) = pixel("1.5", 40);
+        assert!(
+            top > 100 && top < middle && red < 80,
+            "blurred copy ({red},{top})"
+        );
+        let (red, green) = pixel("1.0", 320);
+        assert!(green < 150 && red > 80, "source before ({red},{green})");
     }
 }
 

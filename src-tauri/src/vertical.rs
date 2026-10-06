@@ -915,7 +915,7 @@ pub(crate) fn plan_vertical(
                 insert_cutaways(
                     &mut per_piece,
                     &range_tracks,
-                    &mut |a, b| morph_rect(input, a, b, (source_w, source_h), fps, run).is_some(),
+                    &mut |a, b| morph_view(input, a, b, (source_w, source_h), fps, run).is_some(),
                     &|tracks, window, subject_x| {
                         listener_framing(
                             tracks,
@@ -943,7 +943,7 @@ pub(crate) fn plan_vertical(
         .map(|mut pieces| {
             snap_pieces(&mut pieces, fps);
             dress_cuts(&mut pieces, cuts, &mut |a, b| {
-                morph_rect(input, a, b, (source_w, source_h), fps, run).is_some()
+                morph_view(input, a, b, (source_w, source_h), fps, run).is_some()
             });
             pieces
         })
@@ -1162,65 +1162,88 @@ pub(crate) fn dress_cuts(
     }
 }
 
-/// The crop both sides of a jump cut share at the cut, if a morph can hide
-/// it: both follow a face with (nearly) the same crop, and the pictures there
-/// are similar. `b` already carries the zoom it would get.
-fn morph_rect(
+/// What a morph interpolates: the crop both sides of the cut share, or in
+/// the whole-shot framing the whole picture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MorphView {
+    Crop(CropRect),
+    Whole,
+}
+
+/// What both sides of a jump cut share at the cut, if a morph can hide it:
+/// both follow a face with (nearly) the same crop, or both show the whole
+/// shot at the same zoom; and the pictures there are similar. `b` already
+/// carries the zoom it would get.
+fn morph_view(
     input: &Path,
     a: &VerticalRange,
     b: &VerticalRange,
     source: (u32, u32),
     fps: f64,
     run: Option<(u64, &RunControl)>,
-) -> Option<CropRect> {
-    let (Framing::Follow(keys_a), Framing::Follow(keys_b)) = (&a.framing, &b.framing) else {
-        return None;
-    };
+) -> Option<MorphView> {
     if a.end - a.start <= 0.5 || b.end - b.start <= 0.5 {
         return None;
     }
-    let half = MORPH_FRAMES as f64 / fps / 2.0;
-    let aspect = f64::from(OUTPUT_SIZE.0) / f64::from(OUTPUT_SIZE.1);
-    let zoomed = |keys: &[CropKey], zoom: f64| -> Vec<CropKey> {
-        keys.iter()
-            .map(|key| CropKey {
-                height: key.height / zoom.max(1.0),
-                ..*key
-            })
-            .collect()
+    let view = match (&a.framing, &b.framing) {
+        (Framing::Fit, Framing::Fit) if (a.zoom - b.zoom).abs() < 1e-6 => MorphView::Whole,
+        (Framing::Follow(keys_a), Framing::Follow(keys_b)) => {
+            let half = MORPH_FRAMES as f64 / fps / 2.0;
+            let aspect = f64::from(OUTPUT_SIZE.0) / f64::from(OUTPUT_SIZE.1);
+            let zoomed = |keys: &[CropKey], zoom: f64| -> Vec<CropKey> {
+                keys.iter()
+                    .map(|key| CropKey {
+                        height: key.height / zoom.max(1.0),
+                        ..*key
+                    })
+                    .collect()
+            };
+            let rect_a = crop_at(
+                &zoomed(keys_a, a.zoom),
+                a.end - a.start - half,
+                source,
+                aspect,
+            );
+            let rect_b = crop_at(&zoomed(keys_b, b.zoom), half, source, aspect);
+            let near =
+                |p: u32, q: u32, size: u32| f64::from(p.abs_diff(q)) <= 0.05 * f64::from(size);
+            if !near(rect_a.x, rect_b.x, rect_a.width)
+                || !near(rect_a.y, rect_b.y, rect_a.height)
+                || !near(rect_a.height, rect_b.height, rect_a.height)
+            {
+                return None;
+            }
+            MorphView::Crop(rect_a)
+        }
+        _ => return None,
     };
-    let rect_a = crop_at(
-        &zoomed(keys_a, a.zoom),
-        a.end - a.start - half,
-        source,
-        aspect,
-    );
-    let rect_b = crop_at(&zoomed(keys_b, b.zoom), half, source, aspect);
-    let near = |p: u32, q: u32, size: u32| f64::from(p.abs_diff(q)) <= 0.05 * f64::from(size);
-    if !near(rect_a.x, rect_b.x, rect_a.width)
-        || !near(rect_a.y, rect_b.y, rect_a.height)
-        || !near(rect_a.height, rect_b.height, rect_a.height)
-    {
-        return None;
-    }
-    let (before, after) = morph_frames_around(input, a, b, rect_a, source, fps, run).ok()?;
-    (luma_difference(&before, &after) <= MAX_DIFFERENCE).then_some(rect_a)
+    let (before, after) = morph_frames_around(input, a, b, view, source, fps, run).ok()?;
+    (luma_difference(&before, &after) <= MAX_DIFFERENCE).then_some(view)
 }
 
-/// The last frame kept before a morph and the first one after it, cropped.
+/// The last frame kept before a morph and the first one after it, as
+/// `view` shows them. The whole picture comes at most as wide as the output,
+/// as wide as the whole-shot framing shows it.
 fn morph_frames_around(
     input: &Path,
     a: &VerticalRange,
     b: &VerticalRange,
-    rect: CropRect,
+    view: MorphView,
     source: (u32, u32),
     fps: f64,
     run: Option<(u64, &RunControl)>,
 ) -> Result<(Frame, Frame), String> {
     let half = MORPH_FRAMES as f64 / fps / 2.0;
-    let before = frame_at(input, a.end - half - 1.0 / fps, source.0, run)?;
-    let after = frame_at(input, b.start + half, source.0, run)?;
-    Ok((crop(&before, rect), crop(&after, rect)))
+    let width = match view {
+        MorphView::Crop(_) => source.0,
+        MorphView::Whole => source.0.min(OUTPUT_SIZE.0) & !1,
+    };
+    let before = frame_at(input, a.end - half - 1.0 / fps, width, run)?;
+    let after = frame_at(input, b.start + half, width, run)?;
+    Ok(match view {
+        MorphView::Crop(rect) => (crop(&before, rect), crop(&after, rect)),
+        MorphView::Whole => (before, after),
+    })
 }
 
 /// How vertical clips are rendered.
@@ -1296,12 +1319,12 @@ pub(crate) fn export_vertical(
                 continue;
             }
             let frames = morpher.as_mut().and_then(|morpher| {
-                let rect = morph_rect(input, &pieces[i - 1], &pieces[i], source_size, fps, run)?;
+                let view = morph_view(input, &pieces[i - 1], &pieces[i], source_size, fps, run)?;
                 let (before, after) = morph_frames_around(
                     input,
                     &pieces[i - 1],
                     &pieces[i],
-                    rect,
+                    view,
                     source_size,
                     fps,
                     run,
@@ -1459,6 +1482,37 @@ mod tests {
         });
         assert!(calm.iter().all(|p| p.zoom == 1.0));
         assert_eq!(calm[2].transition, Transition::Fade);
+    }
+
+    #[test]
+    fn whole_shot_jump_cuts_morph_at_the_same_zoom() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("grey.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=4"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let view = |a: &VerticalRange, b: &VerticalRange| {
+            morph_view(&source, a, b, (640, 360), 25.0, None)
+        };
+        let (a, mut b) = (piece(0.0, 1.5), piece(1.8, 3.5));
+        assert_eq!(view(&a, &b), Some(MorphView::Whole));
+        // A punch-in on one side: the pictures don't line up.
+        b.zoom = 1.12;
+        assert_eq!(view(&a, &b), None);
+        // A face on one side.
+        let key = CropKey {
+            time: 0.0,
+            center_x: 320.0,
+            center_y: 180.0,
+            height: 360.0,
+        };
+        let followed = VerticalRange::new(1.8, 3.5, Framing::Follow(vec![key]));
+        assert_eq!(view(&a, &followed), None);
     }
 
     #[test]
