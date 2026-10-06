@@ -6,7 +6,7 @@
 //! podcasts cut back to the same camera setups, so every clip adds evidence
 //! for the others.
 
-use crate::camera::{plan_camera, CameraSettings, Frame as CameraFrame};
+use crate::camera::{listener_framing, plan_camera, CameraSettings, Frame as CameraFrame};
 use crate::captions::{chunk_words, tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_tracks::{Track, Tracker};
@@ -399,48 +399,77 @@ pub(crate) fn plan_vertical(
     // 2. Who is who, over all clips together.
     let bindings = bind_speakers(&tracks, turns);
 
-    // 3. Camera path per range.
+    // 3. Camera path per range, cutaways over jump cuts, then the cuts'
+    // punch-ins and transitions.
     let settings = CameraSettings::default();
     let aspect = f64::from(OUTPUT_SIZE.0) / f64::from(OUTPUT_SIZE.1);
+    let to_source = |key: CropKey| CropKey {
+        time: key.time,
+        center_x: key.center_x * scale,
+        center_y: key.center_y * scale,
+        height: key.height * scale,
+    };
     let planned = range_tracks
         .iter()
         .map(|per_range| {
-            per_range
+            let range_tracks: Vec<Vec<Track>> = per_range
                 .iter()
-                .flat_map(|&((start, end), ref indices)| {
-                    let range_tracks: Vec<Track> =
-                        indices.iter().map(|&i| tracks[i].clone()).collect();
+                .map(|(_, indices)| indices.iter().map(|&i| tracks[i].clone()).collect())
+                .collect();
+            let mut per_piece: Vec<Vec<VerticalRange>> = per_range
+                .iter()
+                .zip(&range_tracks)
+                .map(|(&((start, end), _), local)| {
                     plan_camera(
                         (start, end),
-                        &range_tracks,
+                        local,
                         &bindings,
                         turns,
                         &camera_frame,
                         aspect,
                         &settings,
                     )
-                })
-                .map(|piece| {
-                    VerticalRange::new(
-                        piece.start,
-                        piece.end,
-                        // Analysis pixels to source pixels.
-                        match piece.framing {
+                    .into_iter()
+                    .map(|piece| {
+                        let framing = match piece.framing {
                             Framing::Fit => Framing::Fit,
-                            Framing::Follow(keys) => Framing::Follow(
-                                keys.into_iter()
-                                    .map(|key| CropKey {
-                                        time: key.time,
-                                        center_x: key.center_x * scale,
-                                        center_y: key.center_y * scale,
-                                        height: key.height * scale,
-                                    })
-                                    .collect(),
-                            ),
-                        },
-                    )
+                            Framing::Follow(keys) => {
+                                Framing::Follow(keys.into_iter().map(to_source).collect())
+                            }
+                        };
+                        VerticalRange::new(piece.start, piece.end, framing)
+                    })
+                    .collect()
                 })
-                .collect::<Vec<_>>()
+                .collect();
+            if cuts.cutaways {
+                insert_cutaways(
+                    &mut per_piece,
+                    &range_tracks,
+                    &mut |a, b| morph_rect(input, a, b, (source_w, source_h), fps, run).is_some(),
+                    &|tracks, window, subject_x| {
+                        listener_framing(
+                            tracks,
+                            window,
+                            subject_x / scale,
+                            &camera_frame,
+                            &settings,
+                        )
+                        .map(|((x, y, h), face)| {
+                            (
+                                CropKey {
+                                    time: 0.0,
+                                    center_x: x * scale,
+                                    center_y: y * scale,
+                                    height: h * scale,
+                                },
+                                (face.0 * scale, face.1 * scale),
+                            )
+                        })
+                    },
+                );
+            }
+            per_piece.into_iter().flatten().collect::<Vec<_>>()
         })
         .map(|mut pieces| {
             dress_cuts(&mut pieces, cuts, &mut |a, b| {
@@ -463,6 +492,90 @@ pub(crate) fn plan_vertical(
 /// moment, e.g. a tightened pause; longer or backward ones are splices.
 const JUMP_CUT: f64 = 3.0;
 
+/// Each side of a cutaway shows the listener this long (seconds).
+const CUTAWAY_SIDE: f64 = 0.7;
+/// At most one cutaway per this much output (seconds).
+const CUTAWAY_SPACING: f64 = 8.0;
+
+/// A listener framing for a window: (static crop key, face centre), in
+/// source pixels, from the tracks of a range.
+type ListenerFraming<'a> = dyn Fn(&[Track], (f64, f64), f64) -> Option<(CropKey, (f64, f64))> + 'a;
+
+/// Hide jump cuts that a morph can't by cutting away to a listener: the last
+/// `CUTAWAY_SIDE` before the cut and the first after it show another face
+/// in the shot, the speaker's audio running on underneath. `per_range[r]`
+/// are range `r`'s pieces; `tracks[r]` its face tracks.
+fn insert_cutaways(
+    per_range: &mut [Vec<VerticalRange>],
+    tracks: &[Vec<Track>],
+    morphable: &mut dyn FnMut(&VerticalRange, &VerticalRange) -> bool,
+    listener: &ListenerFraming<'_>,
+) {
+    let mut since_last = CUTAWAY_SPACING;
+    for r in 0..per_range.len().saturating_sub(1) {
+        let (Some(a), Some(b)) = (per_range[r].last(), per_range[r + 1].first()) else {
+            continue;
+        };
+        since_last += per_range[r].iter().map(|p| p.end - p.start).sum::<f64>();
+        let gap = b.start - a.end;
+        let jump = gap > 0.0 && gap <= JUMP_CUT;
+        let long_enough = |p: &VerticalRange| p.end - p.start >= CUTAWAY_SIDE + 1.0;
+        let (Framing::Follow(keys_a), Framing::Follow(keys_b)) = (&a.framing, &b.framing) else {
+            continue;
+        };
+        if !jump || since_last < CUTAWAY_SPACING || !long_enough(a) || !long_enough(b) {
+            continue;
+        }
+        if morphable(a, b) {
+            continue;
+        }
+        let subject_a = keys_a.last().map_or(0.0, |k| k.center_x);
+        let subject_b = keys_b.first().map_or(0.0, |k| k.center_x);
+        let Some((key_a, face_a)) = listener(&tracks[r], (a.end - CUTAWAY_SIDE, a.end), subject_a)
+        else {
+            continue;
+        };
+        let Some((key_b, face_b)) =
+            listener(&tracks[r + 1], (b.start, b.start + CUTAWAY_SIDE), subject_b)
+        else {
+            continue;
+        };
+        // The same person on both sides (a static camera).
+        let face_height = key_a.height * 0.22;
+        if (face_a.0 - face_b.0).hypot(face_a.1 - face_b.1) > 0.5 * face_height {
+            continue;
+        }
+
+        let a = per_range[r].pop().expect("checked");
+        let split_a = a.end - CUTAWAY_SIDE;
+        let mut before = VerticalRange::new(a.start, split_a, a.framing.clone());
+        before.zoom = a.zoom;
+        let mut away_a = VerticalRange::new(split_a, a.end, Framing::Follow(vec![key_a]));
+        away_a.cutaway = true;
+        per_range[r].push(before);
+        per_range[r].push(away_a);
+
+        let b = per_range[r + 1].remove(0);
+        let split_b = b.start + CUTAWAY_SIDE;
+        let mut away_b = VerticalRange::new(b.start, split_b, Framing::Follow(vec![key_b]));
+        away_b.cutaway = true;
+        let rest = match &b.framing {
+            Framing::Follow(keys) => Framing::Follow(
+                keys.iter()
+                    .map(|key| CropKey {
+                        time: key.time - CUTAWAY_SIDE,
+                        ..*key
+                    })
+                    .collect(),
+            ),
+            Framing::Fit => Framing::Fit,
+        };
+        per_range[r + 1].insert(0, VerticalRange::new(split_b, b.end, rest));
+        per_range[r + 1].insert(0, away_b);
+        since_last = -CUTAWAY_SIDE;
+    }
+}
+
 /// How cuts are dressed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CutStyle {
@@ -472,20 +585,23 @@ pub(crate) struct CutStyle {
     pub splice: Transition,
     /// Hide jump cuts with a morph where the two sides are similar enough.
     pub morph: bool,
+    /// Otherwise hide them by cutting away to a listener.
+    pub cutaways: bool,
 }
 
 impl From<Intensity> for CutStyle {
     fn from(intensity: Intensity) -> Self {
-        let (punch, splice, morph) = match intensity {
-            Intensity::Off => (1.0, Transition::Cut, false),
-            Intensity::Chill => (1.0, Transition::Fade, true),
-            Intensity::Punchy => (1.12, Transition::Whip, true),
-            Intensity::Hyper => (1.18, Transition::Whip, true),
+        let (punch, splice, morph, cutaways) = match intensity {
+            Intensity::Off => (1.0, Transition::Cut, false, false),
+            Intensity::Chill => (1.0, Transition::Fade, true, false),
+            Intensity::Punchy => (1.12, Transition::Whip, true, true),
+            Intensity::Hyper => (1.18, Transition::Whip, true, true),
         };
         Self {
             punch,
             splice,
             morph,
+            cutaways,
         }
     }
 }
@@ -512,6 +628,10 @@ pub(crate) fn dress_cuts(
             if style.morph && morphable(&pieces[i - 1], &candidate) {
                 pieces[i].zoom = pieces[i - 1].zoom;
                 pieces[i].transition = Transition::Morph;
+            } else if pieces[i].cutaway && pieces[i - 1].cutaway {
+                // The cutaway hides this one; the speaker comes back at the
+                // same zoom.
+                pieces[i].zoom = pieces[i - 1].zoom;
             } else {
                 punched = !punched && style.punch > 1.0;
                 pieces[i].zoom = if punched { style.punch } else { 1.0 };
@@ -797,6 +917,101 @@ mod tests {
         assert_eq!(calm[2].transition, Transition::Fade);
     }
 
+    fn follow(start: f64, end: f64, x: f64) -> VerticalRange {
+        VerticalRange::new(
+            start,
+            end,
+            Framing::Follow(vec![CropKey {
+                time: 0.0,
+                center_x: x,
+                center_y: 300.0,
+                height: 500.0,
+            }]),
+        )
+    }
+
+    #[test]
+    fn jump_cuts_that_cannot_morph_cut_away_to_the_listener() {
+        let mut per_range = vec![
+            vec![follow(10.0, 14.0, 300.0)],
+            vec![follow(14.4, 18.0, 300.0)],
+        ];
+        let listener_key = CropKey {
+            time: 0.0,
+            center_x: 900.0,
+            center_y: 300.0,
+            height: 500.0,
+        };
+        insert_cutaways(
+            &mut per_range,
+            &[Vec::new(), Vec::new()],
+            &mut |_, _| false,
+            &|_, _, _| Some((listener_key, (900.0, 200.0))),
+        );
+        let spans: Vec<Vec<(f64, f64, bool)>> = per_range
+            .iter()
+            .map(|pieces| pieces.iter().map(|p| (p.start, p.end, p.cutaway)).collect())
+            .collect();
+        assert_eq!(
+            spans,
+            [
+                vec![(10.0, 13.3, false), (13.3, 14.0, true)],
+                vec![(14.4, 15.1, true), (15.1, 18.0, false)],
+            ]
+        );
+        // The speaker's framing continues after the cutaway, keys shifted.
+        let Framing::Follow(keys) = &per_range[1][1].framing else {
+            panic!("follows the speaker");
+        };
+        assert!((keys[0].time + CUTAWAY_SIDE).abs() < 1e-9);
+
+        // Dressing: no punch-in across the cutaway, the speaker returns at
+        // the same zoom.
+        let mut pieces: Vec<VerticalRange> = per_range.into_iter().flatten().collect();
+        dress_cuts(
+            &mut pieces,
+            CutStyle::from(Intensity::Punchy),
+            &mut |_, _| false,
+        );
+        assert!(
+            pieces.iter().all(|p| p.zoom == 1.0),
+            "{:?}",
+            pieces.iter().map(|p| p.zoom).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_cutaway_where_a_morph_works_or_nobody_listens() {
+        let ranges = || {
+            vec![
+                vec![follow(10.0, 14.0, 300.0)],
+                vec![follow(14.4, 18.0, 300.0)],
+            ]
+        };
+        let key = CropKey {
+            time: 0.0,
+            center_x: 900.0,
+            center_y: 300.0,
+            height: 500.0,
+        };
+        let mut morphs = ranges();
+        insert_cutaways(
+            &mut morphs,
+            &[Vec::new(), Vec::new()],
+            &mut |_, _| true,
+            &|_, _, _| Some((key, (900.0, 200.0))),
+        );
+        assert_eq!(morphs[0].len(), 1);
+        let mut alone = ranges();
+        insert_cutaways(
+            &mut alone,
+            &[Vec::new(), Vec::new()],
+            &mut |_, _| false,
+            &|_, _, _| None,
+        );
+        assert_eq!(alone[0].len(), 1);
+    }
+
     #[test]
     fn the_preview_carries_caption_chunks_for_what_is_shown() {
         let plan = VerticalPlan {
@@ -968,8 +1183,12 @@ mod evaluation {
         for piece in &plan.clips[0] {
             match &piece.framing {
                 Framing::Fit => println!(
-                    "{:.1}-{:.1}: fit, zoom {:.2}, {:?}",
-                    piece.start, piece.end, piece.zoom, piece.transition
+                    "{:.1}-{:.1}: fit, zoom {:.2}, {:?}{}",
+                    piece.start,
+                    piece.end,
+                    piece.zoom,
+                    piece.transition,
+                    if piece.cutaway { " cutaway" } else { "" }
                 ),
                 Framing::Follow(keys) => {
                     let speeds: Vec<f64> = keys
@@ -989,6 +1208,7 @@ mod evaluation {
                             .morph
                             .as_ref()
                             .map_or(String::new(), |f| format!(" ({} frames)", f.len()))
+                            + if piece.cutaway { " cutaway" } else { "" }
                     );
                     if std::env::var_os("SHORTS_PROFILE_KEYS").is_some() {
                         for key in keys {
