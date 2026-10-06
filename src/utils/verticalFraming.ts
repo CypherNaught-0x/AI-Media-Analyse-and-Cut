@@ -68,7 +68,7 @@ export function cropAt(
  * Size and offset of the source video inside a frame of `frame` CSS pixels
  * so that it shows what the export will show at source time `time`: the
  * crop scaled to fill the frame, or for `fit` pieces (and gaps) the whole
- * picture fitted to the width.
+ * picture fitted to the width. A piece's `zoom` (punch-in) tightens either.
  */
 export function videoBox(
     plan: Pick<VerticalPreview, 'sourceWidth' | 'sourceHeight'>,
@@ -78,8 +78,9 @@ export function videoBox(
 ): VideoBox {
     const source = { width: plan.sourceWidth, height: plan.sourceHeight };
     const piece = pieceAt(pieces, time);
+    const zoom = Math.max(piece?.zoom ?? 1, 1);
     if (!piece || piece.fit || piece.keys.length === 0) {
-        const scale = Math.min(frame.width / source.width, frame.height / source.height);
+        const scale = Math.min(frame.width / source.width, frame.height / source.height) * zoom;
         return {
             width: source.width * scale,
             height: source.height * scale,
@@ -87,7 +88,8 @@ export function videoBox(
             top: (frame.height - source.height * scale) / 2,
         };
     }
-    const crop = cropAt(piece.keys, time - piece.start, source, frame.width / frame.height);
+    const keys = piece.keys.map((key) => ({ ...key, height: key.height / zoom }));
+    const crop = cropAt(keys, time - piece.start, source, frame.width / frame.height);
     const scale = frame.height / crop.height;
     return {
         width: source.width * scale,

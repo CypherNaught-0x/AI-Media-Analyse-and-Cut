@@ -13,10 +13,13 @@ use crate::face_tracks::{Track, Tracker};
 use crate::faces::FaceDetector;
 use crate::frames::{decode_frames, FrameRequest, PixelFormat};
 use crate::media_probe::probe_media;
-use crate::reframe::{render_vertical, CropKey, Framing, VerticalRange, VerticalRender};
+use crate::reframe::{
+    output_starts, render_vertical, CropKey, Framing, Transition, VerticalRange, VerticalRender,
+};
 use crate::run_control::RunControl;
 use crate::shots::detect_cuts;
 use crate::speaker_faces::{bind_speakers, Binding, SpeechTurn};
+use crate::tighten::Intensity;
 use std::path::{Path, PathBuf};
 
 pub(crate) const OUTPUT_SIZE: (u32, u32) = (1080, 1920);
@@ -206,6 +209,9 @@ pub struct PreviewPiece {
     pub end: f64,
     pub fit: bool,
     pub keys: Vec<PreviewKey>,
+    /// Punch-in on top of the framing (1.0 = none).
+    #[specta(type = specta_typescript::Number)]
+    pub zoom: f64,
 }
 
 /// The planned vertical framing of clips, as the frontend previews it.
@@ -226,6 +232,7 @@ impl From<&VerticalPlan> for VerticalPreview {
             start: range.start,
             end: range.end,
             fit: matches!(range.framing, Framing::Fit),
+            zoom: range.zoom,
             keys: match &range.framing {
                 Framing::Fit => Vec::new(),
                 Framing::Follow(keys) => keys
@@ -259,6 +266,7 @@ pub(crate) fn plan_vertical(
     input: &Path,
     clips: &[Vec<(f64, f64)>],
     turns: &[SpeechTurn],
+    cuts: CutStyle,
     cache: Option<&AnalysisCache>,
     run: Option<(u64, &RunControl)>,
     on_progress: &mut dyn FnMut(f64),
@@ -360,25 +368,31 @@ pub(crate) fn plan_vertical(
                         &settings,
                     )
                 })
-                .map(|piece| VerticalRange {
-                    start: piece.start,
-                    end: piece.end,
-                    // Analysis pixels to source pixels.
-                    framing: match piece.framing {
-                        Framing::Fit => Framing::Fit,
-                        Framing::Follow(keys) => Framing::Follow(
-                            keys.into_iter()
-                                .map(|key| CropKey {
-                                    time: key.time,
-                                    center_x: key.center_x * scale,
-                                    center_y: key.center_y * scale,
-                                    height: key.height * scale,
-                                })
-                                .collect(),
-                        ),
-                    },
+                .map(|piece| {
+                    VerticalRange::new(
+                        piece.start,
+                        piece.end,
+                        // Analysis pixels to source pixels.
+                        match piece.framing {
+                            Framing::Fit => Framing::Fit,
+                            Framing::Follow(keys) => Framing::Follow(
+                                keys.into_iter()
+                                    .map(|key| CropKey {
+                                        time: key.time,
+                                        center_x: key.center_x * scale,
+                                        center_y: key.center_y * scale,
+                                        height: key.height * scale,
+                                    })
+                                    .collect(),
+                            ),
+                        },
+                    )
                 })
-                .collect()
+                .collect::<Vec<_>>()
+        })
+        .map(|mut pieces| {
+            dress_cuts(&mut pieces, cuts);
+            pieces
         })
         .collect();
 
@@ -391,10 +405,58 @@ pub(crate) fn plan_vertical(
     })
 }
 
+/// Source jumps up to this long (seconds, forward) are jump cuts within one
+/// moment, e.g. a tightened pause; longer or backward ones are splices.
+const JUMP_CUT: f64 = 3.0;
+
+/// How cuts are dressed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CutStyle {
+    /// Punch-in on every other jump cut (1.0 = none).
+    pub punch: f64,
+    /// Transition into a spliced-in moment.
+    pub splice: Transition,
+}
+
+impl From<Intensity> for CutStyle {
+    fn from(intensity: Intensity) -> Self {
+        let (punch, splice) = match intensity {
+            Intensity::Off => (1.0, Transition::Cut),
+            Intensity::Chill => (1.0, Transition::Fade),
+            Intensity::Punchy => (1.12, Transition::Whip),
+            Intensity::Hyper => (1.18, Transition::Whip),
+        };
+        Self { punch, splice }
+    }
+}
+
+/// Punch-ins and transitions for a clip's pieces (in playback order).
+/// Jump cuts alternate between the normal framing and the punch-in, so a
+/// run of them reads as deliberate; a splice gets `style.splice` and resets
+/// the punch. Pieces that continue the same source moment (a framing change)
+/// keep the zoom.
+pub(crate) fn dress_cuts(pieces: &mut [VerticalRange], style: CutStyle) {
+    let mut punched = false;
+    for i in 1..pieces.len() {
+        let gap = pieces[i].start - pieces[i - 1].end;
+        if gap.abs() < 1e-3 {
+            pieces[i].zoom = pieces[i - 1].zoom;
+        } else if gap > 0.0 && gap <= JUMP_CUT {
+            punched = !punched && style.punch > 1.0;
+            pieces[i].zoom = if punched { style.punch } else { 1.0 };
+        } else {
+            punched = false;
+            pieces[i].zoom = 1.0;
+            pieces[i].transition = style.splice;
+        }
+    }
+}
+
 /// How vertical clips are rendered.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RenderOptions<'a> {
     pub quality: ExportQuality,
+    pub cuts: CutStyle,
     /// Burned-in captions: transcript words on the source timeline.
     pub captions: Option<(&'a [TimedWord], CaptionStyle)>,
 }
@@ -410,12 +472,20 @@ pub(crate) fn export_vertical(
     on_progress: &mut Progress<'_>,
 ) -> Result<VerticalPlan, String> {
     let ranges: Vec<Vec<(f64, f64)>> = clips.iter().map(|clip| clip.ranges.clone()).collect();
-    let plan = plan_vertical(input, &ranges, turns, cache, run, &mut |fraction| {
-        on_progress(
-            ANALYSIS_SHARE * fraction,
-            format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
-        );
-    })?;
+    let plan = plan_vertical(
+        input,
+        &ranges,
+        turns,
+        options.cuts,
+        cache,
+        run,
+        &mut |fraction| {
+            on_progress(
+                ANALYSIS_SHARE * fraction,
+                format!("Finding faces and speakers ({:.0}%)", fraction * 100.0),
+            );
+        },
+    )?;
     let mut seats: Vec<(usize, usize, &str, f32)> = plan
         .bindings
         .iter()
@@ -438,9 +508,10 @@ pub(crate) fn export_vertical(
         // Captions follow what is rendered: the pieces, after flash-frame
         // trimming.
         let shown: Vec<(f64, f64)> = pieces.iter().map(|p| (p.start, p.end)).collect();
+        let starts = output_starts(pieces);
         let words = options
             .captions
-            .map(|(words, style)| (tightened_output_words(words, &shown), style));
+            .map(|(words, style)| (tightened_output_words(words, &shown, &starts), style));
         render_vertical(
             &VerticalRender {
                 input,
@@ -502,6 +573,40 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    fn piece(start: f64, end: f64) -> VerticalRange {
+        VerticalRange::new(start, end, Framing::Fit)
+    }
+
+    #[test]
+    fn jump_cuts_alternate_the_punch_in_and_splices_get_a_transition() {
+        let mut pieces = vec![
+            piece(10.0, 12.0),
+            // Tightened pause: jump cut.
+            piece(12.3, 14.0),
+            // Framing change at the same moment: keeps the zoom.
+            piece(14.0, 15.0),
+            piece(15.4, 17.0),
+            piece(17.2, 18.0),
+            // Back to an earlier moment: a splice.
+            piece(5.0, 7.0),
+            piece(7.5, 9.0),
+        ];
+        dress_cuts(&mut pieces, CutStyle::from(Intensity::Punchy));
+        let zooms: Vec<f64> = pieces.iter().map(|p| p.zoom).collect();
+        assert_eq!(zooms, [1.0, 1.12, 1.12, 1.0, 1.12, 1.0, 1.12]);
+        let transitions: Vec<Transition> = pieces.iter().map(|p| p.transition).collect();
+        assert_eq!(transitions[5], Transition::Whip);
+        assert!(transitions
+            .iter()
+            .enumerate()
+            .all(|(i, t)| i == 5 || *t == Transition::Cut));
+
+        let mut calm = vec![piece(10.0, 12.0), piece(12.3, 14.0), piece(30.0, 32.0)];
+        dress_cuts(&mut calm, CutStyle::from(Intensity::Chill));
+        assert!(calm.iter().all(|p| p.zoom == 1.0));
+        assert_eq!(calm[2].transition, Transition::Fade);
     }
 
     #[test]
@@ -626,6 +731,7 @@ mod evaluation {
             &turns,
             RenderOptions {
                 quality: ExportQuality::Balanced,
+                cuts: CutStyle::from(intensity),
                 captions: Some((&words, CaptionStyle::default())),
             },
             None,
