@@ -123,29 +123,87 @@ pub(crate) enum Framing {
 }
 
 /// How a stretch joins the one before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Transition {
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Transition {
     /// A plain cut.
     #[default]
     Cut,
     /// A fast slide with horizontal motion blur (a whip pan): for jumps to
     /// another moment.
     Whip,
+    /// A whip upwards, with vertical motion blur.
+    WhipUp,
     /// A short crossfade.
     Fade,
+    /// A zoom into the outgoing picture through a blur.
+    BlurZoom,
+    /// A hard cut hidden in a short burst of blur.
+    BlurCut,
+    /// A fast, hard-edged wipe.
+    WipeCut,
+    /// A dip through white.
+    Flash,
+    /// A dip through black.
+    DipToBlack,
+    /// The picture breaks into blocks and back.
+    Pixelate,
+    /// A circle opening onto the incoming picture.
+    Iris,
     /// Interpolated frames between the two sides of a jump cut
     /// (`VerticalRange::morph`); the audio is a plain cut.
     Morph,
 }
 
+/// Filters laid over part of a transition: the filter, and the start and
+/// end of its part (fractions of the overlap).
+type Overlay = (&'static str, f64, f64);
+
+/// How long a blur cut blurs on either side of the cut (seconds).
+const BLUR_CUT_SIDE: f64 = 0.12;
+
 impl Transition {
     /// How long the two stretches overlap (seconds).
     pub(crate) fn seconds(self) -> f64 {
         match self {
-            Transition::Cut | Transition::Morph => 0.0,
-            Transition::Whip => 0.24,
-            Transition::Fade => 0.3,
+            Transition::Cut | Transition::Morph | Transition::BlurCut => 0.0,
+            Transition::WipeCut => 0.18,
+            Transition::Whip | Transition::WhipUp | Transition::Flash => 0.24,
+            Transition::Fade | Transition::BlurZoom | Transition::Pixelate => 0.3,
+            Transition::Iris => 0.35,
+            Transition::DipToBlack => 0.4,
         }
+    }
+
+    /// How much of each side the transition takes up (seconds).
+    fn reach(self) -> f64 {
+        match self {
+            Transition::BlurCut => BLUR_CUT_SIDE,
+            _ => self.seconds(),
+        }
+    }
+
+    /// The xfade transition and the filters laid over it, for transitions
+    /// that overlap the stretches.
+    fn xfade(self) -> Option<(&'static str, &'static [Overlay])> {
+        Some(match self {
+            Transition::Whip => ("slideleft", &[("dblur=angle=0:radius=60", 0.0, 1.0)]),
+            Transition::WhipUp => ("slideup", &[("dblur=angle=90:radius=60", 0.0, 1.0)]),
+            Transition::Fade => ("fade", &[]),
+            // Blurs most mid-zoom.
+            Transition::BlurZoom => (
+                "zoomin",
+                &[("gblur=sigma=8", 0.0, 1.0), ("gblur=sigma=12", 0.25, 0.75)],
+            ),
+            Transition::WipeCut => ("wipeleft", &[]),
+            Transition::Flash => ("fadewhite", &[]),
+            Transition::DipToBlack => ("fadeblack", &[]),
+            Transition::Pixelate => ("pixelize", &[]),
+            Transition::Iris => ("circleopen", &[]),
+            Transition::Cut | Transition::BlurCut | Transition::Morph => return None,
+        })
     }
 }
 
@@ -200,8 +258,8 @@ fn effective_transition(ranges: &[VerticalRange], index: usize) -> Transition {
             Transition::Cut
         };
     }
-    let seconds = transition.seconds();
-    let long_enough = |range: &VerticalRange| range.end - range.start >= 2.0 * seconds;
+    let reach = transition.reach();
+    let long_enough = |range: &VerticalRange| range.end - range.start >= 2.0 * reach;
     if index == 0 || !long_enough(&ranges[index]) || !long_enough(&ranges[index - 1]) {
         Transition::Cut
     } else {
@@ -419,7 +477,7 @@ fn render_graph(
             // Short fades where a hard cut (or a morph, which is one for the
             // audio) meets this stretch, and at the clip's ends (platforms
             // loop shorts), against clicks.
-            let cut = |t: &Transition| matches!(t, Transition::Cut | Transition::Morph);
+            let cut = |t: &Transition| t.seconds() == 0.0;
             let mut fades = String::new();
             if i == 0 || cut(&transitions[i]) {
                 let _ = write!(fades, ",afade=t=in:d={CUT_FADE}");
@@ -483,25 +541,38 @@ fn render_graph(
             Transition::Morph => {
                 let _ = write!(graph, "[{current}][v{i}]concat=n=2:v=1:a=0[{joined}];");
             }
-            Transition::Whip => {
+            Transition::BlurCut => {
+                // Blurs in to the cut and out of it, most around it.
+                let (from, to) = (length - BLUR_CUT_SIDE, length + BLUR_CUT_SIDE);
+                let (peak_from, peak_to) =
+                    (length - BLUR_CUT_SIDE / 3.0, length + BLUR_CUT_SIDE / 3.0);
                 let _ = write!(
                     graph,
-                    "[{current}][v{i}]xfade=transition=slideleft:duration={seconds}:\
-                     offset={offset:.6},dblur=angle=0:radius=60:\
-                     enable='between(t,{offset:.6},{:.6})'[{joined}];",
-                    offset + seconds
+                    "[{current}][v{i}]concat=n=2:v=1:a=0,\
+                     gblur=sigma=10:enable='between(t,{from:.6},{to:.6})',\
+                     gblur=sigma=16:enable='between(t,{peak_from:.6},{peak_to:.6})'[{joined}];"
                 );
             }
-            Transition::Fade => {
+            transition => {
+                let (name, overlays) = transition.xfade().unwrap_or(("fade", &[]));
+                let mut over = String::new();
+                for (filter, from, to) in overlays {
+                    let _ = write!(
+                        over,
+                        ",{filter}:enable='between(t,{:.6},{:.6})'",
+                        offset + seconds * from,
+                        offset + seconds * to
+                    );
+                }
                 let _ = write!(
                     graph,
-                    "[{current}][v{i}]xfade=transition=fade:duration={seconds}:\
-                     offset={offset:.6}[{joined}];"
+                    "[{current}][v{i}]xfade=transition={name}:duration={seconds}:\
+                     offset={offset:.6}{over}[{joined}];"
                 );
             }
         }
         if render.has_audio {
-            if matches!(transitions[i], Transition::Cut | Transition::Morph) {
+            if seconds == 0.0 {
                 let _ = write!(
                     graph,
                     "[{current_audio}][a{i}]concat=n=2:v=0:a=1[{joined_audio}];"
@@ -1036,6 +1107,96 @@ mod transition_tests {
         );
         let (red, blue) = colour("2.5");
         assert!(blue > 150 && red < 80, "blue after it ({red},{blue})");
+    }
+
+    /// Every splice transition renders: the clip keeps its audio and is
+    /// shorter by the overlap, and its sides show before and after.
+    #[test]
+    fn renders_every_splice_transition() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("two.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"])
+            .args([
+                "-filter_complex",
+                "color=c=red:s=320x180:r=25:d=2[a];color=c=blue:s=320x180:r=25:d=2[b];\
+                 [a][b]concat=n=2,format=yuv420p[v]",
+            ])
+            .args([
+                "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-c:a", "aac",
+            ])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        for transition in [
+            Transition::Whip,
+            Transition::WhipUp,
+            Transition::Fade,
+            Transition::BlurZoom,
+            Transition::BlurCut,
+            Transition::WipeCut,
+            Transition::Flash,
+            Transition::DipToBlack,
+            Transition::Pixelate,
+            Transition::Iris,
+        ] {
+            let mut ranges = vec![
+                VerticalRange::new(0.0, 1.5, Framing::Fit),
+                VerticalRange::new(2.5, 4.0, Framing::Fit),
+            ];
+            ranges[1].transition = transition;
+            assert_eq!(effective_transition(&ranges, 1), transition);
+            let output = dir.path().join(format!("{transition:?}.mp4"));
+            render_vertical(
+                &VerticalRender {
+                    input: &source,
+                    ranges: &ranges,
+                    source_size: (320, 180),
+                    fps: 25.0,
+                    has_audio: true,
+                    output_size: (180, 320),
+                    output: &output,
+                    quality: ExportQuality::Draft,
+                    captions: None,
+                },
+                None,
+                |_| {},
+            )
+            .unwrap_or_else(|error| panic!("{transition:?}: {error}"));
+
+            let info = crate::media_probe::probe_media(&output).unwrap();
+            assert!(info.audio.is_some(), "{transition:?}");
+            let expected = 3.0 - transition.seconds();
+            let duration = info.duration_seconds.unwrap();
+            assert!(
+                (duration - expected).abs() < 0.12,
+                "{transition:?}: {duration} vs {expected}"
+            );
+            let colour = |time: &str| {
+                let out = std::process::Command::new("ffmpeg")
+                    .args(["-hide_banner", "-loglevel", "error", "-ss", time, "-i"])
+                    .arg(&output)
+                    .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
+                    .args(["-pix_fmt", "rgb24", "-"])
+                    .output()
+                    .unwrap()
+                    .stdout;
+                (out[0], out[2])
+            };
+            let (red, blue) = colour("0.5");
+            assert!(
+                red > 100 && blue < 80,
+                "{transition:?}: red before ({red},{blue})"
+            );
+            let (red, blue) = colour("2.6");
+            assert!(
+                blue > 100 && red < 80,
+                "{transition:?}: blue after ({red},{blue})"
+            );
+        }
     }
 }
 

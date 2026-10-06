@@ -5,6 +5,7 @@ import type {
     DetectedFace,
     FaceOverride,
     Intensity,
+    Transition,
 } from '../bindings';
 // IPC payloads generated from the Rust commands (src/bindings.ts) are the
 // source of truth for the shapes the backend sends and accepts.
@@ -312,6 +313,11 @@ export interface ViralClipsWorkspaceState {
     captions: boolean;
     /** How hard to tighten pauses, fillers and stutters on export. */
     intensity: Intensity;
+    /**
+     * Transitions where a 9:16 clip jumps to another moment, taken in turn;
+     * null: the intensity's own.
+     */
+    transitions: Transition[] | null;
     /** Let an LLM cut false starts, repetitions and asides from new clips. */
     autoEdit: boolean;
     /** The user's word on faces in 9:16 exports: ignored ones, named ones. */

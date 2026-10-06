@@ -53,6 +53,7 @@ import {
 import { captionAt, videoBox, type ShownWord, type VideoBox } from '../utils/verticalFraming';
 import { errorMessage } from '../utils/appError';
 import ClipText from './ClipText.vue';
+import TransitionPicker from './TransitionPicker.vue';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -156,6 +157,7 @@ const INTENSITIES: { value: Intensity; label: string; text: string }[] = [
     { value: 'hyper', label: 'Hyper', text: 'Pauses up to 90 ms: rapid-fire.' },
 ];
 const intensity = setting('intensity');
+const transitions = setting('transitions');
 const intensityText = computed(
     () => INTENSITIES.find((option) => option.value === intensity.value)?.text ?? '',
 );
@@ -178,6 +180,7 @@ function verticalRequest(clipSegments: ClipSegment[], clips: ShortClip[]): Verti
         turns: speakerTurns(props.segments),
         words: wordsAround(clips.flatMap((clip) => clip.ranges)),
         intensity: props.state.intensity,
+        transitions: props.state.transitions,
         captions: props.state.captions,
         looped: clips.map((clip) => clip.looped),
         faces: props.state.faces,
@@ -981,6 +984,12 @@ async function openExportFolder() {
             </div>
             <span class="text-xs text-gray-500">{{ intensityText }}</span>
         </div>
+
+        <TransitionPicker
+            v-model="transitions"
+            :intensity="intensity"
+            :inactive="!state.vertical"
+        />
 
         <button
             @click="generateClips"
