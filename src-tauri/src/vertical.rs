@@ -6,7 +6,7 @@
 //! podcasts cut back to the same camera setups, so every clip adds evidence
 //! for the others.
 
-use crate::camera::{listener_framing, plan_camera, CameraSettings, Frame as CameraFrame};
+use crate::camera::{listener_framing, plan_camera, CameraSettings, Frame as CameraFrame, Stretch};
 use crate::captions::{chunk_words, tightened_output_words, CaptionStyle, TimedWord};
 use crate::encoders::ExportQuality;
 use crate::face_identity::{group_people, Embedding, FaceEmbedder, SAME_PERSON};
@@ -88,8 +88,9 @@ fn trim_slivers(range: (f64, f64), cuts: &[f64]) -> (f64, f64) {
     (start, end)
 }
 
-/// A range to plan (without flash frames) and its tracks (indices).
-type RangeTracks = ((f64, f64), Vec<usize>);
+/// A range to plan (without flash frames), its tracks (indices) and the
+/// source cuts in it.
+type RangeTracks = ((f64, f64), Vec<usize>, Vec<f64>);
 
 /// One analysed range: source key, range (seconds) and what was found.
 type CacheEntry = (String, (f64, f64), Analysis);
@@ -481,7 +482,13 @@ fn analyse_clips(
                 tracks.push(track);
             }
             next_shot += shots;
-            per_range.push((kept, indices));
+            let cuts = local
+                .cuts
+                .iter()
+                .copied()
+                .filter(|&cut| kept.0 < cut && cut < kept.1)
+                .collect();
+            per_range.push((kept, indices, cuts));
         }
         range_tracks.push(per_range);
     }
@@ -841,9 +848,9 @@ pub(crate) fn plan_vertical(
         .map(|per_range| {
             per_range
                 .iter()
-                .map(|(range, indices)| {
+                .map(|(range, indices, cuts)| {
                     let kept = indices.iter().copied().filter(|&i| !ignored[i]).collect();
-                    (*range, kept)
+                    (*range, kept, cuts.clone())
                 })
                 .collect()
         })
@@ -864,18 +871,30 @@ pub(crate) fn plan_vertical(
         .map(|per_range| {
             let range_tracks: Vec<Vec<Track>> = per_range
                 .iter()
-                .map(|(_, indices)| indices.iter().map(|&i| tracks[i].clone()).collect())
+                .map(|(_, indices, _)| indices.iter().map(|&i| tracks[i].clone()).collect())
                 .collect();
             // Ranges joined by jump cuts are planned together, as one shot.
-            let stretches: Vec<((f64, f64), &[Track])> = per_range
+            let stretches: Vec<Stretch> = per_range
                 .iter()
                 .zip(&range_tracks)
-                .map(|(&(range, _), local)| (range, local.as_slice()))
+                .map(|((range, _, cuts), local)| Stretch {
+                    range: *range,
+                    tracks: local,
+                    cuts,
+                })
                 .collect();
-            let mut per_piece: Vec<Vec<VerticalRange>> = jump_cut_groups(&stretches)
+            let ranges: Vec<(f64, f64)> = stretches.iter().map(|s| s.range).collect();
+            let mut per_piece: Vec<Vec<VerticalRange>> = jump_cut_groups(&ranges)
                 .into_iter()
                 .flat_map(|group| {
-                    plan_camera(group, &bindings, turns, &camera_frame, aspect, &settings)
+                    plan_camera(
+                        &stretches[group],
+                        &bindings,
+                        turns,
+                        &camera_frame,
+                        aspect,
+                        &settings,
+                    )
                 })
                 .map(|pieces| {
                     pieces
@@ -964,18 +983,18 @@ const CUTAWAY_SPACING: f64 = 8.0;
 /// source pixels, from the tracks of a range.
 type ListenerFraming<'a> = dyn Fn(&[Track], (f64, f64), f64) -> Option<(CropKey, (f64, f64))> + 'a;
 
-/// Consecutive runs of `stretches` joined by jump cuts (the next one starts
-/// at most `JUMP_CUT` after the previous one ends).
-fn jump_cut_groups<T>(stretches: &[((f64, f64), T)]) -> Vec<&[((f64, f64), T)]> {
+/// Consecutive runs of `ranges` joined by jump cuts (the next one starts at
+/// most `JUMP_CUT` after the previous one ends), as index ranges.
+fn jump_cut_groups(ranges: &[(f64, f64)]) -> Vec<std::ops::Range<usize>> {
     let mut groups = Vec::new();
     let mut first = 0;
-    for i in 1..=stretches.len() {
-        let joined = i < stretches.len() && {
-            let gap = stretches[i].0 .0 - stretches[i - 1].0 .1;
+    for i in 1..=ranges.len() {
+        let joined = i < ranges.len() && {
+            let gap = ranges[i].0 - ranges[i - 1].1;
             (-1e-3..=JUMP_CUT).contains(&gap)
         };
         if !joined {
-            groups.push(&stretches[first..i]);
+            groups.push(first..i);
             first = i;
         }
     }
@@ -1444,20 +1463,16 @@ mod tests {
 
     #[test]
     fn jump_cuts_group_the_ranges_planned_together() {
-        let stretches = [
-            ((0.0, 2.0), ()),
-            ((2.3, 4.0), ()),
+        let ranges = [
+            (0.0, 2.0),
+            (2.3, 4.0),
             // Touching: a framing change in the same moment.
-            ((4.0, 5.0), ()),
+            (4.0, 5.0),
             // A splice, backwards and then forwards beyond a jump cut.
-            ((1.0, 1.5), ()),
-            ((9.0, 10.0), ()),
+            (1.0, 1.5),
+            (9.0, 10.0),
         ];
-        let lengths: Vec<usize> = jump_cut_groups(&stretches)
-            .iter()
-            .map(|g| g.len())
-            .collect();
-        assert_eq!(lengths, [3, 1, 1]);
+        assert_eq!(jump_cut_groups(&ranges), [0..3, 3..4, 4..5]);
     }
 
     #[test]

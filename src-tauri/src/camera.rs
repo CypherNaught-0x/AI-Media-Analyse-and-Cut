@@ -114,6 +114,20 @@ fn current_speaker(turns: &[SpeechTurn], time: f64, bridge: f64) -> Option<&str>
     None
 }
 
+/// A source range to frame, with what analysing it found.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Stretch<'a> {
+    pub range: (f64, f64),
+    /// Tracks analysed around the range.
+    pub tracks: &'a [Track],
+    /// Source cuts (camera switches) in the range.
+    pub cuts: &'a [f64],
+}
+
+/// Framing switches this close (seconds) to a cut move onto it, so the
+/// picture doesn't change twice in a moment.
+const SWITCH_SNAP: f64 = 0.3;
+
 /// One sample of the planner: a source time in one stretch.
 #[derive(Debug, Clone, Copy)]
 struct Sample {
@@ -128,21 +142,24 @@ struct Faces {
     tracks: Vec<Track>,
     stretch: Vec<usize>,
     person: Vec<usize>,
+    /// Per stretch: its source cuts.
+    cuts: Vec<Vec<f64>>,
 }
 
 impl Faces {
-    /// `stretches`: each one's range and the tracks analysed around it.
-    fn new(stretches: &[((f64, f64), &[Track])]) -> Self {
+    fn new(stretches: &[Stretch<'_>]) -> Self {
         let mut faces = Faces {
             tracks: Vec::new(),
             stretch: Vec::new(),
             person: Vec::new(),
+            cuts: stretches.iter().map(|s| s.cuts.to_vec()).collect(),
         };
         // Per stretch: (index in `faces`, the whole analysed track).
         let mut previous: Vec<(usize, &Track)> = Vec::new();
-        for (index, &((start, end), tracks)) in stretches.iter().enumerate() {
+        for (index, stretch) in stretches.iter().enumerate() {
+            let (start, end) = stretch.range;
             let mut current = Vec::new();
-            for track in tracks {
+            for track in stretch.tracks {
                 // A sample beyond the edges still finds the nearest face.
                 let Some(clipped) = track.within(start - STEP, end + STEP) else {
                     continue;
@@ -160,7 +177,7 @@ impl Faces {
                     .enumerate()
                     .filter(|&(i, _)| !taken[i])
                     .filter_map(|(i, &(before, whole))| {
-                        let seam = (stretches[index - 1].0 .1, start);
+                        let seam = (stretches[index - 1].range.1, start);
                         same_face(whole, &faces.tracks[before], track, seam).map(|d| (i, before, d))
                     })
                     .min_by(|a, b| a.2.total_cmp(&b.2));
@@ -186,6 +203,22 @@ impl Faces {
         self.on_screen(sample)
             .into_iter()
             .find(|&t| self.person[t] == person)
+    }
+
+    /// Whether `choice` can be shown at `sample`: the whole shot always; a
+    /// person if seen within a few samples, in the same shot.
+    fn shows(&self, choice: Choice, sample: Sample) -> bool {
+        let Choice::Face(person) = choice else {
+            return true;
+        };
+        let cuts = &self.cuts[sample.stretch];
+        (0..self.tracks.len())
+            .filter(|&t| self.person[t] == person && self.stretch[t] == sample.stretch)
+            .map(|t| nearest(&self.tracks[t], sample.time).time)
+            .any(|time| {
+                let (from, to) = (time.min(sample.time), time.max(sample.time));
+                to - from <= 3.0 * STEP && !cuts.iter().any(|&cut| from < cut && cut <= to)
+            })
     }
 
     /// Where the crop should be to frame `person` at `sample`: from their
@@ -327,6 +360,47 @@ fn absorb_short_runs(choices: &mut [Choice], samples: &[Sample], faces: &Faces, 
         }
         if let Some(replacement) = [before, after].into_iter().flatten().find(|&c| covers(c)) {
             choices[first..end].fill(replacement);
+        }
+    }
+}
+
+/// Move framing switches that fall just beside a cut (a jump cut between
+/// stretches, or a source cut) onto it, where the picture changes anyway.
+/// A switch moves if the side that grows can be shown there.
+fn snap_switches(choices: &mut [Choice], samples: &[Sample], faces: &Faces) {
+    // Edges: the sample right after each cut.
+    let edges: Vec<usize> = (0..=samples.len())
+        .filter(|&i| {
+            i == 0
+                || i == samples.len()
+                || samples[i].stretch != samples[i - 1].stretch
+                || faces.cuts[samples[i].stretch]
+                    .iter()
+                    .any(|&cut| samples[i - 1].time < cut && cut <= samples[i].time)
+        })
+        .collect();
+    let reach = (SWITCH_SNAP / STEP).round() as usize;
+    for &edge in &edges {
+        let near = |i: usize| i.abs_diff(edge) <= reach && i > 0 && i < samples.len();
+        // The switch nearest the edge, unless it's on another edge or one
+        // lies in between.
+        let switch = (edge.saturating_sub(reach)..=edge + reach)
+            .filter(|&i| near(i) && choices[i] != choices[i - 1] && !edges.contains(&i))
+            .filter(|&i| {
+                let (low, high) = (i.min(edge), i.max(edge));
+                !edges.iter().any(|&e| low < e && e < high)
+            })
+            .min_by_key(|&i| i.abs_diff(edge));
+        let Some(switch) = switch else {
+            continue;
+        };
+        let (span, choice) = if switch < edge {
+            (switch..edge, choices[switch - 1])
+        } else {
+            (edge..switch, choices[switch])
+        };
+        if span.clone().all(|i| faces.shows(choice, samples[i])) {
+            choices[span].fill(choice);
         }
     }
 }
@@ -490,16 +564,16 @@ fn follow(
     (smooth(&holds, settings.pan_sigma / STEP), height)
 }
 
-/// The framing of a group of source ranges played back to back (`stretches`:
-/// each range with the tracks analysed around it; consecutive ones are
-/// joined by jump cuts), per range as consecutive pieces covering it.
+/// The framing of a group of source ranges played back to back (consecutive
+/// stretches are joined by jump cuts), per range as consecutive pieces
+/// covering it.
 /// Coordinates are in `frame`'s pixels.
 ///
 /// The group is planned as one shot: a subject seen on both sides of a cut
 /// keeps their framing, zoom and any pan across it, so jump cuts don't jolt
 /// the picture and a morph can hide them.
 pub(crate) fn plan_camera(
-    stretches: &[((f64, f64), &[Track])],
+    stretches: &[Stretch<'_>],
     bindings: &[Binding],
     turns: &[SpeechTurn],
     frame: &Frame,
@@ -510,16 +584,25 @@ pub(crate) fn plan_camera(
     let samples: Vec<Sample> = stretches
         .iter()
         .enumerate()
-        .flat_map(|(stretch, &((start, end), _))| {
-            (0..)
-                .map(move |i| start + f64::from(i) * STEP)
-                .take_while(move |&time| time < end)
-                .map(move |time| Sample { time, stretch })
-        })
+        .flat_map(
+            |(
+                stretch,
+                &Stretch {
+                    range: (start, end),
+                    ..
+                },
+            )| {
+                (0..)
+                    .map(move |i| start + f64::from(i) * STEP)
+                    .take_while(move |&time| time < end)
+                    .map(move |time| Sample { time, stretch })
+            },
+        )
         .collect();
     let mut plans: Vec<Vec<Piece>> = vec![Vec::new(); stretches.len()];
     let mut choices = choose(&samples, &faces, bindings, turns, settings);
     absorb_short_runs(&mut choices, &samples, &faces, settings.min_hold);
+    snap_switches(&mut choices, &samples, &faces);
 
     const STILL: f64 = 0.05;
     for (choice, first, run_end) in runs(&choices) {
@@ -537,15 +620,20 @@ pub(crate) fn plan_camera(
         let mut moving = false;
         for index in first..run_end {
             let sample = samples[index];
-            let ((start, end), _) = stretches[sample.stretch];
+            let (start, end) = stretches[sample.stretch].range;
             let pieces = &mut plans[sample.stretch];
             let opens_stretch = pieces.is_empty();
             // Pieces change on frame boundaries, so trims and audio stay in
-            // sync.
+            // sync; at a source cut, exactly there.
+            let snap = |time: f64| start + ((time - start) * frame.fps).round() / frame.fps;
             let time = if opens_stretch {
                 start
             } else if index == first {
-                start + ((sample.time - start) * frame.fps).round() / frame.fps
+                let previous = samples[index - 1].time;
+                faces.cuts[sample.stretch]
+                    .iter()
+                    .find(|&&cut| previous < cut && cut <= sample.time)
+                    .map_or(snap(sample.time), |&cut| snap(cut))
             } else {
                 sample.time
             };
@@ -684,7 +772,11 @@ mod tests {
         turns: &[SpeechTurn],
     ) -> Vec<Piece> {
         plan_camera(
-            &[(range, tracks)],
+            &[Stretch {
+                range,
+                tracks,
+                cuts: &[],
+            }],
             bindings,
             turns,
             &FRAME,
@@ -919,8 +1011,16 @@ mod tests {
         bindings: &[Binding],
         turns: &[SpeechTurn],
     ) -> Vec<Vec<CropKey>> {
+        let group: Vec<Stretch> = stretches
+            .iter()
+            .map(|&(range, tracks)| Stretch {
+                range,
+                tracks,
+                cuts: &[],
+            })
+            .collect();
         plan_camera(
-            stretches,
+            &group,
             bindings,
             turns,
             &FRAME,
@@ -1021,6 +1121,80 @@ mod tests {
         );
         assert!(keys[0].iter().all(|k| k.center_x == 260.0), "{keys:?}");
         assert!(keys[1].iter().all(|k| k.center_x == 760.0), "{keys:?}");
+    }
+
+    #[test]
+    fn a_switch_at_a_source_cut_lands_on_it_without_a_wide_flash() {
+        // As on the PODIUM recording: the last face sample before the cut
+        // is at 3.0, the first after it at 3.2, the cut at 3.1333.
+        let before = track(0, (0.0, 3.05), |_| (900.0, 100.0));
+        let mut after = track(1, (3.2, 6.0), |_| (400.0, 100.0));
+        after.shot = 1;
+        let tracks = [before, after];
+        let cut = 3.0 + 4.0 / 30.0;
+        let plan = plan_camera(
+            &[Stretch {
+                range: (0.0, 6.0),
+                tracks: &tracks,
+                cuts: &[cut],
+            }],
+            &[bind(0, "A"), bind(1, "A")],
+            &[turn(0.0, 6.0, "A")],
+            &Frame { fps: 30.0, ..FRAME },
+            PORTRAIT,
+            &CameraSettings::default(),
+        )
+        .remove(0);
+        assert_eq!(plan.len(), 1, "{plan:?}");
+        let Framing::Follow(keys) = &plan[0].framing else {
+            panic!("followed throughout: {plan:?}");
+        };
+        let switch = keys
+            .iter()
+            .find(|k| k.center_x != keys[0].center_x)
+            .unwrap();
+        assert!((switch.time - cut).abs() < 1e-9, "{keys:?}");
+    }
+
+    #[test]
+    fn a_switch_just_after_a_jump_cut_moves_onto_it() {
+        let ranges = [(0.0, 3.0), (3.5, 6.5)];
+        let [a, b] = analysed_twice(ranges, |_| (200.0, 100.0), |_| 120.0);
+        let [c, d] = analysed_twice(ranges, |_| (900.0, 100.0), |_| 120.0);
+        let (first, second) = ([a, c], [b, d]);
+        let stretch = |range, tracks| Stretch {
+            range,
+            tracks,
+            cuts: &[],
+        };
+        // A speaks into the second stretch by 0.1 s; then someone unknown,
+        // with both faces on screen: the whole shot.
+        let plan = plan_camera(
+            &[stretch(ranges[0], &first), stretch(ranges[1], &second)],
+            &[bind(0, "A"), bind(1, "A")],
+            &[turn(0.0, 3.6, "A"), turn(3.6, 6.5, "C")],
+            &FRAME,
+            PORTRAIT,
+            &CameraSettings::default(),
+        );
+        assert!(
+            matches!(
+                plan[0][..],
+                [Piece {
+                    framing: Framing::Follow(_),
+                    ..
+                }]
+            ),
+            "{plan:?}"
+        );
+        assert_eq!(
+            plan[1],
+            [Piece {
+                start: 3.5,
+                end: 6.5,
+                framing: Framing::Fit
+            }]
+        );
     }
 
     #[test]
