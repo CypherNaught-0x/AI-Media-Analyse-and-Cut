@@ -274,6 +274,16 @@ export interface ShortClip {
     looped: boolean;
     /** Included in "Export selected". */
     selected: boolean;
+    /** Words the user cut out of this clip (their source times); the transcript keeps them. */
+    cutWords?: TimeSpan[];
+    /** What is cut from the ranges (source seconds): the cut words and the pause after each run. */
+    cuts?: TimeSpan[];
+}
+
+/** A stretch of source time (seconds). */
+export interface TimeSpan {
+    start: number;
+    end: number;
 }
 
 /** People found in a set of clips, and which set (see the faces panel). */

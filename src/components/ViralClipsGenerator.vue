@@ -19,7 +19,9 @@ import {
     captionWords,
     type ClipWord,
     playbackStep,
+    playedRanges,
     ratingTone,
+    setCutWords,
     setFaceOverride,
     speakerNames,
     speakerTurns,
@@ -261,7 +263,9 @@ let frameRequest: number | null = null;
 const playhead = ref<number | null>(null);
 
 function previewSignature(clip: ShortClip): string {
-    const ranges = clip.ranges.map((range) => `${range.start}-${range.end}`).join(',');
+    const ranges = playedRanges(clip)
+        .map((range) => `${range.start}-${range.end}`)
+        .join(',');
     const framing = props.state.vertical ? `9:16|${JSON.stringify(props.state.faces)}` : 'source';
     return `${framing}|${props.state.intensity}|${ranges}`;
 }
@@ -330,7 +334,7 @@ async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> 
     const existing = prepared.value.get(clip.id);
     if (existing?.signature === signature) return existing;
     if (!props.state.vertical && props.state.intensity === 'off') {
-        return { signature, ranges: clip.ranges, plan: null };
+        return { signature, ranges: playedRanges(clip), plan: null };
     }
     if (props.busy || isProcessing.value) return null;
 
@@ -363,7 +367,7 @@ async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> 
                 start: parseTime(segment.start),
                 end: parseTime(segment.end),
             }));
-            entry = { signature, ranges: ranges.length ? ranges : clip.ranges, plan: null };
+            entry = { signature, ranges: ranges.length ? ranges : playedRanges(clip), plan: null };
         }
         assertActiveRun(runId);
         const next = new Map(prepared.value);
@@ -581,6 +585,12 @@ function toggleText(clip: ShortClip) {
 function keptRanges(clip: ShortClip): PlaybackRange[] | null {
     const entry = prepared.value.get(clip.id);
     return entry && entry.signature === previewSignature(clip) ? entry.ranges : null;
+}
+
+function cutClipWords(clip: ShortClip, words: ClipWord[], cut: boolean) {
+    updateClip(clip.id, (current) =>
+        setCutWords(current, clipWords(props.segments, current.ranges), words, cut),
+    );
 }
 
 function editClipWord(word: ClipWord, text: string) {
@@ -1095,7 +1105,9 @@ async function openExportFolder() {
                         :words="clipWords(segments, clip.ranges)"
                         :kept="keptRanges(clip)"
                         :playhead="previewing?.id === clip.id ? playhead : null"
+                        :cut-words="clip.cutWords"
                         @edit="editClipWord"
+                        @cut="(words, cut) => cutClipWords(clip, words, cut)"
                     />
 
                     <!-- Facts, ratings and actions sit at the bottom, so cards in a row line up. -->

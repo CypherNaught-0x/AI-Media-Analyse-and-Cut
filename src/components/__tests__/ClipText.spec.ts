@@ -50,6 +50,26 @@ describe('ClipText', () => {
         expect(wrapper.emitted('edit')).toBeUndefined();
     });
 
+    it('cuts words in cut mode, a range with Shift, and restores them', async () => {
+        const wrapper = mount(ClipText, {
+            props: { words, kept: null, playhead: null, cutWords: [] },
+        });
+        await wrapper.get('[data-testid="clip-text-mode-cut"]').trigger('click');
+        await wrapper.get('[data-testid="clip-word-0"]').trigger('click');
+        await wrapper.get('[data-testid="clip-word-2"]').trigger('click', { shiftKey: true });
+        const cuts = wrapper.emitted('cut')!;
+        expect(cuts[0]).toEqual([[words[0]], true]);
+        expect(cuts[1]).toEqual([[words[0], words[1], words[2]], true]);
+        expect(wrapper.find('[data-testid="clip-text-input"]').exists()).toBe(false);
+
+        await wrapper.setProps({ cutWords: [{ start: 11, end: 12 }] });
+        expect(wrapper.get('[data-testid="clip-word-1"]').attributes('data-cut')).toBe('true');
+        await wrapper.get('[data-testid="clip-word-1"]').trigger('click');
+        expect(wrapper.emitted('cut')!.at(-1)).toEqual([[words[1]], false]);
+        await wrapper.get('[data-testid="clip-text-restore"]').trigger('click');
+        expect(wrapper.emitted('cut')!.at(-1)).toEqual([[words[1]], false]);
+    });
+
     it('turns off autocorrect and capitalisation while editing', async () => {
         const wrapper = mount(ClipText, { props: { words, kept: null, playhead: null } });
         await wrapper.get('[data-testid="clip-word-0"]').trigger('click');

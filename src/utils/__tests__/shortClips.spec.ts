@@ -7,7 +7,10 @@ import {
     normalizeShortClips,
     captionWords,
     clipWords,
+    cutIntervals,
     editWord,
+    playedRanges,
+    setCutWords,
     playbackStep,
     ratingTone,
     setFaceOverride,
@@ -287,5 +290,74 @@ describe('clipWords and editWord', () => {
 
     it('ignores empty edits', () => {
         expect(editWord(segments, { segment: 0, index: 0 }, '  ')).toBe(segments);
+    });
+});
+
+describe('cutting words out of a clip', () => {
+    const word = (start: number, end: number, text: string) => ({
+        segment: 0,
+        index: 0,
+        start,
+        end,
+        text,
+        speaker: 'A',
+    });
+    // "So, äh, we deleted prod." with a pause after "äh".
+    const words = [
+        word(10, 10.3, 'So,'),
+        word(10.4, 10.7, 'äh,'),
+        word(11.2, 11.5, 'we'),
+        word(11.5, 11.9, 'deleted'),
+        word(12.0, 12.5, 'prod.'),
+    ];
+    const clip = fromCandidates([
+        {
+            title: 'T',
+            hookLine: '',
+            reason: '',
+            ranges: [{ start: 10, end: 13, role: 'body', firstSegment: 0, lastSegment: 0 }],
+            ratings: null as never,
+            signals: null as never,
+            score: 50,
+            duration: 3,
+            looped: false,
+        },
+    ])[0];
+
+    it('cuts a run up to the next word, taking its pause along', () => {
+        expect(cutIntervals(words, [words[1], words[2]])).toEqual([{ start: 10.4, end: 11.5 }]);
+        // The last word: up to its end.
+        expect(cutIntervals(words, [words[4]])).toEqual([{ start: 12.0, end: 12.5 }]);
+    });
+
+    it('plays and exports the ranges around the cuts', () => {
+        const cut = setCutWords(clip, words, [words[1]], true);
+        expect(cut.cutWords).toEqual([{ start: 10.4, end: 10.7 }]);
+        expect(playedRanges(cut).map((r) => [r.start, r.end, r.role])).toEqual([
+            [10, 10.4, 'body'],
+            [11.2, 13, 'body'],
+        ]);
+        expect(clipDuration(cut)).toBeCloseTo(2.2);
+        expect(toExportSegments(cut)).toEqual([
+            { start: '00:10.000', end: '00:10.400' },
+            { start: '00:11.200', end: '00:13.000' },
+        ]);
+        // Restoring removes the cut entirely.
+        const restored = setCutWords(cut, words, [words[1]], false);
+        expect(restored).not.toHaveProperty('cuts');
+        expect(playedRanges(restored)).toEqual(clip.ranges);
+    });
+
+    it('refuses to cut everything and keeps cuts through saving', () => {
+        const all = setCutWords(
+            { ...clip, ranges: [{ start: 10, end: 12.5, role: 'body' }] },
+            words,
+            words,
+            true,
+        );
+        expect(all.cuts).toBeUndefined();
+
+        const cut = setCutWords(clip, words, [words[1]], true);
+        expect(normalizeShortClips(JSON.parse(JSON.stringify([cut])))).toEqual([cut]);
     });
 });
