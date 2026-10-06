@@ -297,6 +297,97 @@ mod profiling {
         PathBuf::from(std::env::var("HOME").unwrap())
     }
 
+    fn parse_clock(text: &str) -> f32 {
+        text.split(':').fold(0.0, |total, part| {
+            total * 60.0 + part.parse::<f32>().unwrap_or(0.0)
+        })
+    }
+
+    fn normalise_words(text: &str) -> Vec<String> {
+        text.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn word_error_rate(reference: &[String], hypothesis: &[String]) -> f32 {
+        let mut previous: Vec<usize> = (0..=hypothesis.len()).collect();
+        for (i, reference_word) in reference.iter().enumerate() {
+            let mut current = vec![i + 1];
+            for (j, hypothesis_word) in hypothesis.iter().enumerate() {
+                let substitution = previous[j] + usize::from(reference_word != hypothesis_word);
+                current.push(substitution.min(previous[j + 1] + 1).min(current[j] + 1));
+            }
+            previous = current;
+        }
+        previous[hypothesis.len()] as f32 / reference.len().max(1) as f32
+    }
+
+    /// Scores model directories against the hand-corrected transcript of the
+    /// reference panel recording (`SHORTS_PROFILE_SOURCE` /
+    /// `SHORTS_PROFILE_TRANSCRIPT`, first `PARAKEET_COMPARE_MINUTES` minutes).
+    /// `PARAKEET_COMPARE_DIRS=name=/path,name2=/path2`:
+    /// `cargo test --release --lib compare_tdt_models -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn compare_tdt_models() {
+        let source = std::env::var("SHORTS_PROFILE_SOURCE").expect("SHORTS_PROFILE_SOURCE");
+        let transcript =
+            std::env::var("SHORTS_PROFILE_TRANSCRIPT").expect("SHORTS_PROFILE_TRANSCRIPT");
+        let minutes: f32 = std::env::var("PARAKEET_COMPARE_MINUTES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10.0);
+        let limit = minutes * 60.0;
+
+        let transcript: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(transcript).unwrap()).unwrap();
+        let reference_text = transcript["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|segment| parse_clock(segment["end"].as_str().unwrap_or("0")) <= limit)
+            .filter_map(|segment| segment["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let reference = normalise_words(&reference_text);
+
+        let audio = load_audio_16k_mono(Path::new(&source)).unwrap();
+        let audio = &audio[..audio.len().min((limit * SAMPLE_RATE as f32) as usize)];
+        let seconds = audio.len() as f32 / SAMPLE_RATE as f32;
+
+        for entry in std::env::var("PARAKEET_COMPARE_DIRS").unwrap().split(',') {
+            let (name, dir) = entry.split_once('=').unwrap();
+            let mut model = ParakeetTDT::from_pretrained(
+                dir,
+                Some(ModelConfig::default().with_intra_threads(8)),
+            )
+            .unwrap();
+            let started = Instant::now();
+            let mut words = Vec::new();
+            for chunk in audio.chunks(120 * SAMPLE_RATE) {
+                let result = model
+                    .transcribe_samples(
+                        chunk.to_vec(),
+                        SAMPLE_RATE as u32,
+                        1,
+                        Some(TimestampMode::Words),
+                    )
+                    .unwrap();
+                words.extend(result.tokens.into_iter().map(|token| token.text));
+            }
+            let elapsed = started.elapsed().as_secs_f32();
+            let hypothesis = normalise_words(&words.join(" "));
+            println!(
+                "{name:>10}: WER {:>5.2}% over {} ref words | {:.1}x realtime",
+                word_error_rate(&reference, &hypothesis) * 100.0,
+                reference.len(),
+                seconds / elapsed
+            );
+        }
+    }
+
     /// Times Sortformer and Parakeet TDT on the 74 s test recording under
     /// different execution configs (see `onnx_execution_config`). Needs the
     /// downloaded models; add `--features profile-coreml` to include CoreML:
