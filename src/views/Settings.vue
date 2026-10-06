@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { refreshApiKeyStatus, useSettings } from '../composables/useSettings';
+import { appleSpeechLocale, useAppleSpeech } from '../composables/useAppleSpeech';
 import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
@@ -58,11 +59,25 @@ const ENGINE_OPTIONS: { value: LocalEngine; title: string; badge?: string; descr
             description:
                 'Verbatim transcription with precise word timings. English and German only.',
         },
+        {
+            value: 'apple-speech',
+            title: 'Apple Speech',
+            badge: 'macOS 26+',
+            description:
+                "macOS's built-in on-device model. Very fast, ~45 languages; drops fillers.",
+        },
     ];
 
 const router = useRouter();
 const { settings, apiKeyStored, updateSettings, modelFetchState, updateModelFetchState } =
     useSettings();
+const {
+    status: appleSpeechStatus,
+    checking: isCheckingAppleSpeech,
+    supported: appleSpeechSupported,
+    refresh: refreshAppleSpeechStatus,
+    setStatus: setAppleSpeechStatus,
+} = useAppleSpeech();
 
 const localBaseUrl = ref(settings.value.baseUrl);
 // A new key typed here; the stored key itself is never loaded into the UI.
@@ -99,6 +114,50 @@ const crisperStatus = ref<CrisperEnvironmentStatus | null>(null);
 const isCheckingCrisper = ref(false);
 const isInstallingCrisper = ref(false);
 const crisperProgress = ref('');
+const localAppleSpeechLocale = ref(settings.value.appleSpeechLocale ?? '');
+const localAppleSpeechDiarize = ref(settings.value.appleSpeechDiarize ?? true);
+const isInstallingAppleSpeech = ref(false);
+const appleSpeechProgress = ref('');
+// Apple Speech is only offered where it can exist (macOS builds with the
+// helper); keep the current choice visible even if it can't run here.
+const engineOptions = computed(() =>
+    ENGINE_OPTIONS.filter(
+        (engine) =>
+            engine.value !== 'apple-speech' ||
+            appleSpeechSupported.value ||
+            localLocalEngine.value === 'apple-speech',
+    ),
+);
+/** The locale a run would use, after resolving "system language". */
+const effectiveAppleSpeechLocale = computed(() => appleSpeechLocale(localAppleSpeechLocale.value));
+const appleSpeechLocaleInstalled = computed(() => {
+    const installed = appleSpeechStatus.value?.installedLocales ?? [];
+    const wanted = effectiveAppleSpeechLocale.value.toLowerCase();
+    return installed.some(
+        (locale) =>
+            locale.toLowerCase() === wanted || locale.toLowerCase().startsWith(`${wanted}-`),
+    );
+});
+const appleSpeechLocaleOptions = computed(() => {
+    const status = appleSpeechStatus.value;
+    if (!status) return [];
+    const installed = new Set(status.installedLocales);
+    const names = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' });
+    return status.supportedLocales
+        .map((locale) => {
+            let name = locale;
+            try {
+                name = names.of(locale) ?? locale;
+            } catch {
+                // Unknown to Intl; show the identifier.
+            }
+            return {
+                value: locale,
+                label: `${name} (${locale})${installed.has(locale) ? ' \u2713' : ''}`,
+            };
+        })
+        .sort((a, b) => a.label.localeCompare(b.label));
+});
 const isFetchingModels = ref(false);
 const fetchError = ref('');
 const showManualInput = ref(false);
@@ -158,6 +217,9 @@ onMounted(async () => {
         unlistenCrisperProgress = await listen<{ message: string }>('progress', (event) => {
             if (isCheckingCrisper.value || isInstallingCrisper.value) {
                 crisperProgress.value = event.payload?.message ?? '';
+            }
+            if (isInstallingAppleSpeech.value) {
+                appleSpeechProgress.value = event.payload?.message ?? '';
             }
         });
     } catch (e) {
@@ -233,6 +295,23 @@ async function selectCrisperPython() {
     if (typeof selected === 'string') {
         localCrisperPythonPath.value = selected;
         void refreshCrisperStatus();
+    }
+}
+
+async function downloadAppleSpeechLocale() {
+    isInstallingAppleSpeech.value = true;
+    appleSpeechProgress.value = 'Starting...';
+    try {
+        setAppleSpeechStatus(
+            await commands.installAppleSpeechLocale(effectiveAppleSpeechLocale.value),
+        );
+        showToast('The Apple Speech language is ready to use.', 'success');
+    } catch (e) {
+        console.error('Failed to download the Apple Speech language:', e);
+        showToast(`Apple Speech download failed: ${errorMessage(e)}`, 'error');
+    } finally {
+        isInstallingAppleSpeech.value = false;
+        appleSpeechProgress.value = '';
     }
 }
 
@@ -346,7 +425,9 @@ const hasChanges = computed(() => {
         localCrisperRemoveVocalEvents.value !==
             (settings.value.crisperRemoveVocalEvents ?? false) ||
         localCrisperDiarize.value !== (settings.value.crisperDiarize ?? true) ||
-        localCrisperPythonPath.value !== (settings.value.crisperPythonPath ?? '')
+        localCrisperPythonPath.value !== (settings.value.crisperPythonPath ?? '') ||
+        localAppleSpeechLocale.value !== (settings.value.appleSpeechLocale ?? '') ||
+        localAppleSpeechDiarize.value !== (settings.value.appleSpeechDiarize ?? true)
     );
 });
 
@@ -538,6 +619,8 @@ async function saveSettings() {
         crisperRemoveVocalEvents: localCrisperRemoveVocalEvents.value,
         crisperDiarize: localCrisperDiarize.value,
         crisperPythonPath: localCrisperPythonPath.value.trim(),
+        appleSpeechLocale: localAppleSpeechLocale.value,
+        appleSpeechDiarize: localAppleSpeechDiarize.value,
     });
     router.push('/');
 }
@@ -595,7 +678,7 @@ function cancel() {
                     </label>
                     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <button
-                            v-for="engine in ENGINE_OPTIONS"
+                            v-for="engine in engineOptions"
                             :key="engine.value"
                             type="button"
                             class="flex h-full flex-col rounded-2xl border p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
@@ -967,7 +1050,9 @@ function cancel() {
                                             <option value="auto">Auto</option>
                                             <option value="float32">float32</option>
                                             <option value="float16">float16</option>
-                                            <option value="int8_float16">int8_float16</option>
+                                            <option value="int8_float16">
+                                                int8_float16 (fastest)
+                                            </option>
                                         </select>
                                     </div>
                                 </div>
@@ -975,9 +1060,13 @@ function cancel() {
                                     CTranslate2 is roughly 4&ndash;5&times; faster but its wheels
                                     are Linux x86_64 only; everywhere else the portable PyTorch
                                     backend is used. Auto precision picks float32 on CPU and float16
-                                    on CUDA. On Apple Silicon, Auto stays on CPU: word timings need
-                                    eager attention, which measured
-                                    <em>slower</em> on MPS than on CPU.
+                                    on a GPU. On Apple Silicon, Auto uses the GPU (MPS, float16):
+                                    the app's own decoding loop runs about twice as fast there as on
+                                    the CPU, with the same transcript.
+                                    <strong>int8_float16</strong> is another ~1.4&times; faster on
+                                    GPU and CPU; on 10 minutes of German the word error rate was
+                                    unchanged, and up to 14 of 2,076 words differed, mostly fillers
+                                    and punctuation.
                                 </p>
                                 <div>
                                     <label class="block text-xs font-medium text-gray-500 mb-2"
@@ -1004,6 +1093,140 @@ function cancel() {
                                 </div>
                             </div>
                         </details>
+                    </div>
+                </div>
+
+                <div
+                    v-if="appleSpeechSupported"
+                    class="mb-6 group border-t border-white/10 pt-6 mt-6"
+                >
+                    <label
+                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
+                    >
+                        Apple Speech Settings
+                    </label>
+
+                    <div class="mb-4 p-4 rounded-2xl bg-black/20 border border-white/10">
+                        <div class="flex items-start justify-between gap-3 mb-2">
+                            <div>
+                                <p
+                                    class="text-xs font-medium text-gray-400 uppercase tracking-wider"
+                                >
+                                    Runtime
+                                </p>
+                                <p
+                                    v-if="isInstallingAppleSpeech"
+                                    class="text-sm text-gray-300 mt-1"
+                                >
+                                    {{ appleSpeechProgress || 'Downloading...' }}
+                                </p>
+                                <p
+                                    v-else-if="isCheckingAppleSpeech"
+                                    class="text-sm text-gray-300 mt-1"
+                                >
+                                    Checking...
+                                </p>
+                                <p
+                                    v-else-if="appleSpeechStatus?.available"
+                                    class="text-sm mt-1"
+                                    :class="
+                                        appleSpeechLocaleInstalled
+                                            ? 'text-green-400'
+                                            : 'text-amber-300'
+                                    "
+                                >
+                                    <template v-if="appleSpeechLocaleInstalled">
+                                        Ready &mdash; {{ effectiveAppleSpeechLocale }} is installed.
+                                    </template>
+                                    <template v-else>
+                                        The {{ effectiveAppleSpeechLocale }} model is not downloaded
+                                        yet; it downloads on first use, or now.
+                                    </template>
+                                </p>
+                                <p v-else class="text-sm text-amber-300 mt-1">
+                                    {{ appleSpeechStatus?.message ?? 'Not available.' }}
+                                </p>
+                            </div>
+                            <div class="flex gap-2 shrink-0">
+                                <button
+                                    type="button"
+                                    :disabled="isCheckingAppleSpeech || isInstallingAppleSpeech"
+                                    @click="refreshAppleSpeechStatus"
+                                    class="px-3 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all border border-white/10"
+                                >
+                                    Re-check
+                                </button>
+                                <button
+                                    v-if="
+                                        appleSpeechStatus?.available && !appleSpeechLocaleInstalled
+                                    "
+                                    type="button"
+                                    :disabled="isInstallingAppleSpeech"
+                                    @click="downloadAppleSpeechLocale"
+                                    class="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all"
+                                >
+                                    {{ isInstallingAppleSpeech ? 'Downloading...' : 'Download' }}
+                                </button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-500">
+                            Runs macOS's own on-device speech model (macOS 26 or newer). Nothing
+                            leaves this Mac; macOS downloads one model per language and manages it.
+                            It is not verbatim &mdash; fillers like &ldquo;um&rdquo; are dropped
+                            &mdash; so use CrisperWhisper to cut those out.
+                        </p>
+                    </div>
+
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-500 mb-2"
+                                >Language</label
+                            >
+                            <select
+                                v-model="localAppleSpeechLocale"
+                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300"
+                            >
+                                <option value="">
+                                    System language ({{ appleSpeechLocale('') }})
+                                </option>
+                                <option
+                                    v-for="locale in appleSpeechLocaleOptions"
+                                    :key="locale.value"
+                                    :value="locale.value"
+                                >
+                                    {{ locale.label }}
+                                </option>
+                            </select>
+                            <p class="text-xs text-gray-500 mt-2">
+                                &#10003; marks languages already downloaded.
+                            </p>
+                        </div>
+
+                        <div
+                            class="flex items-center gap-3 p-4 bg-black/20 rounded-2xl border border-white/10 cursor-pointer hover:bg-black/30 transition-colors"
+                            @click="localAppleSpeechDiarize = !localAppleSpeechDiarize"
+                        >
+                            <div
+                                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0"
+                                :class="localAppleSpeechDiarize ? 'bg-blue-600' : 'bg-gray-700'"
+                            >
+                                <span
+                                    class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
+                                    :class="
+                                        localAppleSpeechDiarize ? 'translate-x-6' : 'translate-x-1'
+                                    "
+                                />
+                            </div>
+                            <div>
+                                <span class="text-sm font-medium text-gray-300"
+                                    >Identify Speakers</span
+                                >
+                                <p class="text-xs text-gray-500">
+                                    Adds Sortformer diarization; Apple Speech does not tell speakers
+                                    apart.
+                                </p>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

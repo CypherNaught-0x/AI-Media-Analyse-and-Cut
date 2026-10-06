@@ -213,6 +213,7 @@ Used by every pipeline except **LLM Only** — including both hybrids.
 | --- | --- | --- |
 | **Parakeet** | — | Parakeet TDT + Sortformer diarization, word timestamps. Models auto-download. |
 | **CrisperWhisper** | Python 3.10+ | Verbatim transcription with ~30 ms word timings. **English and German only**, non-commercial licence. |
+| **Apple Speech** | macOS 26+ | macOS's own on-device model: very fast, ~45 locales, word timings. Not verbatim (drops fillers). |
 
 The two axes are genuinely independent: the hybrid stages consume an opaque local transcript and
 never know which engine produced it, so *Hybrid Merge + CrisperWhisper* is as valid a
@@ -267,40 +268,84 @@ Note on `python3`: on macOS the default `python3` is the 3.9 command-line-tools 
 below the 3.10 floor. Setup therefore also looks for `python3.14` … `python3.10` (and the `py`
 launcher on Windows), so a Homebrew or python.org install is found automatically.
 
-Measured on an Apple M-series laptop, PyTorch backend, float32, 74 s of speech (the
-`dev-resources/test-data` recording):
+#### Speed
 
-| Model | Device | Wall clock | Words |
+On the PyTorch backend the app decodes with its own loop
+([`crisperwhisper_fast_engine.py`](src-tauri/resources/crisperwhisper_fast_engine.py)) instead of
+HuggingFace `generate()`. The stock path re-ran the 32-layer encoder for every decode call and
+for a redundant language detection, and needed eager attention in every layer only to read the
+~10 alignment heads word timing uses. The app's loop encodes each 30 s window once, keeps a static
+KV cache, runs SDPA attention, and computes attention weights for the alignment heads only.
+Before decoding it checks its logits against HuggingFace's decoder and falls back to the stock
+engine if they disagree (or for an untested `crisperwhisper` release).
+
+Measured on an M3 Pro, `large`, word timings and repetition repair on:
+
+| Engine | Device, precision | 74 s English clip | 10 min German panel |
 | --- | --- | --- | --- |
-| `small` | CPU | ~8 s | 157 |
-| `small` | MPS | ~12 s | 157 |
-| `large` | CPU | ~64 s | 130 |
+| Stock (`generate()`) | CPU, float32 | 51.8 s | 560 s |
+| Fast | CPU, float32 | 20.3 s | 227 s |
+| Fast | CPU, int8_float16 | 16.9 s | 164 s |
+| Fast | Apple GPU, float16 (**Auto**) | 9.8 s | 95 s (6.3x realtime) |
+| Fast | Apple GPU, int8_float16 | 7.3 s | 70 s (8.6x realtime) |
 
-Auto device selection stays on CPU on Apple Silicon deliberately: word timings require eager
-attention, which measured *slower* on MPS than on CPU for identical output. **Apple GPU (MPS)**
-is selectable under advanced options if you want to try it on your own hardware.
+In float32 and float16 the transcript has the same words as the stock engine's. On the CPU the
+word timings are identical too; on the Apple GPU (float16), 6 of 2,076 word timings in the
+German panel moved by 40-100 ms. **Auto** therefore picks the Apple GPU (MPS, float16) on
+Apple Silicon and float32 on the CPU elsewhere; CUDA uses float16. The **int8_float16**
+precision stores the decoder's weights as int8, which roughly halves (GPU) or quarters (CPU) the
+bytes read per decoded token. On the German panel its word error rate stayed the same (16.7% on
+the GPU, 16.6% on the CPU), and 5 (GPU) and 14 (CPU) of 2,076 words differed, mostly fillers and
+punctuation. Because fillers are what CrisperWhisper is used for here, int8 is an option rather
+than the default. bfloat16 changed the transcript and, on the CPU, ran slower, so it is not used.
+Progress is reported per 30 s window with an estimate of the time left.
 
-#### Known upstream issue: hallucination mitigation
+Running several 30 s windows as one batch was measured too. It isn't worth it on MPS: four
+batched streams decode only 1.6x faster than one, because small-batch matmuls barely amortise
+there, and splitting the audio would change the transcript at each split.
 
-`crisperwhisper` 2.0.1 imports `ctranslate2` at the top of its `hallucination` module, and the
-PyTorch engine imports that module for its repair path. With only the portable
-`[transformers]` extra installed, transcription would otherwise crash partway through with
-`ModuleNotFoundError: No module named 'ctranslate2'`.
+#### Hallucination mitigation without CTranslate2
 
-The app checks for this up front and continues with hallucination mitigation disabled, logging
-a note in the progress feed rather than failing after minutes of inference. Everything else —
-verbatim/intended modes, word timings, longform, filler removal — is unaffected. Installing
-the CTranslate2 fork (`crisperwhisper[ct2]`, Linux x86_64 + NVIDIA) restores it.
+`crisperwhisper` 2.0.1 imports `ctranslate2` at the top of its `hallucination` module, which a
+PyTorch-only install doesn't have. The PyTorch backend only uses that module's pure-Python loop
+detection, though, so the runner imports it against a placeholder `ctranslate2` (removed again
+straight after, so backend detection still sees no CTranslate2). Repetition repair and
+temperature fallback therefore stay on. Earlier versions turned both off and logged "hallucination
+mitigation and temperature fallback are unavailable in this environment".
 
-Do **not** `pip install ctranslate2` to work around this: upstream CTranslate2 is not the
-CrisperWhisper fork, and model loading fails with a missing-API error. The app detects this
-case by checking for the fork's APIs and will not offer the `ct2` backend for an upstream
-build.
+Do **not** `pip install ctranslate2` instead: upstream CTranslate2 is not the CrisperWhisper fork,
+and model loading fails with a missing-API error. The app detects this case by checking for the
+fork's APIs and will not offer the `ct2` backend for an upstream build.
 
 > **Licensing**: the CrisperWhisper 2.0 weights are released under the Nyra Health
 > **Non-Commercial Research License** — free for research and other non-commercial use, but
 > commercial use requires a license from Nyra Health. The app itself remains MIT; this
 > restriction applies to the downloaded model weights only.
+
+### Apple Speech
+
+On macOS 26 and newer the app can transcribe with the speech model built into macOS
+(`SpeechAnalyzer` / `SpeechTranscriber`). It runs on-device, needs no Python or app-managed
+model, and is the fastest engine: about 45-57x realtime on an M3 Pro (74 s in 1.7 s, 10 min of
+German in 11 s). Each word comes with its time range.
+
+*   **Languages**: ~45 locales (English, German, French, Spanish, Italian, Portuguese, Japanese,
+    Korean, Chinese, Hindi and more). Settings lists them; *System language* follows macOS.
+    macOS downloads each language's model once (German: ~13 s) on first use or via
+    **Download** in Settings, and manages it from then on.
+*   **Not verbatim**: fillers ("um", "Mhm") are dropped, so **Remove Filler Words** has nothing
+    to cut. Use CrisperWhisper when you want to cut disfluencies out of the video.
+*   **Identify Speakers** adds Sortformer diarization, as for CrisperWhisper.
+
+On the 10 min German panel excerpt it scored 15.4% WER against the hand-corrected transcript
+(CrisperWhisper `large`: 16.7%, penalised for the repetitions it keeps; the reference is an
+edited transcript, so treat both as relative numbers).
+
+The API is Swift-only, so a small helper ([`apple-speech/main.swift`](src-tauri/apple-speech/main.swift))
+is compiled by `build.rs`, embedded in the app, and driven out of process. Building it needs
+Xcode or the Command Line Tools with the macOS 26 SDK; without them the app still builds and
+simply doesn't offer the engine. Only the helper needs macOS 26: the app itself still runs on
+older macOS versions, where the engine is not offered.
 
 ## Transcript Blacklists
 

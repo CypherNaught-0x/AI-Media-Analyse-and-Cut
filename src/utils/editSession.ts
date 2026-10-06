@@ -8,7 +8,7 @@ import type {
     TranscriptWorkspaceState,
     ViralClipsWorkspaceState,
 } from '../types';
-import { migrateTranscriptionBackend } from '../types';
+import { isLocalEngine, migrateTranscriptionBackend } from '../types';
 
 export const EDIT_SESSION_VERSION = 1 as const;
 type SupportedEditSessionVersion = 0 | typeof EDIT_SESSION_VERSION;
@@ -156,10 +156,9 @@ function migrateSnapshotBackend(
     const storedEngine = raw.localEngine ?? snapshot.localEngine;
 
     const migrated = migrateTranscriptionBackend(storedBackend);
-    const localEngine =
-        storedEngine === 'parakeet' || storedEngine === 'crisper'
-            ? storedEngine
-            : (migrated?.localEngine ?? defaults.settingsSnapshot.localEngine);
+    const localEngine = isLocalEngine(storedEngine)
+        ? storedEngine
+        : (migrated?.localEngine ?? defaults.settingsSnapshot.localEngine);
 
     return {
         transcriptionBackend: migrated?.backend ?? defaults.settingsSnapshot.transcriptionBackend,

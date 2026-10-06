@@ -19,9 +19,17 @@ it can never corrupt the protocol stream.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
+import time
 import traceback
+import types
+import wave
+
+# A few ops lack Metal kernels in some torch releases; run those on the CPU
+# rather than failing a GPU transcription. Must be set before torch loads.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 # Claim the real stdout for the protocol before any heavy import can print to
 # it, then point sys.stdout at stderr so library chatter is harmless.
@@ -98,8 +106,8 @@ def ct2_fork_status() -> tuple[bool, str | None]:
     return True, None
 
 
-def hallucination_module_available() -> bool:
-    """Whether `crisperwhisper.hallucination` can be imported at all.
+def load_hallucination_module() -> bool:
+    """Import `crisperwhisper.hallucination`, also on a PyTorch-only install.
 
     crisperwhisper 2.0.1 imports `ctranslate2` at the top of that module, so on
     a PyTorch-only install it raises ModuleNotFoundError. Two *separate*
@@ -110,14 +118,48 @@ def hallucination_module_available() -> bool:
       only entered when a chunk trips the mel coverage pre-filter, which makes
       the crash look intermittent
 
-    Both flags therefore have to be turned off together, and it has to be
-    decided up front rather than discovered after minutes of inference.
+    The PyTorch backend only uses the module's pure-Python loop detection
+    (`find_token_loop`, `DEFAULT_REPAIR_THRESHOLDS`); `ctranslate2` appears
+    there only in annotations (lazy under `from __future__ import annotations`)
+    and in helpers the CT2 engine calls. So the module is imported against a
+    placeholder `ctranslate2` that raises if anything does touch it, and the
+    placeholder is removed again straight away so backend detection
+    (`importlib.util.find_spec("ctranslate2")`) still sees no CT2.
+
+    Returns False only if the module cannot be imported even so; both flags
+    then have to be turned off together, decided up front rather than
+    discovered after minutes of inference.
     """
+    if "crisperwhisper.hallucination" in sys.modules:
+        return True
     try:
         import crisperwhisper.hallucination  # noqa: F401
+        return True
     except Exception:
+        sys.modules.pop("crisperwhisper.hallucination", None)
+
+    if "ctranslate2" in sys.modules:
+        # A real (if unusable) ctranslate2 is already loaded; don't shadow it.
         return False
-    return True
+
+    placeholder = types.ModuleType("ctranslate2")
+
+    def missing(name: str):
+        raise ImportError(
+            f"ctranslate2.{name} is unavailable: the CTranslate2 backend is not installed."
+        )
+
+    placeholder.__getattr__ = missing  # type: ignore[attr-defined]
+    sys.modules["ctranslate2"] = placeholder
+    try:
+        import crisperwhisper.hallucination  # noqa: F401
+        return True
+    except Exception:
+        sys.modules.pop("crisperwhisper.hallucination", None)
+        return False
+    finally:
+        if sys.modules.get("ctranslate2") is placeholder:
+            del sys.modules["ctranslate2"]
 
 
 def emit(payload: dict) -> None:
@@ -182,17 +224,41 @@ def describe_environment() -> dict:
     elif fork_note:
         info["ct2Note"] = fork_note
 
-    info["hallucinationMitigation"] = hallucination_module_available()
+    info["hallucinationMitigation"] = load_hallucination_module()
 
     return info
 
 
-def resolve_runtime(request: dict, env: dict) -> tuple[str, str, str]:
-    """Pick (backend, device, compute_type), filling in "auto" sensibly.
+# crisperwhisper releases the lean decoding engine has been validated against.
+# It reuses the stock engine's tokenizer, features and private helpers, so an
+# unknown release runs the stock engine instead.
+FAST_ENGINE_VERSIONS = ("2.0.",)
+
+
+def fast_engine_wanted(request: dict, env: dict, backend: str) -> bool:
+    if backend != "transformers" or request.get("fastDecoding") is False:
+        return False
+    version = env.get("crisperwhisperVersion") or ""
+    if not version.startswith(FAST_ENGINE_VERSIONS):
+        progress(
+            f"Fast decoding is not validated for crisperwhisper {version}; "
+            "using the stock engine."
+        )
+        return False
+    return True
+
+
+def resolve_runtime(request: dict, env: dict) -> tuple[str, str, str, bool]:
+    """Pick (backend, device, compute_type, fast_engine), filling in "auto".
 
     The package defaults to float16, which is unusably slow (and partly
     unimplemented) on CPU, so an "auto" compute type resolves to float32
-    unless a CUDA device is actually going to be used.
+    unless a GPU is actually going to be used.
+
+    "auto" picks Apple's GPU (MPS) only with the fast engine: the stock engine
+    needs eager attention for word timings and measured slower on MPS than on
+    the CPU, while the fast engine on MPS float16 is ~2x faster than on the CPU
+    with identical output (74 s English test clip and a 10 min German panel).
     """
     backend = (request.get("backend") or "auto").strip() or "auto"
     device = (request.get("device") or "auto").strip() or "auto"
@@ -207,13 +273,20 @@ def resolve_runtime(request: dict, env: dict) -> tuple[str, str, str]:
         )
         backend = available[0]
 
+    fast = fast_engine_wanted(request, env, backend)
+
     if device == "auto":
-        device = "cuda" if env.get("cuda") else "cpu"
+        if env.get("cuda"):
+            device = "cuda"
+        elif fast and env.get("mps"):
+            device = "mps"
+        else:
+            device = "cpu"
 
     if compute_type == "auto":
-        compute_type = "float16" if device == "cuda" else "float32"
+        compute_type = "float16" if device in ("cuda", "mps") else "float32"
 
-    return backend, device, compute_type
+    return backend, device, compute_type, fast
 
 
 def is_filler(token: str) -> bool:
@@ -261,6 +334,145 @@ def collect_words(result) -> list[dict]:
     return collected
 
 
+def load_model(model_name, backend, device, compute_type, cache_dir, engine_class=None):
+    """Load the model, optionally with `engine_class` in place of the stock
+    `TransformersEngine` (which `CrisperWhisperModel` looks up at load time).
+
+    Failing to load the stock engine ends the run; failing with `engine_class`
+    raises, so the caller can fall back to the stock engine."""
+    from crisperwhisper import CrisperWhisperModel
+
+    progress(
+        f"Loading CrisperWhisper '{model_name}' "
+        f"({backend} backend, {device}, {compute_type})..."
+    )
+    model_kwargs = {"backend": backend, "device": device, "compute_type": compute_type}
+    if cache_dir:
+        model_kwargs["cache_dir"] = cache_dir
+
+    stock = None
+    if engine_class is not None:
+        import crisperwhisper.transformers_engine as engines
+
+        stock = engines.TransformersEngine
+        engines.TransformersEngine = engine_class
+    try:
+        return CrisperWhisperModel(model_name, **model_kwargs)
+    except Exception as error:
+        if engine_class is not None:
+            raise
+        fail(
+            f"Failed to load CrisperWhisper model '{model_name}'.",
+            kind="model_load",
+            detail=f"{type(error).__name__}: {error}",
+        )
+    finally:
+        if stock is not None:
+            engines.TransformersEngine = stock
+
+
+# Relative logit error above which the fast engine is not trusted. Real layout
+# mismatches are O(1); float16 rounding measured ~1e-3.
+FAST_ENGINE_TOLERANCE = 1e-2
+
+
+def is_auto(value) -> bool:
+    return (value or "auto").strip() in ("", "auto")
+
+
+def load_fast_model(model_name, backend, device, compute_type, cache_dir):
+    """Load with the fast decoding engine.
+
+    Returns `(model, engine)` with engine "fast" or "stock", or `(None, "stock")`
+    when the caller should load the stock engine itself."""
+    try:
+        import crisperwhisper_fast_engine
+
+        engine_class = crisperwhisper_fast_engine.build_engine_class()
+    except Exception as error:
+        progress(f"Fast decoding unavailable ({type(error).__name__}: {error}); using the stock engine.")
+        return None, "stock"
+
+    try:
+        model = load_model(model_name, backend, device, compute_type, cache_dir, engine_class)
+    except Exception as error:
+        progress(
+            f"Fast decoding failed to load ({type(error).__name__}: {error}); "
+            "using the stock engine."
+        )
+        return None, "stock"
+    engine = getattr(model, "_engine", None)
+    if not isinstance(engine, engine_class):
+        # e.g. a legacy v1 checkpoint, which has its own pipeline.
+        return model, "stock"
+    try:
+        error = engine.self_check()
+    except Exception as failure:
+        error = float("inf")
+        progress(f"Fast decoding self-check failed ({type(failure).__name__}: {failure}).")
+    if not error <= FAST_ENGINE_TOLERANCE:
+        progress(
+            f"Fast decoding disagrees with the reference decoder (error {error:.3g}); "
+            "reloading with the stock engine."
+        )
+        del model, engine
+        return None, "stock"
+    return model, "fast"
+
+
+def audio_duration(path: str) -> float:
+    """Duration of the WAV the app hands over, without decoding it."""
+    try:
+        with wave.open(path, "rb") as handle:
+            return handle.getnframes() / float(handle.getframerate())
+    except Exception:
+        return 0.0
+
+
+def format_clock(seconds: float) -> str:
+    seconds = int(round(seconds))
+    hours, rest = divmod(seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+# The default continuation longform strategy: 30 s windows every 26 s.
+LONGFORM_WINDOW_S = 30.0
+LONGFORM_STRIDE_S = 26.0
+
+
+def report_window_progress(model, duration: float, label: str) -> None:
+    """Report progress per decoded 30 s window.
+
+    Counts feature extractions, which happen once per window (a rare coverage
+    fallback re-extracts, hence the clamp), and estimates the time left from
+    the windows done so far.
+    """
+    engine = getattr(model, "_engine", None)
+    extract = getattr(engine, "extract_features_with_mel", None)
+    if extract is None or duration <= 0:
+        progress(f"{label}... this runs locally and can take a while.")
+        return
+
+    total = 1 + max(0, math.ceil((duration - LONGFORM_WINDOW_S) / LONGFORM_STRIDE_S))
+    started = time.monotonic()
+    state = {"done": 0}
+
+    def counting(*args, **kwargs):
+        done = min(state["done"], total - 1)
+        message = f"{label}: window {done + 1} of {total}"
+        if done:
+            remaining = (time.monotonic() - started) / done * (total - done)
+            message += f", about {format_clock(remaining)} left"
+        progress(message + "...")
+        state["done"] += 1
+        return extract(*args, **kwargs)
+
+    engine.extract_features_with_mel = counting
+
+
 def transcribe(request: dict) -> None:
     audio_path = request.get("audioPath")
     if not audio_path or not os.path.isfile(audio_path):
@@ -292,11 +504,11 @@ def transcribe(request: dict) -> None:
             kind="missing_backend",
         )
 
-    backend, device, compute_type = resolve_runtime(request, env)
+    backend, device, compute_type, fast = resolve_runtime(request, env)
     model_name = (request.get("model") or "large").strip() or "large"
 
     try:
-        from crisperwhisper import CrisperWhisperModel
+        from crisperwhisper import CrisperWhisperModel  # noqa: F401
     except Exception as error:
         fail(
             "Failed to import CrisperWhisper.",
@@ -304,33 +516,18 @@ def transcribe(request: dict) -> None:
             detail=f"{type(error).__name__}: {error}",
         )
 
-    progress(
-        f"Loading CrisperWhisper '{model_name}' "
-        f"({backend} backend, {device}, {compute_type})..."
-    )
-
-    model_kwargs = {
-        "backend": backend,
-        "device": device,
-        "compute_type": compute_type,
-    }
     cache_dir = request.get("cacheDir")
-    if cache_dir:
-        model_kwargs["cache_dir"] = cache_dir
-
-    try:
-        model = CrisperWhisperModel(model_name, **model_kwargs)
-    except Exception as error:
-        fail(
-            f"Failed to load CrisperWhisper model '{model_name}'.",
-            kind="model_load",
-            detail=f"{type(error).__name__}: {error}",
-        )
-
-    progress(
-        f"Transcribing in {mode} mode ({language})... "
-        "this runs locally and can take a while."
-    )
+    model, engine = None, "stock"
+    if fast:
+        model, engine = load_fast_model(model_name, backend, device, compute_type, cache_dir)
+    if model is None:
+        if fast and device == "mps" and is_auto(request.get("device")):
+            # Only the fast engine made MPS the automatic choice; the stock
+            # engine is slower there than on the CPU.
+            device = "cpu"
+            if is_auto(request.get("computeType")):
+                compute_type = "float32"
+        model = load_model(model_name, backend, device, compute_type, cache_dir)
 
     transcribe_kwargs = {
         "language": language,
@@ -338,23 +535,26 @@ def transcribe(request: dict) -> None:
         "word_timestamps": bool(request.get("wordTimestamps", True)),
     }
 
-    # Guard the known crisperwhisper 2.0.1 packaging bug: both the repair path
-    # and the temperature-fallback path import `ctranslate2` even on the
-    # PyTorch backend. Transcribing without them is far better than failing
-    # after minutes of inference.
-    if not hallucination_module_available():
+    # Normally importable even without ctranslate2 (see
+    # `load_hallucination_module`); if it still is not, transcribing without
+    # both safeguards beats failing after minutes of inference.
+    if not load_hallucination_module():
         transcribe_kwargs["hallucination_mitigation"] = False
         transcribe_kwargs["temperature_fallback"] = False
         progress(
-            "Note: hallucination mitigation and temperature fallback are "
-            "unavailable in this environment (crisperwhisper imports "
-            "ctranslate2 for both); continuing without them."
+            "Note: crisperwhisper's hallucination module could not be "
+            "imported; continuing without repetition repair and temperature "
+            "fallback."
         )
     hotwords = request.get("hotwords") or []
     if hotwords:
         # Honoured by Pro models only; standard models warn and ignore it.
         transcribe_kwargs["hotwords"] = list(hotwords)
 
+    duration = audio_duration(audio_path)
+    report_window_progress(model, duration, f"Transcribing in {mode} mode ({language})")
+
+    started = time.monotonic()
     try:
         result = model.transcribe(audio_path, **transcribe_kwargs)
     except Exception as error:
@@ -362,6 +562,13 @@ def transcribe(request: dict) -> None:
             "CrisperWhisper transcription failed.",
             kind="inference",
             detail=f"{type(error).__name__}: {error}",
+        )
+    elapsed = time.monotonic() - started
+    if duration and elapsed > 0:
+        progress(
+            f"Transcribed {format_clock(duration)} of audio in "
+            f"{format_clock(elapsed)} ({duration / elapsed:.1f}x realtime, "
+            f"{device} {compute_type})."
         )
 
     words = collect_words(result)
@@ -382,6 +589,8 @@ def transcribe(request: dict) -> None:
             "backend": backend,
             "device": device,
             "computeType": compute_type,
+            "engine": engine,
+            "hallucinationMitigation": transcribe_kwargs.get("hallucination_mitigation", True),
             "model": model_name,
             "words": words,
         }

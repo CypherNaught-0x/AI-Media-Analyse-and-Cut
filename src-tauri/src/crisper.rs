@@ -24,11 +24,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::Manager;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use parakeet_rs::sortformer::SpeakerSegment;
 
 use crate::error::AppError;
+use crate::helper_process::run_json_helper;
 use crate::local_asr::{
     build_transcript_segments_from_runs, diarize, emit_progress, load_audio_16k_mono,
     resolve_sortformer_file, speaker_label_for_word, write_wav_16k_mono, WordWithSpeaker,
@@ -45,6 +46,10 @@ use tauri::State;
 /// and avoids per-platform resource-path handling.
 const RUNNER_SOURCE: &str = include_str!("../resources/crisperwhisper_runner.py");
 const RUNNER_FILE_NAME: &str = "crisperwhisper_runner.py";
+/// The fast decoding engine the runner imports; it must sit next to the runner,
+/// which Python puts on `sys.path` when running it as a script.
+const FAST_ENGINE_SOURCE: &str = include_str!("../resources/crisperwhisper_fast_engine.py");
+const FAST_ENGINE_FILE_NAME: &str = "crisperwhisper_fast_engine.py";
 const ENVIRONMENT_DIR_NAME: &str = "crisperwhisper";
 const DEFAULT_MODEL: &str = "large";
 const DEFAULT_LANGUAGE: &str = "en";
@@ -254,8 +259,9 @@ fn python_candidates(window: &tauri::Window, python_path: &str) -> Vec<String> {
     candidates
 }
 
-/// Materialise the embedded bridge script next to the managed environment so
-/// the interpreter has a real file to execute.
+/// Materialise the embedded bridge script (and the fast engine it imports)
+/// next to the managed environment so the interpreter has real files to run.
+/// Returns the runner script's path.
 fn write_runner_script(window: &tauri::Window) -> Result<PathBuf> {
     let directory = window
         .path()
@@ -269,19 +275,23 @@ fn write_runner_script(window: &tauri::Window) -> Result<PathBuf> {
         )
     })?;
 
+    write_if_changed(&directory.join(FAST_ENGINE_FILE_NAME), FAST_ENGINE_SOURCE)?;
     let script_path = directory.join(RUNNER_FILE_NAME);
-    // Rewrite only when the content differs so the file is not churned on
-    // every run.
-    let needs_write = std::fs::read_to_string(&script_path)
-        .map(|existing| existing != RUNNER_SOURCE)
+    write_if_changed(&script_path, RUNNER_SOURCE)?;
+    Ok(script_path)
+}
+
+/// Rewrite only when the content differs so the file is not churned on every
+/// run.
+fn write_if_changed(path: &Path, content: &str) -> Result<()> {
+    let needs_write = std::fs::read_to_string(path)
+        .map(|existing| existing != content)
         .unwrap_or(true);
     if needs_write {
-        std::fs::write(&script_path, RUNNER_SOURCE).with_context(|| {
-            format!("Failed to write runner script '{}'", script_path.display())
-        })?;
+        std::fs::write(path, content)
+            .with_context(|| format!("Failed to write runner script '{}'", path.display()))?;
     }
-
-    Ok(script_path)
+    Ok(())
 }
 
 fn command_for(python: &str, script: &Path) -> tokio::process::Command {
@@ -290,20 +300,13 @@ fn command_for(python: &str, script: &Path) -> tokio::process::Command {
         .arg(script)
         // Unbuffered so progress lines arrive while the model is running.
         .env("PYTHONUNBUFFERED", "1")
-        .env("PYTHONIOENCODING", "utf-8")
-        // A dropped run (e.g. the command future is abandoned) must not leave
-        // a model running in the background.
-        .kill_on_drop(true)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .env("PYTHONIOENCODING", "utf-8");
     command
 }
 
-/// Run the bridge script with a JSON request, forwarding `progress` lines to
-/// the UI and returning the final `result` object.
-/// Run one request through the bridge script. With `run`, the Python process
-/// belongs to that run: cancelling the run kills it.
+/// Run one request through the bridge script, forwarding `progress` lines to
+/// the UI and returning the final `result` object. With `run`, the Python
+/// process belongs to that run: cancelling the run kills it.
 async fn run_runner(
     on_progress: &(dyn Fn(&str) + Sync),
     python: &str,
@@ -311,113 +314,14 @@ async fn run_runner(
     request: serde_json::Value,
     run: Option<(u64, &RunControl)>,
 ) -> Result<serde_json::Value> {
-    let mut child = command_for(python, script)
-        .spawn()
-        .with_context(|| format!("Failed to start Python interpreter '{python}'"))?;
-    if let (Some((run_id, run_control)), Some(pid)) = (run, child.id()) {
-        if let Err(error) = run_control.register_pid(run_id, pid) {
-            let _ = child.kill().await;
-            return Err(anyhow!(error));
-        }
-    }
-
-    let payload = serde_json::to_vec(&request)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&payload).await?;
-        stdin.shutdown().await?;
-    }
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("Failed to capture Python stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow!("Failed to capture Python stderr"))?;
-
-    // Drain stderr concurrently: pip and torch are chatty, and a full pipe
-    // buffer would deadlock the child.
-    let stderr_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        let mut tail: Vec<String> = Vec::new();
-        while let Ok(Some(line)) = lines.next_line().await {
-            log::debug!("crisperwhisper: {line}");
-            tail.push(line);
-            if tail.len() > 40 {
-                tail.remove(0);
-            }
-        }
-        tail
-    });
-
-    let mut result: Option<serde_json::Value> = None;
-    let mut failure: Option<String> = None;
-    let mut lines = BufReader::new(stdout).lines();
-
-    while let Some(line) = lines.next_line().await? {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let Ok(message) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-            log::debug!("crisperwhisper (non-protocol stdout): {trimmed}");
-            continue;
-        };
-
-        match message.get("type").and_then(|value| value.as_str()) {
-            Some("progress") => {
-                if let Some(text) = message.get("message").and_then(|value| value.as_str()) {
-                    on_progress(text);
-                }
-            }
-            Some("error") => {
-                let text = message
-                    .get("message")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("CrisperWhisper failed");
-                let detail = message.get("detail").and_then(|value| value.as_str());
-                failure = Some(match detail {
-                    Some(detail) => format!("{text} ({detail})"),
-                    None => text.to_string(),
-                });
-            }
-            Some("result") => result = Some(message),
-            _ => {}
-        }
-    }
-
-    let status = child.wait().await?;
-    let stderr_tail = stderr_task.await.unwrap_or_default();
-    if let Some((run_id, run_control)) = run {
-        if let Some(pid) = child.id() {
-            run_control.clear_pid(run_id, pid);
-        }
-        run_control
-            .ensure_active(run_id)
-            .map_err(|error| anyhow!(error))?;
-    }
-
-    if let Some(failure) = failure {
-        return Err(anyhow!(failure));
-    }
-
-    match result {
-        Some(result) => Ok(result),
-        None => {
-            let tail = stderr_tail.join("\n");
-            Err(anyhow!(
-                "CrisperWhisper produced no result (exit {}).{}",
-                status.code().unwrap_or(-1),
-                if tail.is_empty() {
-                    String::new()
-                } else {
-                    format!(" Details: {tail}")
-                }
-            ))
-        }
-    }
+    run_json_helper(
+        "CrisperWhisper",
+        on_progress,
+        command_for(python, script),
+        request,
+        run,
+    )
+    .await
 }
 
 /// Probe one interpreter. Returns `Err` only when the interpreter itself could
@@ -1355,6 +1259,14 @@ mod tests {
         // added_tokens.json.
         assert!(RUNNER_SOURCE.contains("[um]"));
         assert!(RUNNER_SOURCE.contains("[laughter]"));
+    }
+
+    #[test]
+    fn runner_imports_the_fast_engine_under_the_name_it_is_written_as() {
+        let module = FAST_ENGINE_FILE_NAME.trim_end_matches(".py");
+        assert!(RUNNER_SOURCE.contains(&format!("import {module}")));
+        assert!(FAST_ENGINE_SOURCE.contains("def build_engine_class"));
+        assert!(RUNNER_SOURCE.contains(&format!("{module}.build_engine_class()")));
     }
 
     #[test]

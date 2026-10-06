@@ -23,6 +23,7 @@ use std::process::{Command, Stdio};
 use ai_media_cutter_lib::crisper::{build_segments, CrisperOptions, RunnerWord};
 
 const RUNNER_SOURCE: &str = include_str!("../resources/crisperwhisper_runner.py");
+const FAST_ENGINE_SOURCE: &str = include_str!("../resources/crisperwhisper_fast_engine.py");
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -66,9 +67,17 @@ fn candidate_pythons() -> Vec<PathBuf> {
     candidates
 }
 
-/// Write the embedded bridge script to a temp file, exactly as the app does.
+/// Write the embedded bridge script and the fast engine it imports next to
+/// each other in a temp directory, exactly as the app does.
 fn materialize_runner() -> PathBuf {
-    let path = std::env::temp_dir().join("crisperwhisper_runner_test.py");
+    let directory = std::env::temp_dir().join("crisperwhisper_runner_test");
+    std::fs::create_dir_all(&directory).expect("create runner directory");
+    std::fs::write(
+        directory.join("crisperwhisper_fast_engine.py"),
+        FAST_ENGINE_SOURCE,
+    )
+    .expect("write fast engine");
+    let path = directory.join("crisperwhisper_runner.py");
     std::fs::write(&path, RUNNER_SOURCE).expect("write runner script");
     path
 }
@@ -309,6 +318,20 @@ fn transcribes_the_known_recording_verbatim_with_word_timings() {
         "transcription failed: {result:#?} (progress: {progress:#?})"
     );
 
+    // --- runtime -----------------------------------------------------------
+    // The PyTorch backend runs the fast engine with repetition repair on; on
+    // ct2 (Linux + NVIDIA) the stock engine is expected.
+    if result["backend"] == "transformers" {
+        assert_eq!(
+            result["engine"], "fast",
+            "fast decoding fell back to the stock engine: {progress:#?}"
+        );
+    }
+    assert_eq!(
+        result["hallucinationMitigation"], true,
+        "hallucination mitigation was disabled: {progress:#?}"
+    );
+
     // --- word timings ---------------------------------------------------
     let words = result["words"].as_array().expect("words array");
     assert!(
@@ -519,4 +542,65 @@ fn runner_stdout_carries_only_protocol_json() {
 
     let script = Path::new(&runner.script);
     assert!(script.exists());
+}
+
+/// The fast decoding engine replaces HuggingFace `generate()` with its own
+/// loop; on the CPU in float32 it must reproduce the stock engine's words and
+/// timings.
+#[test]
+fn fast_decoding_matches_the_stock_engine() {
+    let Some(runner) = available_runner() else {
+        println!("Skipping: no CrisperWhisper environment found.");
+        return;
+    };
+    let Some(wav) = prepare_wav() else {
+        println!("Skipping: FFmpeg unavailable to prepare the test audio.");
+        return;
+    };
+
+    let transcribe = |fast: bool| {
+        let (progress, result) = runner.call(&serde_json::json!({
+            "action": "transcribe",
+            "audioPath": wav.to_string_lossy(),
+            "model": test_model(),
+            "language": "en",
+            "mode": "verbatim",
+            "backend": "transformers",
+            "device": "cpu",
+            "computeType": "float32",
+            "wordTimestamps": true,
+            "fastDecoding": fast,
+        }));
+        let result = result.expect("a result or error was emitted");
+        assert_eq!(
+            result["type"], "result",
+            "{result:#?} (progress: {progress:#?})"
+        );
+        assert_eq!(
+            result["engine"],
+            if fast { "fast" } else { "stock" },
+            "{progress:#?}"
+        );
+        result
+    };
+
+    let fast = transcribe(true);
+    let stock = transcribe(false);
+    assert_eq!(fast["text"], stock["text"]);
+
+    let fast_words = fast["words"].as_array().unwrap();
+    let stock_words = stock["words"].as_array().unwrap();
+    assert_eq!(fast_words.len(), stock_words.len());
+    for (fast_word, stock_word) in fast_words.iter().zip(stock_words) {
+        assert_eq!(fast_word["text"], stock_word["text"]);
+        for key in ["start", "end"] {
+            let difference =
+                (fast_word[key].as_f64().unwrap() - stock_word[key].as_f64().unwrap()).abs();
+            // Timings are quantised to 20 ms encoder frames.
+            assert!(
+                difference <= 0.021,
+                "{key} differs by {difference:.3}s: {fast_word} vs {stock_word}"
+            );
+        }
+    }
 }

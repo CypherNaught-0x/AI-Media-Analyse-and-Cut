@@ -38,6 +38,10 @@ export interface LLMSettings {
     crisperDiarize: boolean;
     /** Interpreter override; empty uses the app-managed environment. */
     crisperPythonPath: string;
+    /** BCP 47 locale for Apple Speech; empty follows the system language. */
+    appleSpeechLocale: string;
+    /** Attribute speakers with Sortformer; Apple Speech does not diarize. */
+    appleSpeechDiarize: boolean;
 }
 
 export interface ModelFetchState {
@@ -70,6 +74,8 @@ const defaultSettings: LLMSettings = {
     crisperRemoveVocalEvents: false,
     crisperDiarize: true,
     crisperPythonPath: '',
+    appleSpeechLocale: '',
+    appleSpeechDiarize: true,
 };
 
 // Load from localStorage
