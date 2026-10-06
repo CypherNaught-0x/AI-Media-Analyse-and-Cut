@@ -7,6 +7,7 @@ import {
     normalizeShortClips,
     captionWords,
     playbackStep,
+    ratingTone,
     setFaceOverride,
     speakerNames,
     speakerTurns,
@@ -218,5 +219,20 @@ describe('speakerNames', () => {
                 { start: '00:30.000', end: '00:32.000', speaker: 'Host', text: 'So' },
             ]),
         ).toEqual(['Host', 'Guest']);
+    });
+});
+
+describe('ratingTone', () => {
+    it('makes 9-10 stand out and fades 4 or less', () => {
+        expect([10, 9, 8, 7, 6, 5, 4, 0].map(ratingTone)).toEqual([
+            'top',
+            'top',
+            'high',
+            'good',
+            'mid',
+            'mid',
+            'low',
+            'low',
+        ]);
     });
 });
