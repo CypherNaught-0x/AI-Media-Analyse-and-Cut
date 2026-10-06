@@ -696,16 +696,21 @@ pub(crate) fn render_cover(
     };
 
     let dir = tempfile::tempdir().map_err(|e| format!("Failed to create a temp folder: {e}"))?;
+    // 104 px on a 1080 px wide frame, scaled for other sizes.
     let style = CaptionStyle {
-        font_px: 104.0,
+        font_px: 104.0 * out_w as f32 / 1080.0,
         ..CaptionStyle::default()
     };
     let painter = crate::captions::CaptionPainter::with_lines(style, out_w, 4)?;
-    let band = painter.paint_text(title.trim());
+    let (band, block) = painter.paint_text(title.trim());
     crate::captions::write_png(&dir.path().join("title.png"), &band)?;
-    // The title sits near the top, above the head (the eye line is at the
-    // upper third).
-    let y = ((f64::from(out_h) * 0.13 - f64::from(band.height) / 2.0).max(0.0)) as u32;
+    // The text block is centred near the top, above the head (the eye line
+    // is at the upper third), but never starts above 5% of the height. The
+    // band is taller than the text; overlay takes a negative offset.
+    let (height, band_height) = (f64::from(out_h), f64::from(band.height));
+    let block = f64::from(block);
+    let top = (height * 0.13 - block / 2.0).max(height * 0.05);
+    let y = (top - (band_height - block) / 2.0).round() as i64;
 
     let mut command = FfmpegCommand::new();
     command

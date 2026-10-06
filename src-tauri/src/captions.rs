@@ -226,7 +226,8 @@ impl CaptionPainter {
     }
 
     /// Glyph positions for `words`, centred, wrapped onto up to two lines.
-    fn layout(&self, words: &[TimedWord]) -> Vec<PlacedWord> {
+    /// Glyph positions and the number of lines used.
+    fn layout(&self, words: &[TimedWord]) -> (Vec<PlacedWord>, usize) {
         let scaled = self.font.as_scaled(PxScale::from(self.style.font_px));
         let space = scaled.h_advance(self.font.glyph_id(' '));
         let advance = |text: &str| {
@@ -291,7 +292,7 @@ impl CaptionPainter {
                 x += space;
             }
         }
-        placed
+        (placed, lines.len())
     }
 
     /// Coverage (0-1) per pixel, and which word each pixel belongs to.
@@ -358,8 +359,9 @@ impl CaptionPainter {
         self.paint(chunk, &actives)
     }
 
-    /// `text` in the fill colour, wrapped and centred (e.g. a title).
-    pub(crate) fn paint_text(&self, text: &str) -> Image {
+    /// `text` in the fill colour, wrapped and centred in the band (e.g. a
+    /// title), and the height of the text block (pixels).
+    pub(crate) fn paint_text(&self, text: &str) -> (Image, f32) {
         let words: Vec<TimedWord> = text
             .split_whitespace()
             .map(|word| TimedWord {
@@ -368,12 +370,15 @@ impl CaptionPainter {
                 text: word.to_string(),
             })
             .collect();
-        self.paint(&words, &[None]).remove(0)
+        let (_, lines) = self.layout(&words);
+        let scaled = self.font.as_scaled(PxScale::from(self.style.font_px));
+        let line = scaled.ascent() - scaled.descent() + scaled.line_gap();
+        (self.paint(&words, &[None]).remove(0), lines as f32 * line)
     }
 
     /// One frame per entry of `actives`: the word highlighted, if any.
     fn paint(&self, chunk: &[TimedWord], actives: &[Option<usize>]) -> Vec<Image> {
-        let placed = self.layout(chunk);
+        let (placed, _) = self.layout(chunk);
         let (coverage, owner) = self.rasterize(&placed);
         let outline = self.dilate(&coverage, self.style.font_px * self.style.stroke);
         let shadow_offset = (self.style.font_px * 0.05).round() as i32;
@@ -642,7 +647,9 @@ mod tests {
     fn titles_wrap_onto_several_lines_without_a_highlight() {
         let style = CaptionStyle::default();
         let painter = CaptionPainter::with_lines(style, 1080, 4).unwrap();
-        let image = painter.paint_text("Warum Patienten der KI schneller vertrauen als ihrem Arzt");
+        let (image, block) =
+            painter.paint_text("Warum Patienten der KI schneller vertrauen als ihrem Arzt");
+        assert!(block > 2.5 * style.font_px, "three lines: {block}");
         let pixels = image.data.as_chunks::<4>().0;
         let white = pixels
             .iter()
