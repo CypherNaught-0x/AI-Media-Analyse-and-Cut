@@ -176,6 +176,17 @@ export function playbackStep(
     return { action: 'seek', to: ranges[next].start, rangeIndex: next };
 }
 
+/** How a 0-10 rating reads at a glance: 9+ stands out, 4 or less fades. */
+export type RatingTone = 'top' | 'high' | 'good' | 'mid' | 'low';
+
+export function ratingTone(value: number): RatingTone {
+    if (value >= 9) return 'top';
+    if (value >= 8) return 'high';
+    if (value >= 7) return 'good';
+    if (value >= 5) return 'mid';
+    return 'low';
+}
+
 /** Anchors kept per face override (old ones first make way). */
 const MAX_FACE_ANCHORS = 96;
 

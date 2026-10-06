@@ -16,6 +16,7 @@ import {
     fromCandidates,
     captionWords,
     playbackStep,
+    ratingTone,
     setFaceOverride,
     speakerNames,
     speakerTurns,
@@ -27,6 +28,11 @@ import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
 
 import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
+import ArrowPathIcon from '../assets/icons/arrow-path.svg?component';
+import CubeIcon from '../assets/icons/cube.svg?component';
+import HeartIcon from '../assets/icons/heart.svg?component';
+import LightBulbIcon from '../assets/icons/light-bulb.svg?component';
+import LightningIcon from '../assets/icons/lightning.svg?component';
 import {
     commands,
     type ClipSegment,
@@ -185,12 +191,36 @@ const ROLE_LABELS: Record<ClipRole, string> = {
     closing: 'Closing',
 };
 
-const RATING_LABELS = [
-    ['hook', 'Hook'],
-    ['standalone', 'Standalone'],
-    ['emotion', 'Emotion'],
-    ['info', 'Info'],
+const RATINGS = [
+    {
+        key: 'hook',
+        label: 'Hook',
+        icon: LightningIcon,
+        text: 'Do the first seconds grab attention?',
+    },
+    {
+        key: 'standalone',
+        label: 'Standalone',
+        icon: CubeIcon,
+        text: 'Does it work without context?',
+    },
+    {
+        key: 'emotion',
+        label: 'Emotion',
+        icon: HeartIcon,
+        text: 'Humour, surprise, conflict, passion',
+    },
+    { key: 'info', label: 'Info', icon: LightBulbIcon, text: 'Is it useful or insightful?' },
 ] as const;
+
+/** Tile colours per rating tone: high values stand out, low ones fade. */
+const TONE_CLASSES: Record<ReturnType<typeof ratingTone>, string> = {
+    top: 'bg-emerald-400/20 text-emerald-200 ring-1 ring-emerald-300/50',
+    high: 'bg-emerald-500/15 text-emerald-300',
+    good: 'bg-lime-500/10 text-lime-300',
+    mid: 'bg-white/5 text-gray-300',
+    low: 'bg-white/[0.03] text-gray-500',
+};
 
 function clock(seconds: number): string {
     // Milliseconds are noise on a card; show whole seconds.
@@ -1007,126 +1037,162 @@ async function openExportFolder() {
                     </p>
                     <p class="mb-3 text-xs leading-relaxed text-gray-400">{{ clip.reason }}</p>
 
-                    <div class="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
-                        <span class="rounded bg-white/10 px-2 py-0.5 font-mono text-gray-200">{{
-                            clock(clipDuration(clip))
-                        }}</span>
-                        <span
-                            v-if="clip.looped"
-                            class="rounded bg-purple-500/20 px-2 py-0.5 font-semibold text-purple-200"
-                            >Loop</span
-                        >
-                        <span
-                            v-for="(range, i) in clip.ranges"
-                            :key="i"
-                            class="rounded border border-white/10 px-2 py-0.5 text-gray-400"
-                        >
-                            <span v-if="clip.ranges.length > 1" class="mr-1 text-gray-300">
-                                {{ ROLE_LABELS[range.role] }}
+                    <!-- Facts, ratings and actions sit at the bottom, so cards in a row line up. -->
+                    <div class="mt-auto">
+                        <div class="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
+                            <span class="rounded bg-white/10 px-2 py-0.5 font-mono text-gray-200">{{
+                                clock(clipDuration(clip))
+                            }}</span>
+                            <span
+                                v-if="clip.looped"
+                                class="rounded bg-purple-500/20 px-2 py-0.5 font-semibold text-purple-200"
+                                >Loop</span
+                            >
+                            <span
+                                v-for="(range, i) in clip.ranges"
+                                :key="i"
+                                class="rounded border border-white/10 px-2 py-0.5 text-gray-400"
+                            >
+                                <span v-if="clip.ranges.length > 1" class="mr-1 text-gray-300">
+                                    {{ ROLE_LABELS[range.role] }}
+                                </span>
+                                <span class="font-mono">
+                                    {{ clock(range.start) }}–{{ clock(range.end) }}</span
+                                >
                             </span>
-                            <span class="font-mono">
-                                {{ clock(range.start) }}–{{ clock(range.end) }}</span
-                            >
-                        </span>
-                    </div>
-
-                    <dl
-                        v-if="clip.ratings"
-                        class="mb-4 grid grid-cols-5 gap-2 text-center text-[11px] text-gray-500"
-                    >
-                        <div v-for="[key, label] in RATING_LABELS" :key="key">
-                            <dt>{{ label }}</dt>
-                            <dd class="font-semibold text-gray-200">{{ clip.ratings[key] }}</dd>
-                        </div>
-                        <div v-if="clip.looped">
-                            <dt>Loop</dt>
-                            <dd class="font-semibold text-gray-200">
-                                {{ clip.ratings.loopContinuity }}
-                            </dd>
-                        </div>
-                    </dl>
-
-                    <div class="mt-auto flex flex-wrap items-center gap-2">
-                        <button
-                            type="button"
-                            class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-40"
-                            :disabled="!hasMediaFile"
-                            :data-testid="`clip-preview-${clip.id}`"
-                            @click="preview(clip)"
-                        >
-                            {{ previewing?.id === clip.id ? 'Stop' : 'Preview' }}
-                        </button>
-
-                        <div
-                            class="flex items-center gap-1 text-xs text-gray-400"
-                            role="group"
-                            aria-label="Trim start"
-                        >
-                            Start
-                            <button
-                                type="button"
-                                class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                aria-label="Start one word earlier"
-                                :data-testid="`clip-start-earlier-${clip.id}`"
-                                @click="trim(clip, 'start', -1)"
-                            >
-                                ◀
-                            </button>
-                            <button
-                                type="button"
-                                class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                aria-label="Start one word later"
-                                :data-testid="`clip-start-later-${clip.id}`"
-                                @click="trim(clip, 'start', 1)"
-                            >
-                                ▶
-                            </button>
-                        </div>
-                        <div
-                            class="flex items-center gap-1 text-xs text-gray-400"
-                            role="group"
-                            aria-label="Trim end"
-                        >
-                            End
-                            <button
-                                type="button"
-                                class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                aria-label="End one word earlier"
-                                @click="trim(clip, 'end', -1)"
-                            >
-                                ◀
-                            </button>
-                            <button
-                                type="button"
-                                class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                aria-label="End one word later"
-                                @click="trim(clip, 'end', 1)"
-                            >
-                                ▶
-                            </button>
                         </div>
 
-                        <label class="ml-auto flex items-center gap-1.5 text-xs text-gray-300">
-                            <input
-                                type="checkbox"
-                                :checked="clip.selected"
-                                :data-testid="`clip-select-${clip.id}`"
-                                class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
-                                @change="
-                                    setSelected(clip, ($event.target as HTMLInputElement).checked)
-                                "
-                            />
-                            Include
-                        </label>
-                        <button
-                            type="button"
-                            class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-40"
-                            :disabled="isProcessing || busy || !hasMediaFile"
-                            :data-testid="`clip-export-${clip.id}`"
-                            @click="exportClips([clip])"
+                        <dl
+                            v-if="clip.ratings"
+                            class="mb-4 grid gap-1.5 text-center"
+                            :class="clip.looped ? 'grid-cols-5' : 'grid-cols-4'"
+                            :data-testid="`clip-ratings-${clip.id}`"
                         >
-                            Export
-                        </button>
+                            <div
+                                v-for="rating in RATINGS"
+                                :key="rating.key"
+                                class="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1.5"
+                                :class="TONE_CLASSES[ratingTone(clip.ratings[rating.key])]"
+                                :title="rating.text"
+                                :data-tone="ratingTone(clip.ratings[rating.key])"
+                            >
+                                <dt
+                                    class="flex min-w-0 max-w-full flex-col items-center gap-0.5 text-[10px] opacity-80"
+                                >
+                                    <component
+                                        :is="rating.icon"
+                                        class="h-4 w-4"
+                                        aria-hidden="true"
+                                    />
+                                    <span class="max-w-full truncate">{{ rating.label }}</span>
+                                </dt>
+                                <dd class="text-base font-bold leading-none">
+                                    {{ clip.ratings[rating.key] }}
+                                </dd>
+                            </div>
+                            <div
+                                v-if="clip.looped"
+                                class="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1.5"
+                                :class="TONE_CLASSES[ratingTone(clip.ratings.loopContinuity)]"
+                                title="How seamlessly the ending leads back into the opening"
+                            >
+                                <dt
+                                    class="flex min-w-0 max-w-full flex-col items-center gap-0.5 text-[10px] opacity-80"
+                                >
+                                    <ArrowPathIcon class="h-4 w-4" aria-hidden="true" />
+                                    <span class="max-w-full truncate">Loop</span>
+                                </dt>
+                                <dd class="text-base font-bold leading-none">
+                                    {{ clip.ratings.loopContinuity }}
+                                </dd>
+                            </div>
+                        </dl>
+
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button
+                                type="button"
+                                class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-40"
+                                :disabled="!hasMediaFile"
+                                :data-testid="`clip-preview-${clip.id}`"
+                                @click="preview(clip)"
+                            >
+                                {{ previewing?.id === clip.id ? 'Stop' : 'Preview' }}
+                            </button>
+
+                            <div
+                                class="flex items-center gap-1 text-xs text-gray-400"
+                                role="group"
+                                aria-label="Trim start"
+                            >
+                                Start
+                                <button
+                                    type="button"
+                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
+                                    aria-label="Start one word earlier"
+                                    :data-testid="`clip-start-earlier-${clip.id}`"
+                                    @click="trim(clip, 'start', -1)"
+                                >
+                                    ◀
+                                </button>
+                                <button
+                                    type="button"
+                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
+                                    aria-label="Start one word later"
+                                    :data-testid="`clip-start-later-${clip.id}`"
+                                    @click="trim(clip, 'start', 1)"
+                                >
+                                    ▶
+                                </button>
+                            </div>
+                            <div
+                                class="flex items-center gap-1 text-xs text-gray-400"
+                                role="group"
+                                aria-label="Trim end"
+                            >
+                                End
+                                <button
+                                    type="button"
+                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
+                                    aria-label="End one word earlier"
+                                    @click="trim(clip, 'end', -1)"
+                                >
+                                    ◀
+                                </button>
+                                <button
+                                    type="button"
+                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
+                                    aria-label="End one word later"
+                                    @click="trim(clip, 'end', 1)"
+                                >
+                                    ▶
+                                </button>
+                            </div>
+
+                            <label class="ml-auto flex items-center gap-1.5 text-xs text-gray-300">
+                                <input
+                                    type="checkbox"
+                                    :checked="clip.selected"
+                                    :data-testid="`clip-select-${clip.id}`"
+                                    class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
+                                    @change="
+                                        setSelected(
+                                            clip,
+                                            ($event.target as HTMLInputElement).checked,
+                                        )
+                                    "
+                                />
+                                Include
+                            </label>
+                            <button
+                                type="button"
+                                class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-40"
+                                :disabled="isProcessing || busy || !hasMediaFile"
+                                :data-testid="`clip-export-${clip.id}`"
+                                @click="exportClips([clip])"
+                            >
+                                Export
+                            </button>
+                        </div>
                     </div>
                 </li>
             </ul>
