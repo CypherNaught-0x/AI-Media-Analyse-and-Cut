@@ -1589,7 +1589,16 @@ pub fn run() {
             Ok(())
         })
         .manage(RunControl::default())
-        .plugin(tauri_plugin_log::Builder::default().build())
+        // The defaults (one 40 KB file, UTC) lose an export's ffmpeg output,
+        // which is logged line by line, before its error: keep more, in the
+        // user's own time.
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .max_file_size(10_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
