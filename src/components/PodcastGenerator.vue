@@ -1,6 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { open } from '@tauri-apps/plugin-dialog';
+import {
+    FileAudio,
+    FolderOpen,
+    GripVertical,
+    Loader2,
+    Mic,
+    Plus,
+    Podcast,
+    Search,
+    Sparkles,
+    X,
+} from '@lucide/vue';
 import type {
     PodcastScript,
     PodcastSegment,
@@ -12,10 +24,12 @@ import { formatDuration, calculateSegmentsDuration } from '../composables/useTim
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 import { exportFolderOf } from '../utils/filePath';
 
-import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
-import SpinnerIcon from '../assets/icons/spinner.svg?component';
 import { commands } from '../bindings';
 import { errorMessage } from '../utils/appError';
+import { speakerColor } from '../utils/speakerColors';
+import PageHeader from './ui/PageHeader.vue';
+import EmptyState from './ui/EmptyState.vue';
+import UiDialog from './ui/UiDialog.vue';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -27,9 +41,13 @@ interface Props {
     context: string;
     /** Another job (analysis, translation, export, ...) is running app-wide. */
     busy: boolean;
+    /** The user-managed speaker order (Home's speaker list), so a speaker keeps
+     *  the same colour as on the Transcript step. Falls back to the order of
+     *  first appearance in the transcript. */
+    speakerOrder?: string[];
 }
 
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { speakerOrder: undefined });
 
 const emit = defineEmits<{
     'update:status': [message: string];
@@ -40,23 +58,35 @@ const emit = defineEmits<{
 const { settings } = useSettings();
 
 const isGenerating = ref(false);
-const isExporting = ref(false);
+// Which export is running, so each button shows its own busy state.
+const exportingKind = ref<'podcast' | 'clips' | null>(null);
+const isExporting = computed(() => exportingKind.value !== null);
 const activeRunId = ref<number | null>(null);
 
-// Segment being edited
-const editingSegmentIndex = ref<number | null>(null);
+// Segment being edited (by row key, so a reorder doesn't move the editor).
+const editingKey = ref<number | null>(null);
 const editingField = ref<'start' | 'end' | null>(null);
+const editingValue = ref('');
+const editError = ref('');
+const editInput = ref<HTMLInputElement | HTMLInputElement[] | null>(null);
 
 // Add segment modal
 const showAddSegmentModal = ref(false);
+const addSearch = ref('');
+const addedCount = ref(0);
 
 // Drag state
 const draggedIndex = ref<number | null>(null);
 
+// Stable keys for the script rows (segments carry no ids). Kept in step with
+// every local reorder/insert/remove; reset when the script is replaced.
+let nextRowKey = 1;
+const rowKeys = ref<number[]>([]);
+
 function invalidateRun() {
     activeRunId.value = null;
     isGenerating.value = false;
-    isExporting.value = false;
+    exportingKind.value = null;
     emit('update:processing', false);
 }
 
@@ -142,6 +172,93 @@ const durationStatus = computed(() => {
     return 'ok';
 });
 
+const durationExplanation = computed(() => {
+    if (rangeError.value) return 'Fix the target length to compare';
+    const range = `${minDurationMinutes.value}–${maxDurationMinutes.value} min`;
+    if (durationStatus.value === 'short') return `Shorter than the ${range} target`;
+    if (durationStatus.value === 'long') return `Longer than the ${range} target`;
+    return `Within the ${range} target`;
+});
+
+/** The target range is unusable: min above max, or not a positive number. */
+const rangeError = computed(() => {
+    const min = minDurationMinutes.value;
+    const max = maxDurationMinutes.value;
+    if (typeof min !== 'number' || typeof max !== 'number' || !(min > 0) || !(max > 0)) {
+        return 'Enter a length of at least 1 minute.';
+    }
+    if (min > max) return 'Minimum is longer than the maximum.';
+    return '';
+});
+
+const generateDisabledReason = computed(() => {
+    if (props.busy) return 'Another job is running.';
+    if (isExporting.value) return 'Wait for the export to finish.';
+    if (props.segments.length === 0) return 'The transcript has no segments.';
+    if (rangeError.value) return 'Fix the target length first.';
+    return '';
+});
+
+const exportDisabledReason = computed(() => {
+    if (!props.hasMediaFile) return 'The media file is missing. Pick it again on the Source step.';
+    if (isGenerating.value) return 'Wait for the script to finish generating.';
+    if (props.busy && !isExporting.value) return 'Another job is running.';
+    return '';
+});
+
+const colourOrder = computed(() => {
+    if (props.speakerOrder?.length) return props.speakerOrder;
+    const seen: string[] = [];
+    for (const segment of props.segments) {
+        if (!seen.includes(segment.speaker)) seen.push(segment.speaker);
+    }
+    return seen;
+});
+
+function colorOf(speaker: string) {
+    return speakerColor(speaker, colourOrder.value);
+}
+
+const audioSlots = computed(() => [
+    {
+        id: 'intro',
+        label: 'Intro',
+        path: introPath.value,
+        browse: selectIntroFile,
+        clear: () => (introPath.value = ''),
+    },
+    {
+        id: 'outro',
+        label: 'Outro',
+        path: outroPath.value,
+        browse: selectOutroFile,
+        clear: () => (outroPath.value = ''),
+    },
+]);
+
+function fileName(path: string) {
+    return path.split(/[/\\]/).pop() ?? path;
+}
+
+const outputName = computed(() => fileName(props.inputPath.replace(/\.[^/\\.]+$/, '_podcast.m4a')));
+
+watch(
+    () => podcastScript.value,
+    (script, previous) => {
+        const length = script?.segments.length ?? 0;
+        // A replaced script (generation, loaded session) or one whose length
+        // changed outside our own edits gets fresh keys.
+        if (!previous || !script || rowKeys.value.length !== length) {
+            rowKeys.value = Array.from({ length }, () => nextRowKey++);
+        }
+    },
+    { immediate: true },
+);
+
+function rowKey(index: number) {
+    return rowKeys.value[index] ?? -index - 1;
+}
+
 async function selectIntroFile() {
     try {
         const selected = await open({
@@ -181,7 +298,7 @@ async function selectOutroFile() {
 }
 
 async function generatePodcast() {
-    if (props.busy || props.segments.length === 0) return;
+    if (props.busy || props.segments.length === 0 || rangeError.value) return;
 
     const runId = await beginRun();
     activeRunId.value = runId;
@@ -364,46 +481,101 @@ function parseScriptResponse(response: string): PodcastScript | null {
 
 // Segment Editor Functions
 function removeSegment(index: number) {
+    if (editingKey.value === rowKey(index)) cancelEditing();
+    rowKeys.value.splice(index, 1);
     updatePodcastScript((script) => {
         script.segments.splice(index, 1);
         script.totalDuration = calculateSegmentsDuration(script.segments);
     });
 }
 
-function startEditing(index: number, field: 'start' | 'end') {
-    editingSegmentIndex.value = index;
+const TIME_PATTERN = /^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/;
+
+async function startEditing(index: number, field: 'start' | 'end') {
+    const segment = podcastScript.value?.segments[index];
+    if (!segment) return;
+    editingKey.value = rowKey(index);
     editingField.value = field;
+    editingValue.value = segment[field];
+    editError.value = '';
+    await nextTick();
+    const input = Array.isArray(editInput.value) ? editInput.value[0] : editInput.value;
+    input?.focus();
+    input?.select();
+}
+
+function isEditing(index: number, field: 'start' | 'end') {
+    return editingKey.value === rowKey(index) && editingField.value === field;
+}
+
+function cancelEditing() {
+    editingKey.value = null;
+    editingField.value = null;
+    editError.value = '';
 }
 
 function finishEditing(index: number, field: 'start' | 'end', value: string) {
-    // Validate time format
+    // Ignore the blur that follows a cancel or an already committed edit.
+    if (!isEditing(index, field)) return;
+    // Validate time format; invalid input stays in the field with an error.
     const trimmed = value.trim();
-    if (trimmed.match(/^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$/)) {
+    if (!TIME_PATTERN.test(trimmed)) {
+        editError.value = 'Use mm:ss or hh:mm:ss, e.g. 01:23 or 1:02:03.5. Esc cancels.';
+        return;
+    }
+    if (trimmed !== podcastScript.value?.segments[index]?.[field]) {
         updatePodcastScript((script) => {
             script.segments[index][field] = trimmed;
             script.totalDuration = calculateSegmentsDuration(script.segments);
         });
     }
-
-    editingSegmentIndex.value = null;
-    editingField.value = null;
+    cancelEditing();
 }
 
-// Drag and Drop
-function onDragStart(index: number) {
+function moveSegment(from: number, to: number) {
+    const segments = podcastScript.value?.segments;
+    if (!segments || to < 0 || to >= segments.length || from === to) return;
+    const [key] = rowKeys.value.splice(from, 1);
+    rowKeys.value.splice(to, 0, key);
+    updatePodcastScript((script) => {
+        const [moved] = script.segments.splice(from, 1);
+        script.segments.splice(to, 0, moved);
+    });
+}
+
+// Keyboard reorder: Alt+ArrowUp/Down on a focused row moves it.
+async function onRowKeydown(event: KeyboardEvent, index: number) {
+    if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    const to = index + (event.key === 'ArrowUp' ? -1 : 1);
+    const key = rowKey(index);
+    moveSegment(index, to);
+    await nextTick();
+    const list = (event.currentTarget as HTMLElement | null)?.parentElement;
+    list?.querySelector<HTMLElement>(`[data-row-key="${key}"]`)?.focus();
+}
+
+// Drag and Drop (started from the grip handle only)
+function onDragStart(event: DragEvent, index: number) {
     draggedIndex.value = index;
+    if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', String(index));
+        const row = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>(
+            '[data-row-key]',
+        );
+        if (row) event.dataTransfer.setDragImage(row, 24, 20);
+    }
 }
 
 function onDragOver(e: DragEvent, index: number) {
+    if (draggedIndex.value === null) return;
     e.preventDefault();
-    if (draggedIndex.value === null || draggedIndex.value === index) return;
-    updatePodcastScript((script) => {
-        const segments = script.segments;
-        const draggedSegment = segments[draggedIndex.value!];
-        segments.splice(draggedIndex.value!, 1);
-        segments.splice(index, 0, draggedSegment);
-        draggedIndex.value = index;
-    });
+    if (draggedIndex.value === index) return;
+    const from = draggedIndex.value;
+    moveSegment(from, index);
+    draggedIndex.value = index;
 }
 
 function onDragEnd() {
@@ -412,10 +584,28 @@ function onDragEnd() {
 
 // Add Segment from Transcript
 function openAddSegmentModal() {
+    addSearch.value = '';
+    addedCount.value = 0;
     showAddSegmentModal.value = true;
 }
 
+function closeAddSegmentModal() {
+    showAddSegmentModal.value = false;
+}
+
+const filteredTranscript = computed(() => {
+    const query = addSearch.value.trim().toLowerCase();
+    if (!query) return props.segments;
+    return props.segments.filter(
+        (segment) =>
+            segment.text.toLowerCase().includes(query) ||
+            segment.speaker.toLowerCase().includes(query) ||
+            segment.start.includes(query),
+    );
+});
+
 function addSegmentFromTranscript(segment: TranscriptSegment) {
+    if (isSegmentIncluded(segment)) return;
     const newSegment: PodcastSegment = {
         start: segment.start,
         end: segment.end,
@@ -425,12 +615,14 @@ function addSegmentFromTranscript(segment: TranscriptSegment) {
         includeReason: 'Manually added',
     };
 
+    rowKeys.value.push(nextRowKey++);
     updatePodcastScript((script) => {
         script.segments.push(newSegment);
         const contentSegments = script.segments.filter((s) => s.type === 'content');
         script.totalDuration = calculateSegmentsDuration(contentSegments);
     });
-    showAddSegmentModal.value = false;
+    // The dialog stays open so several segments can be added in one go.
+    addedCount.value++;
 }
 
 function addVoiceoverSegment(afterIndex: number) {
@@ -444,8 +636,16 @@ function addVoiceoverSegment(afterIndex: number) {
     };
 
     // Insert after the specified index
+    rowKeys.value.splice(afterIndex + 1, 0, nextRowKey++);
     updatePodcastScript((script) => {
         script.segments.splice(afterIndex + 1, 0, newSegment);
+    });
+}
+
+function updateTransitionNote(index: number, value: string) {
+    if (podcastScript.value?.segments[index]?.transitionNote === value) return;
+    updatePodcastScript((script) => {
+        script.segments[index].transitionNote = value;
     });
 }
 
@@ -475,7 +675,7 @@ async function exportPodcast() {
     const runId = await beginRun();
     activeRunId.value = runId;
     emit('update:status', 'Exporting podcast...');
-    isExporting.value = true;
+    exportingKind.value = 'podcast';
     emit('update:processing', true);
 
     try {
@@ -513,7 +713,7 @@ async function exportPodcast() {
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
-            isExporting.value = false;
+            exportingKind.value = null;
             emit('update:processing', false);
         }
     }
@@ -536,7 +736,7 @@ async function exportClips() {
     const runId = await beginRun();
     activeRunId.value = runId;
     emit('update:status', 'Exporting podcast clips...');
-    isExporting.value = true;
+    exportingKind.value = 'clips';
     emit('update:processing', true);
 
     try {
@@ -572,7 +772,7 @@ async function exportClips() {
     } finally {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
-            isExporting.value = false;
+            exportingKind.value = null;
             emit('update:processing', false);
         }
     }
@@ -587,497 +787,630 @@ async function openExportFolder() {
 </script>
 
 <template>
-    <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl">
-        <div class="flex justify-between items-center mb-6">
-            <h2 class="text-2xl font-bold text-white">Podcast Generator</h2>
-            <span
-                v-if="podcastScript"
-                class="px-3 py-1 rounded-full text-xs font-bold border"
-                :class="{
-                    'bg-emerald-500/20 text-emerald-400 border-emerald-500/30':
-                        durationStatus === 'ok',
-                    'bg-yellow-500/20 text-yellow-400 border-yellow-500/30':
-                        durationStatus === 'short',
-                    'bg-red-500/20 text-red-400 border-red-500/30': durationStatus === 'long',
-                }"
-            >
-                {{ formatDuration(currentDuration) }}
-            </span>
-        </div>
-
-        <!-- Settings -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            <div class="group">
-                <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Min Duration (minutes)</label
-                >
-                <input
-                    v-model.number="minDurationMinutes"
-                    type="number"
-                    min="1"
-                    max="60"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-teal-500/50 outline-none text-white text-center"
-                />
-            </div>
-            <div class="group">
-                <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Max Duration (minutes)</label
-                >
-                <input
-                    v-model.number="maxDurationMinutes"
-                    type="number"
-                    min="1"
-                    max="60"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-teal-500/50 outline-none text-white text-center"
-                />
-            </div>
-        </div>
-
-        <!-- Intro/Outro Selection -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            <div class="group">
-                <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Intro Audio (Optional)</label
-                >
-                <div class="flex gap-2">
-                    <input
-                        :value="introPath ? introPath.split(/[/\\]/).pop() : ''"
-                        type="text"
-                        readonly
-                        class="flex-1 p-3 rounded-xl bg-black/20 border border-white/10 outline-none text-white placeholder-gray-600 text-sm"
-                        placeholder="No intro selected"
-                    />
-                    <button
-                        @click="selectIntroFile"
-                        class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all border border-white/10"
-                    >
-                        Browse
-                    </button>
-                    <button
-                        v-if="introPath"
-                        @click="introPath = ''"
-                        class="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-xl transition-all border border-red-500/20"
-                    >
-                        &times;
-                    </button>
-                </div>
-            </div>
-            <div class="group">
-                <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Outro Audio (Optional)</label
-                >
-                <div class="flex gap-2">
-                    <input
-                        :value="outroPath ? outroPath.split(/[/\\]/).pop() : ''"
-                        type="text"
-                        readonly
-                        class="flex-1 p-3 rounded-xl bg-black/20 border border-white/10 outline-none text-white placeholder-gray-600 text-sm"
-                        placeholder="No outro selected"
-                    />
-                    <button
-                        @click="selectOutroFile"
-                        class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-all border border-white/10"
-                    >
-                        Browse
-                    </button>
-                    <button
-                        v-if="outroPath"
-                        @click="outroPath = ''"
-                        class="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-xl transition-all border border-red-500/20"
-                    >
-                        &times;
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Clip Padding Settings -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            <div class="group">
-                <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Start Padding (seconds)</label
-                >
-                <input
-                    v-model.number="startPadding"
-                    type="number"
-                    min="0"
-                    max="10"
-                    step="0.1"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-teal-500/50 outline-none text-white text-center"
-                />
-                <p class="text-xs text-gray-500 mt-1">Extra audio before each clip</p>
-            </div>
-            <div class="group">
-                <label class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >End Padding (seconds)</label
-                >
-                <input
-                    v-model.number="endPadding"
-                    type="number"
-                    min="0"
-                    max="10"
-                    step="0.1"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-teal-500/50 outline-none text-white text-center"
-                />
-                <p class="text-xs text-gray-500 mt-1">Extra audio after each clip</p>
-            </div>
-        </div>
-
-        <!-- Generate Button -->
-        <button
-            @click="generatePodcast"
-            :disabled="isGenerating || isExporting || busy"
-            class="w-full mb-8 bg-gradient-to-r from-teal-600 to-cyan-600 hover:from-teal-500 hover:to-cyan-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+    <div class="@container mx-auto w-full max-w-[1400px] px-8 pt-8 pb-10">
+        <PageHeader
+            title="Podcast"
+            description="Condense the recording into an episode of the length you want."
         >
-            <SpinnerIcon v-if="isGenerating" class="animate-spin h-5 w-5" />
-            {{ isGenerating ? 'Generating...' : 'Generate Podcast Script' }}
-        </button>
-
-        <!-- Results -->
-        <div v-if="podcastScript" class="space-y-6">
-            <!-- Title & Summary -->
-            <div class="p-6 bg-black/20 rounded-2xl border border-white/5">
-                <h3 class="font-bold text-xl text-teal-400 mb-2">{{ podcastScript.title }}</h3>
-                <p class="text-gray-400 text-sm leading-relaxed">{{ podcastScript.summary }}</p>
-            </div>
-
-            <!-- Segment List -->
-            <div class="space-y-2">
-                <div class="flex justify-between items-center mb-4">
-                    <div class="flex items-center gap-3">
-                        <h4 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">
-                            Segments ({{ podcastScript.segments.length }})
-                        </h4>
-                        <span
-                            v-if="voiceoverCount > 0"
-                            class="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-400 text-xs border border-purple-500/30"
-                        >
-                            {{ voiceoverCount }} voiceover{{ voiceoverCount > 1 ? 's' : '' }}
-                        </span>
-                    </div>
-                    <button
-                        @click="openAddSegmentModal"
-                        class="px-3 py-1 bg-teal-600/20 hover:bg-teal-600/30 text-teal-400 text-xs font-medium rounded-lg transition-all border border-teal-500/20"
-                    >
-                        + Add Segment
-                    </button>
-                </div>
-
-                <div
-                    v-for="(segment, index) in podcastScript.segments"
-                    :key="index"
-                    class="p-4 rounded-xl border transition-colors cursor-move"
-                    :class="
-                        segment.type === 'voiceover'
-                            ? 'bg-purple-900/20 border-purple-500/30 hover:border-purple-500/50'
-                            : 'bg-black/20 border-white/5 hover:border-teal-500/30'
-                    "
-                    draggable="true"
-                    @dragstart="onDragStart(index)"
-                    @dragover="onDragOver($event, index)"
-                    @dragend="onDragEnd"
-                >
-                    <div class="flex items-start gap-4">
-                        <!-- Drag Handle -->
-                        <div class="text-gray-600 mt-1 cursor-move">
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                <path
-                                    d="M8 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm8-12a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 6a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"
-                                />
-                            </svg>
-                        </div>
-
-                        <!-- Content -->
-                        <div class="flex-1 min-w-0">
-                            <div class="flex items-center gap-2 mb-2">
-                                <!-- Segment type badge -->
-                                <span
-                                    v-if="segment.type === 'voiceover'"
-                                    class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 text-xs font-medium"
-                                >
-                                    VOICEOVER
-                                </span>
-                                <span
-                                    class="px-2 py-0.5 rounded text-xs font-mono"
-                                    :class="
-                                        segment.type === 'voiceover'
-                                            ? 'bg-purple-500/10 text-purple-300'
-                                            : 'bg-teal-500/20 text-teal-400'
-                                    "
-                                >
-                                    {{ segment.speaker }}
-                                </span>
-
-                                <!-- Editable timestamps -->
-                                <div class="flex items-center gap-1 text-xs">
-                                    <input
-                                        v-if="
-                                            editingSegmentIndex === index &&
-                                            editingField === 'start'
-                                        "
-                                        :value="segment.start"
-                                        @blur="
-                                            finishEditing(
-                                                index,
-                                                'start',
-                                                ($event.target as HTMLInputElement).value,
-                                            )
-                                        "
-                                        @keyup.enter="
-                                            finishEditing(
-                                                index,
-                                                'start',
-                                                ($event.target as HTMLInputElement).value,
-                                            )
-                                        "
-                                        class="w-20 px-1 py-0.5 bg-black/50 border border-teal-500/50 rounded text-gray-300 font-mono text-center"
-                                        autofocus
-                                    />
-                                    <span
-                                        v-else
-                                        @click="startEditing(index, 'start')"
-                                        class="px-2 py-0.5 rounded bg-white/5 text-gray-400 font-mono cursor-pointer hover:bg-white/10"
-                                    >
-                                        {{ segment.start }}
-                                    </span>
-                                    <span class="text-gray-600">-</span>
-                                    <input
-                                        v-if="
-                                            editingSegmentIndex === index && editingField === 'end'
-                                        "
-                                        :value="segment.end"
-                                        @blur="
-                                            finishEditing(
-                                                index,
-                                                'end',
-                                                ($event.target as HTMLInputElement).value,
-                                            )
-                                        "
-                                        @keyup.enter="
-                                            finishEditing(
-                                                index,
-                                                'end',
-                                                ($event.target as HTMLInputElement).value,
-                                            )
-                                        "
-                                        class="w-20 px-1 py-0.5 bg-black/50 border border-teal-500/50 rounded text-gray-300 font-mono text-center"
-                                        autofocus
-                                    />
-                                    <span
-                                        v-else
-                                        @click="startEditing(index, 'end')"
-                                        class="px-2 py-0.5 rounded bg-white/5 text-gray-400 font-mono cursor-pointer hover:bg-white/10"
-                                    >
-                                        {{ segment.end }}
-                                    </span>
-                                </div>
-                            </div>
-
-                            <!-- Content segment: show transcript text -->
-                            <template v-if="segment.type === 'content'">
-                                <p class="text-gray-300 text-sm leading-relaxed line-clamp-2">
-                                    {{ segment.text }}
-                                </p>
-                                <p
-                                    v-if="segment.includeReason"
-                                    class="mt-1 text-gray-500 text-xs italic"
-                                >
-                                    {{ segment.includeReason }}
-                                </p>
-                            </template>
-
-                            <!-- Voiceover segment: show transition note -->
-                            <template v-else>
-                                <div class="flex items-start gap-2">
-                                    <svg
-                                        class="w-4 h-4 text-purple-400 mt-0.5 flex-shrink-0"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                    >
-                                        <path
-                                            stroke-linecap="round"
-                                            stroke-linejoin="round"
-                                            stroke-width="2"
-                                            d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                                        />
-                                    </svg>
-                                    <p class="text-purple-300 text-sm leading-relaxed italic">
-                                        "{{ segment.transitionNote || segment.text }}"
-                                    </p>
-                                </div>
-                                <p class="mt-1 text-purple-500/70 text-xs">
-                                    Suggested voiceover text for transition (not exported - for
-                                    future TTS or recording)
-                                </p>
-                            </template>
-                        </div>
-
-                        <!-- Action Buttons -->
-                        <div class="flex flex-col gap-1">
-                            <!-- Remove Button -->
-                            <button
-                                @click="removeSegment(index)"
-                                class="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                                title="Remove segment"
-                            >
-                                <svg
-                                    class="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                >
-                                    <path
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        stroke-width="2"
-                                        d="M6 18L18 6M6 6l12 12"
-                                    />
-                                </svg>
-                            </button>
-
-                            <!-- Add Voiceover Button (only show for content segments, not after last segment) -->
-                            <button
-                                v-if="
-                                    segment.type === 'content' &&
-                                    index < podcastScript.segments.length - 1
-                                "
-                                @click="addVoiceoverSegment(index)"
-                                class="p-1.5 text-gray-500 hover:text-purple-400 hover:bg-purple-500/10 rounded-lg transition-colors"
-                                title="Add voiceover transition after this segment"
-                            >
-                                <svg
-                                    class="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                >
-                                    <path
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        stroke-width="2"
-                                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                                    />
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Export Buttons -->
-            <div class="flex gap-4 mt-6">
-                <button
-                    @click="exportPodcast"
-                    :disabled="isExporting || busy || !hasMediaFile"
-                    class="flex-1 bg-teal-600 hover:bg-teal-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                    <SpinnerIcon v-if="isExporting" class="animate-spin h-5 w-5" />
-                    Export Podcast
-                </button>
-                <button
-                    @click="exportClips"
-                    :disabled="isExporting || busy || !hasMediaFile"
-                    class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                    Export Clips
-                </button>
+            <template v-if="podcastScript" #actions>
                 <button
                     v-if="lastExportPath"
+                    type="button"
+                    class="btn-ghost btn-icon"
+                    data-testid="podcast-open-folder"
+                    aria-label="Open export folder"
+                    :title="`Open ${exportFolderOf(lastExportPath)}`"
                     @click="openExportFolder"
-                    class="px-6 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-2xl border border-gray-700 transition-all"
-                    title="Open Folder"
                 >
-                    <FolderOpenIcon class="h-6 w-6" />
+                    <FolderOpen aria-hidden="true" />
                 </button>
-            </div>
-        </div>
-    </div>
+                <button
+                    type="button"
+                    class="btn-secondary"
+                    data-testid="podcast-export-clips"
+                    :disabled="isExporting || isGenerating || busy || !hasMediaFile"
+                    :aria-busy="exportingKind === 'clips' ? 'true' : undefined"
+                    :title="exportDisabledReason || 'Export each segment as its own file'"
+                    @click="exportClips"
+                >
+                    <Loader2
+                        v-if="exportingKind === 'clips'"
+                        class="animate-spin"
+                        aria-hidden="true"
+                    />
+                    {{ exportingKind === 'clips' ? 'Exporting clips…' : 'Export clips' }}
+                </button>
+                <button
+                    type="button"
+                    class="btn-primary"
+                    data-testid="podcast-export"
+                    :disabled="isExporting || isGenerating || busy || !hasMediaFile"
+                    :aria-busy="exportingKind === 'podcast' ? 'true' : undefined"
+                    :title="exportDisabledReason || `Export as ${outputName}`"
+                    @click="exportPodcast"
+                >
+                    <Loader2
+                        v-if="exportingKind === 'podcast'"
+                        class="animate-spin"
+                        aria-hidden="true"
+                    />
+                    {{ exportingKind === 'podcast' ? 'Exporting…' : 'Export podcast' }}
+                </button>
+            </template>
+        </PageHeader>
 
-    <!-- Add Segment Modal -->
-    <transition name="fade">
-        <div
-            v-if="showAddSegmentModal"
-            class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+        <p
+            v-if="podcastScript && !hasMediaFile"
+            class="-mt-2 mb-4 text-[12px] text-warning"
+            data-testid="podcast-export-hint"
         >
-            <div
-                class="w-full max-w-3xl max-h-[80vh] bg-gray-900 rounded-2xl border border-teal-500/30 shadow-2xl flex flex-col overflow-hidden"
+            {{ exportDisabledReason }}
+        </p>
+
+        <div class="grid items-start gap-5 @4xl:grid-cols-[340px_minmax(0,1fr)]">
+            <!-- Setup inspector -->
+            <aside
+                class="panel grid gap-x-6 gap-y-5 p-4 @2xl:grid-cols-2 @4xl:sticky @4xl:top-4 @4xl:block @4xl:space-y-5"
+                aria-label="Podcast setup"
+                data-testid="podcast-setup"
             >
-                <!-- Header -->
-                <div class="flex items-center justify-between p-6 border-b border-white/10">
-                    <h3 class="text-xl font-bold text-white">Add Segment from Transcript</h3>
-                    <button
-                        @click="showAddSegmentModal = false"
-                        class="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                <section>
+                    <h2 class="section-title">Target length</h2>
+                    <p class="hint mt-0.5">Only kept content counts towards the length.</p>
+                    <div class="mt-3 grid grid-cols-2 gap-3">
+                        <div>
+                            <label for="podcast-min" class="field-label">Minimum</label>
+                            <div class="relative">
+                                <input
+                                    id="podcast-min"
+                                    v-model.number="minDurationMinutes"
+                                    type="number"
+                                    min="1"
+                                    max="60"
+                                    class="input pr-11 font-mono"
+                                    :aria-invalid="rangeError ? 'true' : undefined"
+                                    :aria-describedby="
+                                        rangeError ? 'podcast-range-error' : undefined
+                                    "
+                                />
+                                <span
+                                    class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                    aria-hidden="true"
+                                    >min</span
+                                >
+                            </div>
+                        </div>
+                        <div>
+                            <label for="podcast-max" class="field-label">Maximum</label>
+                            <div class="relative">
+                                <input
+                                    id="podcast-max"
+                                    v-model.number="maxDurationMinutes"
+                                    type="number"
+                                    min="1"
+                                    max="60"
+                                    class="input pr-11 font-mono"
+                                    :aria-invalid="rangeError ? 'true' : undefined"
+                                    :aria-describedby="
+                                        rangeError ? 'podcast-range-error' : undefined
+                                    "
+                                />
+                                <span
+                                    class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                    aria-hidden="true"
+                                    >min</span
+                                >
+                            </div>
+                        </div>
+                    </div>
+                    <p
+                        v-if="rangeError"
+                        id="podcast-range-error"
+                        class="mt-1.5 text-[12px] text-danger"
+                        role="alert"
+                        data-testid="podcast-range-error"
                     >
-                        <svg
-                            class="w-5 h-5 text-gray-400"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
+                        {{ rangeError }}
+                    </p>
+                </section>
+
+                <div class="divider hidden @4xl:block" />
+
+                <section>
+                    <h2 class="section-title">Intro and outro</h2>
+                    <p class="hint mt-0.5">Optional audio played before and after the episode.</p>
+                    <div class="mt-3 space-y-2">
+                        <div
+                            v-for="file in audioSlots"
+                            :key="file.id"
+                            class="well flex items-center gap-2.5 py-1.5 pr-1.5 pl-2.5"
+                            :data-testid="`podcast-${file.id}`"
                         >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M6 18L18 6M6 6l12 12"
+                            <FileAudio
+                                class="h-4 w-4 shrink-0"
+                                :class="file.path ? 'text-accent-soft' : 'text-fg-faint'"
+                                aria-hidden="true"
                             />
-                        </svg>
+                            <div class="min-w-0 flex-1">
+                                <p class="eyebrow leading-none">{{ file.label }}</p>
+                                <p
+                                    class="mt-1 truncate text-[12.5px]"
+                                    :class="file.path ? 'text-fg' : 'text-fg-faint'"
+                                    :title="file.path || undefined"
+                                >
+                                    {{ file.path ? fileName(file.path) : `No ${file.id} selected` }}
+                                </p>
+                            </div>
+                            <button
+                                v-if="file.path"
+                                type="button"
+                                class="btn-ghost btn-sm btn-icon"
+                                :aria-label="`Remove ${file.id}`"
+                                :title="`Remove ${file.id}`"
+                                @click="file.clear()"
+                            >
+                                <X aria-hidden="true" />
+                            </button>
+                            <button
+                                type="button"
+                                class="btn-secondary btn-sm"
+                                :aria-label="`Browse for ${file.id} audio`"
+                                @click="file.browse()"
+                            >
+                                Browse
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="divider hidden @4xl:block" />
+
+                <section>
+                    <h2 class="section-title">Padding</h2>
+                    <p class="hint mt-0.5">Extra audio kept around each segment.</p>
+                    <div class="mt-3 grid grid-cols-2 gap-3">
+                        <div>
+                            <label for="podcast-start-padding" class="field-label">Before</label>
+                            <div class="relative">
+                                <input
+                                    id="podcast-start-padding"
+                                    v-model.number="startPadding"
+                                    type="number"
+                                    min="0"
+                                    max="10"
+                                    step="0.1"
+                                    class="input pr-7 font-mono"
+                                    title="Extra audio before each clip"
+                                />
+                                <span
+                                    class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                    aria-hidden="true"
+                                    >s</span
+                                >
+                            </div>
+                        </div>
+                        <div>
+                            <label for="podcast-end-padding" class="field-label">After</label>
+                            <div class="relative">
+                                <input
+                                    id="podcast-end-padding"
+                                    v-model.number="endPadding"
+                                    type="number"
+                                    min="0"
+                                    max="10"
+                                    step="0.1"
+                                    class="input pr-7 font-mono"
+                                    title="Extra audio after each clip"
+                                />
+                                <span
+                                    class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                    aria-hidden="true"
+                                    >s</span
+                                >
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="self-end">
+                    <button
+                        type="button"
+                        class="btn-primary btn-lg w-full"
+                        data-testid="podcast-generate"
+                        :disabled="isGenerating || !!generateDisabledReason"
+                        :aria-busy="isGenerating ? 'true' : undefined"
+                        :title="generateDisabledReason || undefined"
+                        @click="generatePodcast"
+                    >
+                        <Loader2 v-if="isGenerating" class="animate-spin" aria-hidden="true" />
+                        <Sparkles v-else aria-hidden="true" />
+                        {{
+                            isGenerating
+                                ? 'Generating…'
+                                : podcastScript
+                                  ? 'Regenerate script'
+                                  : 'Generate script'
+                        }}
                     </button>
+                    <p
+                        v-if="generateDisabledReason && !isGenerating"
+                        class="hint mt-2 text-center"
+                        data-testid="podcast-generate-hint"
+                    >
+                        {{ generateDisabledReason }}
+                    </p>
+                    <p v-else-if="podcastScript && !isGenerating" class="hint mt-2 text-center">
+                        Replaces the current script and your edits.
+                    </p>
+                </div>
+            </aside>
+
+            <!-- Script -->
+            <section class="min-w-0" aria-label="Podcast script">
+                <div v-if="!podcastScript">
+                    <EmptyState
+                        :icon="Podcast"
+                        :title="isGenerating ? 'Writing the script…' : 'No script yet'"
+                        :description="
+                            isGenerating
+                                ? 'Picking the strongest moments and fitting them into your target length. This can take a minute.'
+                                : 'Set the target length, then generate a script. You can reorder, trim and add segments before exporting.'
+                        "
+                    />
                 </div>
 
-                <!-- Segment List -->
-                <div class="flex-1 overflow-y-auto p-6 space-y-2">
-                    <div
-                        v-for="(segment, index) in segments"
-                        :key="index"
-                        class="p-4 rounded-xl border transition-colors cursor-pointer"
-                        :class="
-                            isSegmentIncluded(segment)
-                                ? 'bg-teal-500/10 border-teal-500/30 cursor-not-allowed opacity-50'
-                                : 'bg-black/20 border-white/5 hover:border-teal-500/30'
-                        "
-                        @click="!isSegmentIncluded(segment) && addSegmentFromTranscript(segment)"
-                    >
-                        <div class="flex items-start gap-3">
-                            <span
-                                class="px-2 py-0.5 rounded bg-white/10 text-gray-400 text-xs font-mono"
-                            >
-                                {{ segment.start }} - {{ segment.end }}
-                            </span>
-                            <span class="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 text-xs">
-                                {{ segment.speaker }}
-                            </span>
-                            <span
-                                v-if="isSegmentIncluded(segment)"
-                                class="px-2 py-0.5 rounded bg-teal-500/20 text-teal-400 text-xs"
-                            >
-                                Already included
-                            </span>
+                <div v-else class="animate-rise-in space-y-4">
+                    <!-- Script header -->
+                    <div class="panel p-4" data-testid="podcast-script-header">
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                            <div class="min-w-0 flex-1">
+                                <p class="eyebrow">Episode</p>
+                                <h2 class="mt-1 text-[17px] leading-snug font-semibold text-fg">
+                                    {{ podcastScript.title }}
+                                </h2>
+                            </div>
+                            <div class="flex flex-col items-end gap-1">
+                                <span
+                                    data-testid="podcast-duration"
+                                    :data-status="rangeError ? 'unknown' : durationStatus"
+                                    class="font-mono"
+                                    :class="{
+                                        chip: !!rangeError,
+                                        'chip-success': !rangeError && durationStatus === 'ok',
+                                        'chip-warning': !rangeError && durationStatus === 'short',
+                                        'chip-danger': !rangeError && durationStatus === 'long',
+                                    }"
+                                >
+                                    {{ formatDuration(currentDuration) }}
+                                </span>
+                                <span class="text-[11px] text-fg-subtle">
+                                    {{ durationExplanation }}
+                                </span>
+                            </div>
                         </div>
-                        <p class="mt-2 text-gray-300 text-sm line-clamp-2">{{ segment.text }}</p>
+                        <p
+                            v-if="podcastScript.summary"
+                            class="mt-2 text-[13px] leading-relaxed text-fg-muted"
+                        >
+                            {{ podcastScript.summary }}
+                        </p>
+                    </div>
+
+                    <!-- Timeline -->
+                    <div class="panel">
+                        <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
+                            <h3 class="section-title">Segments</h3>
+                            <span class="chip font-mono">{{ podcastScript.segments.length }}</span>
+                            <span v-if="voiceoverCount > 0" class="chip-accent">
+                                <Mic aria-hidden="true" />
+                                {{ voiceoverCount }} voiceover{{ voiceoverCount > 1 ? 's' : '' }}
+                            </span>
+                            <span
+                                class="hint ml-auto hidden items-center gap-1 whitespace-nowrap @5xl:inline-flex"
+                            >
+                                Reorder: drag or
+                                <kbd class="kbd">Alt</kbd><kbd class="kbd">↑</kbd
+                                ><kbd class="kbd">↓</kbd>
+                            </span>
+                            <button
+                                type="button"
+                                class="btn-subtle btn-sm ml-auto @5xl:ml-2"
+                                data-testid="podcast-add-segment"
+                                @click="openAddSegmentModal"
+                            >
+                                <Plus aria-hidden="true" />
+                                Add segment
+                            </button>
+                        </div>
+
+                        <p
+                            v-if="podcastScript.segments.length === 0"
+                            class="hint px-4 py-8 text-center"
+                        >
+                            All segments were removed. Add segments from the transcript or generate
+                            a new script.
+                        </p>
+
+                        <TransitionGroup
+                            :name="draggedIndex === null ? 'list' : 'list-drag'"
+                            tag="ol"
+                            class="relative space-y-1.5 p-2"
+                            data-testid="podcast-segments"
+                        >
+                            <li
+                                v-for="(segment, index) in podcastScript.segments"
+                                :key="rowKey(index)"
+                                :data-row-key="rowKey(index)"
+                                :data-testid="`podcast-segment-${index}`"
+                                tabindex="0"
+                                aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                                class="group flex items-start gap-2.5 rounded-md border [&.list-leave-active]:inset-x-2 px-2 py-2.5 transition-[background-color,border-color,opacity] duration-150 outline-none focus-visible:border-accent/60"
+                                :class="[
+                                    segment.type === 'voiceover'
+                                        ? 'border-dashed border-accent/40 bg-accent/[0.06]'
+                                        : 'border-transparent hover:border-line hover:bg-surface-2',
+                                    draggedIndex === index ? 'opacity-50' : '',
+                                ]"
+                                @keydown="onRowKeydown($event, index)"
+                                @dragover="onDragOver($event, index)"
+                                @drop.prevent
+                            >
+                                <!-- Drag handle: the only place a drag starts -->
+                                <span
+                                    draggable="true"
+                                    class="mt-0.5 flex h-6 w-5 shrink-0 cursor-grab items-center justify-center rounded text-fg-faint hover:bg-surface-hover hover:text-fg-muted active:cursor-grabbing"
+                                    title="Drag to reorder"
+                                    aria-hidden="true"
+                                    data-testid="podcast-drag-handle"
+                                    @dragstart="onDragStart($event, index)"
+                                    @dragend="onDragEnd"
+                                >
+                                    <GripVertical class="h-4 w-4" />
+                                </span>
+
+                                <!-- Speaker colour bar / voiceover icon, in one fixed slot
+                                     so labels and text line up across row types -->
+                                <span
+                                    class="mt-0.5 flex w-4 shrink-0 justify-center self-stretch"
+                                    aria-hidden="true"
+                                >
+                                    <span
+                                        v-if="segment.type === 'content'"
+                                        class="h-full w-[3px] rounded-full"
+                                        :style="{ backgroundColor: colorOf(segment.speaker) }"
+                                    />
+                                    <Mic v-else class="mt-0.5 h-4 w-4 text-accent-soft" />
+                                </span>
+
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                        <span
+                                            v-if="segment.type === 'voiceover'"
+                                            class="text-[12px] font-semibold text-accent-soft"
+                                        >
+                                            Voiceover
+                                        </span>
+                                        <span
+                                            v-else
+                                            class="text-[12px] font-semibold"
+                                            data-testid="podcast-speaker"
+                                            :style="{ color: colorOf(segment.speaker) }"
+                                        >
+                                            {{ segment.speaker }}
+                                        </span>
+
+                                        <!-- Editable timestamps -->
+                                        <span class="flex items-center gap-1 font-mono text-[12px]">
+                                            <template
+                                                v-for="field in ['start', 'end'] as const"
+                                                :key="field"
+                                            >
+                                                <span
+                                                    v-if="field === 'end'"
+                                                    class="text-fg-faint"
+                                                    aria-hidden="true"
+                                                    >–</span
+                                                >
+                                                <input
+                                                    v-if="isEditing(index, field)"
+                                                    ref="editInput"
+                                                    v-model="editingValue"
+                                                    class="input input-sm w-[92px] font-mono"
+                                                    :aria-label="`${field === 'start' ? 'Start' : 'End'} time`"
+                                                    :aria-invalid="editError ? 'true' : undefined"
+                                                    :aria-describedby="
+                                                        editError ? 'podcast-time-error' : undefined
+                                                    "
+                                                    data-testid="podcast-time-input"
+                                                    @blur="
+                                                        finishEditing(index, field, editingValue)
+                                                    "
+                                                    @keydown.enter.prevent="
+                                                        finishEditing(index, field, editingValue)
+                                                    "
+                                                    @keydown.esc.prevent.stop="cancelEditing"
+                                                />
+                                                <button
+                                                    v-else
+                                                    type="button"
+                                                    class="rounded px-1.5 py-0.5 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
+                                                    :aria-label="`Edit ${field} time ${segment[field]}`"
+                                                    :data-testid="`podcast-time-${field}-${index}`"
+                                                    @click="startEditing(index, field)"
+                                                >
+                                                    {{ segment[field] }}
+                                                </button>
+                                            </template>
+                                        </span>
+                                    </div>
+                                    <p
+                                        v-if="editingKey === rowKey(index) && editError"
+                                        id="podcast-time-error"
+                                        class="mt-1 text-[12px] text-danger"
+                                        role="alert"
+                                        data-testid="podcast-time-error"
+                                    >
+                                        {{ editError }}
+                                    </p>
+
+                                    <!-- Content segment: transcript text -->
+                                    <template v-if="segment.type === 'content'">
+                                        <p
+                                            class="mt-1 text-[13px] leading-relaxed text-fg select-text"
+                                        >
+                                            {{ segment.text }}
+                                        </p>
+                                        <p
+                                            v-if="segment.includeReason"
+                                            class="mt-1 text-[12px] text-fg-subtle italic"
+                                        >
+                                            {{ segment.includeReason }}
+                                        </p>
+                                    </template>
+
+                                    <!-- Voiceover segment: editable transition note -->
+                                    <template v-else>
+                                        <label
+                                            :for="`podcast-note-${rowKey(index)}`"
+                                            class="sr-only"
+                                        >
+                                            Voiceover text
+                                        </label>
+                                        <textarea
+                                            :id="`podcast-note-${rowKey(index)}`"
+                                            :value="segment.transitionNote || segment.text"
+                                            rows="2"
+                                            class="input mt-1.5 min-h-0 text-[13px] italic"
+                                            placeholder="What the narrator says to bridge the topics"
+                                            :data-testid="`podcast-note-${index}`"
+                                            @change="
+                                                updateTransitionNote(
+                                                    index,
+                                                    ($event.target as HTMLTextAreaElement).value,
+                                                )
+                                            "
+                                        />
+                                        <p class="hint mt-1">
+                                            Suggested voiceover text for the transition. Not
+                                            exported; for future TTS or recording.
+                                        </p>
+                                    </template>
+                                </div>
+
+                                <!-- Row actions -->
+                                <div
+                                    class="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+                                >
+                                    <button
+                                        v-if="
+                                            segment.type === 'content' &&
+                                            index < podcastScript.segments.length - 1
+                                        "
+                                        type="button"
+                                        class="btn-ghost btn-sm btn-icon"
+                                        aria-label="Add voiceover after this segment"
+                                        title="Add voiceover transition after this segment"
+                                        :data-testid="`podcast-add-voiceover-${index}`"
+                                        @click="addVoiceoverSegment(index)"
+                                    >
+                                        <Mic aria-hidden="true" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="btn-ghost btn-sm btn-icon hover:text-danger"
+                                        aria-label="Remove segment"
+                                        title="Remove segment"
+                                        :data-testid="`podcast-remove-${index}`"
+                                        @click="removeSegment(index)"
+                                    >
+                                        <X aria-hidden="true" />
+                                    </button>
+                                </div>
+                            </li>
+                        </TransitionGroup>
                     </div>
                 </div>
-            </div>
+            </section>
         </div>
-    </transition>
+
+        <!-- Add Segment dialog -->
+        <UiDialog
+            :open="showAddSegmentModal"
+            title="Add segments from the transcript"
+            description="Added segments go to the end of the script."
+            size="lg"
+            @close="closeAddSegmentModal"
+        >
+            <div class="relative">
+                <Search
+                    class="pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2 text-fg-subtle"
+                    aria-hidden="true"
+                />
+                <input
+                    v-model="addSearch"
+                    type="search"
+                    class="input pl-8"
+                    placeholder="Search text, speaker or time"
+                    aria-label="Search transcript segments"
+                    data-autofocus
+                    data-testid="podcast-add-search"
+                />
+            </div>
+            <ul class="mt-3 space-y-1" data-testid="podcast-add-list">
+                <li
+                    v-for="(segment, index) in filteredTranscript"
+                    :key="`${segment.start}-${segment.end}-${index}`"
+                    class="flex items-start gap-3 rounded-md px-2 py-2 hover:bg-surface-3"
+                    :data-testid="`podcast-add-row-${index}`"
+                >
+                    <span class="mt-0.5 shrink-0 font-mono text-[12px] text-fg-subtle">
+                        {{ segment.start }} – {{ segment.end }}
+                    </span>
+                    <div class="min-w-0 flex-1">
+                        <p
+                            class="text-[12px] font-semibold"
+                            :style="{ color: colorOf(segment.speaker) }"
+                        >
+                            {{ segment.speaker }}
+                        </p>
+                        <p class="text-[13px] leading-relaxed text-fg-muted">{{ segment.text }}</p>
+                    </div>
+                    <span v-if="isSegmentIncluded(segment)" class="chip-success mt-0.5 shrink-0">
+                        Included
+                    </span>
+                    <button
+                        v-else
+                        type="button"
+                        class="btn-secondary btn-sm shrink-0"
+                        :aria-label="`Add ${segment.speaker} at ${segment.start}`"
+                        :data-testid="`podcast-add-row-button-${index}`"
+                        @click="addSegmentFromTranscript(segment)"
+                    >
+                        <Plus aria-hidden="true" />
+                        Add
+                    </button>
+                </li>
+            </ul>
+            <p v-if="filteredTranscript.length === 0" class="hint py-6 text-center">
+                No segment matches “{{ addSearch }}”.
+            </p>
+            <template #footer>
+                <span class="mr-auto text-[12px] text-fg-subtle" data-testid="podcast-added-count">
+                    {{
+                        addedCount === 0
+                            ? 'Nothing added yet'
+                            : `${addedCount} segment${addedCount > 1 ? 's' : ''} added`
+                    }}
+                </span>
+                <button
+                    type="button"
+                    class="btn-primary"
+                    data-testid="podcast-add-done"
+                    @click="closeAddSegmentModal"
+                >
+                    Done
+                </button>
+            </template>
+        </UiDialog>
+    </div>
 </template>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-    transition: opacity 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-    opacity: 0;
-}
-
-.line-clamp-2 {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-}
-</style>

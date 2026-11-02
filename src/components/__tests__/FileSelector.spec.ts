@@ -38,8 +38,47 @@ describe('FileSelector.vue', () => {
                 modelValue: '',
             },
         });
-        expect(wrapper.find('input').exists()).toBe(true);
+        expect(wrapper.get('[data-testid="file-drop-zone"]').text()).toContain(
+            'Drop a video or audio file',
+        );
         expect(wrapper.find('button').text()).toBe('Browse');
+    });
+
+    it('shows the chosen file as a card with a replace action', async () => {
+        mocks.open.mockResolvedValueOnce('/Users/me/Videos/replacement.mov');
+        const wrapper = mount(FileSelector, {
+            props: { modelValue: '/Users/me/Videos/interview.mp4' },
+        });
+
+        const zone = wrapper.get('[data-testid="file-drop-zone"]');
+        expect(zone.text()).toContain('interview.mp4');
+        expect(zone.text()).toContain('/Users/me/Videos');
+        expect(zone.text()).toContain('MP4 · Video');
+        expect(zone.text()).not.toContain('Drop a video or audio file');
+
+        const replace = wrapper.findAll('button').find((b) => b.text() === 'Replace');
+        await replace!.trigger('click');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([
+            '/Users/me/Videos/replacement.mov',
+        ]);
+    });
+
+    it('warns about a missing file and lets the user locate it', async () => {
+        mocks.open.mockResolvedValueOnce('/Users/me/Videos/found.mp4');
+        const wrapper = mount(FileSelector, {
+            props: { modelValue: '/gone/interview.mp4', missing: true },
+        });
+
+        expect(wrapper.text()).toContain('Media file missing');
+        expect(wrapper.findAll('button').some((b) => b.text() === 'Replace')).toBe(false);
+
+        const locate = wrapper.findAll('button').find((b) => b.text() === 'Locate file');
+        await locate!.trigger('click');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['/Users/me/Videos/found.mp4']);
     });
 
     it('emits update:modelValue when file is selected', async () => {

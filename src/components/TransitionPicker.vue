@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { Intensity, Transition } from '../bindings';
+import UiSwitch from './ui/UiSwitch.vue';
 
 /** The splice transitions to choose from (the export renders them with ffmpeg). */
 export type SpliceTransition = Exclude<Transition, 'cut' | 'morph'>;
@@ -53,6 +54,14 @@ const summary = computed(() => {
     return labels.length > 1 ? `${list}, taken in turn.` : list;
 });
 
+const autoId = `transitions-auto-${Math.random().toString(36).slice(2, 9)}`;
+
+/** On: back to the intensity's own; off: keep what Auto showed, as a choice. */
+function setAuto(on: boolean) {
+    if (on === auto.value) return;
+    emit('update:modelValue', on ? null : chosen.value.filter((t) => t !== 'cut'));
+}
+
 function toggle(value: SpliceTransition) {
     // From Auto, a click picks just that one.
     const current = props.modelValue ?? [];
@@ -68,48 +77,37 @@ function toggle(value: SpliceTransition) {
 </script>
 
 <template>
-    <div class="mb-8" :class="{ 'opacity-60': inactive }" data-testid="clips-transitions">
-        <div class="mb-3 flex flex-wrap items-center gap-3">
-            <span class="text-xs font-bold uppercase tracking-wider text-gray-400"
-                >Transitions</span
-            >
-            <button
-                type="button"
-                role="switch"
-                :aria-checked="auto"
+    <div data-testid="clips-transitions">
+        <h3 class="text-[13px] font-medium text-fg">Transitions</h3>
+        <p class="hint mt-0.5">Where a 9:16 clip jumps to another moment.</p>
+        <div class="mt-3 flex items-start gap-3">
+            <div class="min-w-0 flex-1">
+                <label :for="autoId" class="block cursor-pointer text-[13px] text-fg"> Auto </label>
+                <p class="hint mt-0.5">Picked from the tightening; turn off to choose.</p>
+            </div>
+            <UiSwitch
+                :id="autoId"
+                :model-value="auto"
                 data-testid="clips-transitions-auto"
-                class="rounded-xl border border-white/10 px-3 py-1 text-xs transition-colors"
-                :class="
-                    auto
-                        ? 'bg-pink-600/80 font-semibold text-white'
-                        : 'bg-black/20 text-gray-300 hover:bg-white/10'
-                "
-                @click="emit('update:modelValue', auto ? chosen.filter((t) => t !== 'cut') : null)"
-            >
-                Auto
-            </button>
-            <span class="text-xs text-gray-500">{{ summary }}</span>
+                @update:model-value="setAuto"
+            />
         </div>
-        <p class="mb-3 text-xs text-gray-500">
-            Where a 9:16 clip jumps to another moment.
-            <span v-if="inactive">Turn on Vertical 9:16 to use them.</span>
-        </p>
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <p class="mt-2 text-[12px] text-fg-muted" aria-live="polite">{{ summary }}</p>
+        <p v-if="inactive" class="hint mt-1">Turn on Vertical 9:16 to use them.</p>
+        <div
+            class="mt-3 grid grid-cols-2 gap-2"
+            role="group"
+            aria-label="Transitions where a 9:16 clip jumps to another moment"
+        >
             <button
                 v-for="option in TRANSITIONS"
                 :key="option.value"
                 type="button"
-                role="checkbox"
-                :aria-checked="chosen.includes(option.value)"
+                :aria-pressed="chosen.includes(option.value) ? 'true' : 'false'"
                 :data-testid="`clips-transition-${option.value}`"
-                class="flex items-center gap-3 rounded-xl border p-2 text-left transition-colors"
-                :class="
-                    chosen.includes(option.value)
-                        ? auto
-                            ? 'border-dashed border-pink-500/60 bg-pink-500/5'
-                            : 'border-pink-500/70 bg-pink-500/10'
-                        : 'border-white/5 bg-black/20 hover:bg-white/5'
-                "
+                :title="option.text"
+                class="option-card tile flex items-center gap-2.5 p-2"
+                :class="{ 'border-dashed': auto && chosen.includes(option.value) }"
                 @click="toggle(option.value)"
             >
                 <span class="preview" :class="`t-${option.value}`" aria-hidden="true">
@@ -118,10 +116,12 @@ function toggle(value: SpliceTransition) {
                     <span class="fx" />
                 </span>
                 <span class="min-w-0">
-                    <span class="block text-sm font-semibold text-gray-200">{{
+                    <span class="block truncate text-[12px] font-medium text-fg">{{
                         option.label
                     }}</span>
-                    <span class="block text-xs leading-snug text-gray-500">{{ option.text }}</span>
+                    <span class="line-clamp-2 block text-[11px] leading-snug text-fg-subtle">{{
+                        option.text
+                    }}</span>
                 </span>
             </button>
         </div>
@@ -132,16 +132,18 @@ function toggle(value: SpliceTransition) {
 /*
  * A looping 9:16 thumbnail per transition: shot A, the transition, shot B.
  * The export renders them with ffmpeg; these approximate the look in CSS.
+ * They only play while the tile is hovered or focused.
  */
 .preview {
     --cycle: 2.4s;
     position: relative;
     flex: none;
-    width: 36px;
-    height: 64px;
+    width: 30px;
+    height: 54px;
     overflow: hidden;
-    border-radius: 6px;
+    border-radius: 5px;
     background: #000;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08);
 }
 
 .shot,
@@ -151,6 +153,26 @@ function toggle(value: SpliceTransition) {
     animation-duration: var(--cycle);
     animation-iteration-count: infinite;
     animation-timing-function: ease-in-out;
+    animation-play-state: paused;
+}
+
+.tile:hover .shot,
+.tile:hover .fx,
+.tile:focus-visible .shot,
+.tile:focus-visible .fx {
+    animation-play-state: running;
+}
+
+/* Reduced motion: the global rule stops animations; a hovered or focused
+   tile still plays on request, so the effect can be previewed on purpose. */
+@media (prefers-reduced-motion: reduce) {
+    .tile:hover .shot,
+    .tile:hover .fx,
+    .tile:focus-visible .shot,
+    .tile:focus-visible .fx {
+        animation-duration: var(--cycle) !important;
+        animation-iteration-count: infinite !important;
+    }
 }
 
 /* Two shots with some detail (a person against a backdrop), so blur and
@@ -172,19 +194,6 @@ function toggle(value: SpliceTransition) {
 
 .fx {
     opacity: 0;
-}
-
-/* Under reduced motion, previews only play on hover. */
-@media (prefers-reduced-motion: reduce) {
-    .shot,
-    .fx {
-        animation-play-state: paused;
-    }
-
-    button:hover .shot,
-    button:hover .fx {
-        animation-play-state: running;
-    }
 }
 
 /* Default for B: shown from the switch on. */

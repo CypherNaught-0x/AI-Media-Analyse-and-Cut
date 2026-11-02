@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mount, flushPromises } from '@vue/test-utils';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils';
 import { ref } from 'vue';
 import Settings from '../Settings.vue';
 import { createRouter, createWebHistory } from 'vue-router';
@@ -102,6 +102,13 @@ const router = createRouter({
     ],
 });
 
+// Each mounted Settings registers a leave guard on the shared router; unmount
+// between tests so a stale dirty form can't block another test's navigation.
+enableAutoUnmount(afterEach);
+
+const saveButton = (wrapper: ReturnType<typeof mount>) =>
+    wrapper.findAll('button').find((b) => b.text() === 'Save settings');
+
 describe('Settings.vue', () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -140,7 +147,7 @@ describe('Settings.vue', () => {
             },
         });
 
-        expect(wrapper.text()).toContain('AI Settings');
+        expect(wrapper.get('h1').text()).toBe('Settings');
         expect(wrapper.find('input[type="password"]').exists()).toBe(true);
     });
 
@@ -168,7 +175,7 @@ describe('Settings.vue', () => {
 
         // Trigger fetch models
         // We need to make sure the button is enabled (apiKey is present in mock)
-        const fetchButton = wrapper.findAll('button').find((b) => b.text() === 'Refresh Models');
+        const fetchButton = wrapper.findAll('button').find((b) => b.text() === 'Refresh models');
         await fetchButton!.trigger('click');
 
         await flushPromises();
@@ -197,10 +204,7 @@ describe('Settings.vue', () => {
         await draft.trigger('click');
         expect(draft.attributes('aria-checked')).toBe('true');
 
-        await wrapper
-            .findAll('button')
-            .find((b) => b.text() === 'Save Settings')!
-            .trigger('click');
+        await saveButton(wrapper)!.trigger('click');
         expect(updateSettingsMock).toHaveBeenCalledWith(
             expect.objectContaining({ exportQuality: 'draft' }),
         );
@@ -213,12 +217,14 @@ describe('Settings.vue', () => {
             },
         });
 
-        const saveButton = wrapper.findAll('button').find((b) => b.text() === 'Save Settings');
-        // It might be disabled if no changes. Let's change something.
+        const save = saveButton(wrapper);
+        expect(save!.attributes('disabled')).toBeDefined();
+        // Typing a new key counts as a change.
         const input = wrapper.find('input[type="password"]');
         await input.setValue('new-api-key');
+        expect(save!.attributes('disabled')).toBeUndefined();
 
-        await saveButton!.trigger('click');
+        await save!.trigger('click');
         await flushPromises();
 
         // The key goes to the keychain, not into the saved settings.
@@ -288,14 +294,13 @@ describe('Settings.vue', () => {
         expect(intendedButton).toBeTruthy();
         await intendedButton!.trigger('click');
 
-        const vocalEventsCard = wrapper
-            .findAll('.cursor-pointer')
-            .find((node) => node.text().includes('Remove Vocal Events'));
-        expect(vocalEventsCard).toBeTruthy();
-        await vocalEventsCard!.trigger('click');
+        const vocalEvents = wrapper.get('[data-testid="crisper-remove-vocal-events"]');
+        expect(vocalEvents.attributes('role')).toBe('switch');
+        expect(vocalEvents.attributes('aria-checked')).toBe('false');
+        await vocalEvents.trigger('click');
+        expect(vocalEvents.attributes('aria-checked')).toBe('true');
 
-        const saveButton = wrapper.findAll('button').find((b) => b.text() === 'Save Settings');
-        await saveButton!.trigger('click');
+        await saveButton(wrapper)!.trigger('click');
 
         expect(updateSettingsMock).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -314,21 +319,228 @@ describe('Settings.vue', () => {
             },
         });
 
-        const toggleCard = wrapper
-            .findAll('.cursor-pointer')
-            .find((node) =>
-                node.text().includes('Enforce Structured JSON for transcript analysis'),
-            );
-        expect(toggleCard).toBeTruthy();
-        await toggleCard!.trigger('click');
+        const toggle = wrapper.get('[data-testid="enforce-json-schema"]');
+        // The visible label names the switch and toggles it.
+        const label = wrapper.get(`label[for="${toggle.attributes('id')}"]`);
+        expect(label.text()).toBe('Enforce structured JSON for transcript analysis');
+        await label.trigger('click');
+        expect(toggle.attributes('aria-checked')).toBe('false');
 
-        const saveButton = wrapper.findAll('button').find((b) => b.text() === 'Save Settings');
-        await saveButton!.trigger('click');
+        await saveButton(wrapper)!.trigger('click');
 
         expect(updateSettingsMock).toHaveBeenCalledWith(
             expect.objectContaining({
                 enforceJsonSchema: false,
             }),
         );
+    });
+
+    it('shows the stored-key state and can reveal a typed key', async () => {
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+
+        expect(wrapper.get('[data-testid="api-key-stored"]').text()).toContain('Saved in keychain');
+        const input = wrapper.get('[data-testid="api-key-input"]');
+        const toggle = wrapper.get('[data-testid="api-key-visibility"]');
+        expect(toggle.attributes('aria-label')).toBe('Show API key');
+        await toggle.trigger('click');
+        expect(input.attributes('type')).toBe('text');
+        expect(toggle.attributes('aria-label')).toBe('Hide API key');
+        await toggle.trigger('click');
+        expect(input.attributes('type')).toBe('password');
+
+        apiKeyStoredRef.value = false;
+        await flushPromises();
+        expect(wrapper.find('[data-testid="api-key-stored"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="api-key-remove"]').exists()).toBe(false);
+    });
+
+    it('warns inline when the model list is a fallback', async () => {
+        const defaultInvoke = invokeMock.getMockImplementation()!;
+        invokeMock.mockImplementation((command: string, args?: unknown) =>
+            command === 'list_models'
+                ? (Promise.reject(new Error('boom')) as ReturnType<typeof defaultInvoke>)
+                : defaultInvoke(command, args),
+        );
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+        await flushPromises();
+        invokeMock.mockImplementation(defaultInvoke);
+        // The silent fetch on mount failed, so the list is the built-in one.
+        expect(wrapper.get('[data-testid="model-fallback-warning"]').text()).toContain(
+            'built-in fallback',
+        );
+
+        await wrapper.get('[data-testid="model-manual-toggle"]').trigger('click');
+        expect(wrapper.find('select#settings-model').exists()).toBe(false);
+        expect(wrapper.get('input#settings-model').element).toBeInstanceOf(HTMLInputElement);
+    });
+
+    it('flags a fallback model list kept from an earlier visit', () => {
+        modelFetchStateRef.value = {
+            availableModels: ['gpt-4', 'gpt-3.5-turbo'] as never,
+            supportsModelFetch: false,
+        };
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+        expect(wrapper.get('[data-testid="model-fallback-warning"]').text()).toContain(
+            'built-in fallback',
+        );
+    });
+
+    it('opens the card of a newly picked default engine without closing others', async () => {
+        settingsRef.value = { ...settingsRef.value, transcriptionBackend: 'local' };
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+        const toggle = (engine: string) =>
+            wrapper.get(`[data-testid="engine-card-${engine}"] button[aria-expanded]`);
+
+        // Parakeet is the default engine, so only its card starts open.
+        expect(toggle('parakeet').attributes('aria-expanded')).toBe('true');
+        expect(toggle('crisper').attributes('aria-expanded')).toBe('false');
+
+        // Open the advanced options inside CrisperWhisper by hand.
+        await toggle('crisper').trigger('click');
+        const advanced = wrapper
+            .get('[data-testid="engine-card-crisper"]')
+            .findAll('button[aria-expanded]')
+            .find((button) => button.text().includes('Advanced runtime options'))!;
+        await advanced.trigger('click');
+        expect(advanced.attributes('aria-expanded')).toBe('true');
+
+        // Changing the default pipeline or engine leaves those cards alone.
+        await wrapper
+            .findAll('[role="radio"]')
+            .find((radio) => radio.text().startsWith('LLM Only'))!
+            .trigger('click');
+        await wrapper
+            .findAll('[role="radio"]')
+            .find((radio) => radio.text().startsWith('Hybrid Cleanup'))!
+            .trigger('click');
+        expect(toggle('crisper').attributes('aria-expanded')).toBe('true');
+        expect(advanced.attributes('aria-expanded')).toBe('true');
+        expect(toggle('parakeet').attributes('aria-expanded')).toBe('true');
+    });
+
+    it('gives the option cards radio semantics and labels every field', () => {
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+
+        const pipeline = wrapper.get('[data-testid="default-pipeline"]');
+        expect(pipeline.attributes('role')).toBe('radiogroup');
+        const checked = pipeline.findAll('[role="radio"][aria-checked="true"]');
+        expect(checked).toHaveLength(1);
+        expect(checked[0].text()).toContain('LLM Only');
+
+        for (const field of wrapper.findAll('input, select')) {
+            const id = field.attributes('id');
+            expect(id, field.html()).toBeTruthy();
+            expect(wrapper.find(`label[for="${id}"]`).exists(), id).toBe(true);
+        }
+    });
+
+    it('notes that LLM-only sections are unused by a Local Only default', async () => {
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+        expect(wrapper.find('[data-testid="ai-provider-unused"]').exists()).toBe(false);
+        // LLM Only as the default: the engines are the ones flagged instead.
+        expect(wrapper.find('[data-testid="engines-unused"]').exists()).toBe(true);
+
+        await wrapper
+            .findAll('[role="radio"]')
+            .find((radio) => radio.text().startsWith('Local Only'))!
+            .trigger('click');
+        expect(wrapper.get('[data-testid="ai-provider-unused"]').text()).toContain(
+            'Only used by LLM and hybrid pipelines',
+        );
+        expect(wrapper.find('[data-testid="engines-unused"]').exists()).toBe(false);
+    });
+
+    it('shows a status chip for the CrisperWhisper runtime', async () => {
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+        await flushPromises();
+        expect(wrapper.get('[data-testid="crisper-status-chip"]').text()).toBe('Ready');
+    });
+
+    describe('leaving with unsaved changes', () => {
+        async function mountOnSettings() {
+            await router.push('/settings');
+            await router.isReady();
+            const wrapper = mount(Settings, {
+                global: { plugins: [router], stubs: { teleport: true } },
+            });
+            await flushPromises();
+            return wrapper;
+        }
+
+        it('goes straight back without changes', async () => {
+            const wrapper = await mountOnSettings();
+            const cancel = wrapper.get('[data-testid="settings-cancel"]');
+            expect(cancel.text()).toBe('Cancel');
+            await cancel.trigger('click');
+            await flushPromises();
+            expect(router.currentRoute.value.path).toBe('/');
+            expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+        });
+
+        it('asks before discarding edits, and can keep editing', async () => {
+            const wrapper = await mountOnSettings();
+            await wrapper.get('[data-testid="export-quality-draft"]').trigger('click');
+            expect(wrapper.get('[data-testid="settings-action-bar"]').text()).toContain(
+                'Unsaved changes',
+            );
+
+            const discard = wrapper.get('[data-testid="settings-cancel"]');
+            expect(discard.text()).toBe('Discard');
+            await discard.trigger('click');
+            await flushPromises();
+            expect(wrapper.get('[role="dialog"]').text()).toContain('Discard unsaved changes?');
+
+            await wrapper.get('[data-testid="leave-keep-editing"]').trigger('click');
+            await flushPromises();
+            expect(router.currentRoute.value.path).toBe('/settings');
+            expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+
+            await wrapper.get('[data-testid="settings-cancel"]').trigger('click');
+            await flushPromises();
+            await wrapper.get('[data-testid="leave-discard"]').trigger('click');
+            await flushPromises();
+            expect(router.currentRoute.value.path).toBe('/');
+            expect(updateSettingsMock).not.toHaveBeenCalled();
+        });
+
+        it('puts the workspace step back when a rail navigation is cancelled', async () => {
+            const { useWorkspaceNav, resetWorkspaceNav } =
+                await import('../../composables/useWorkspaceNav');
+            resetWorkspaceNav();
+            const { state, selectStep } = useWorkspaceNav();
+            state.hasTranscript = true;
+            selectStep('transcript');
+            const wrapper = await mountOnSettings();
+            await wrapper.get('[data-testid="export-quality-draft"]').trigger('click');
+
+            // The rail selects the step, then navigates.
+            selectStep('clips');
+            void router.push('/');
+            await flushPromises();
+            await wrapper.get('[data-testid="leave-keep-editing"]').trigger('click');
+            await flushPromises();
+            expect(router.currentRoute.value.path).toBe('/settings');
+            expect(state.activeStep).toBe('transcript');
+            resetWorkspaceNav();
+        });
+
+        it('floats the action bar only while there are unsaved changes', async () => {
+            const wrapper = await mountOnSettings();
+            const bar = () => wrapper.get('[data-testid="settings-action-bar"]');
+            expect(bar().element.parentElement!.className).not.toContain('sticky');
+            expect(bar().text()).toContain('No unsaved changes');
+
+            await wrapper.get('[data-testid="export-quality-draft"]').trigger('click');
+            expect(bar().element.parentElement!.className).toContain('sticky');
+        });
+
+        it('saves without asking', async () => {
+            const wrapper = await mountOnSettings();
+            await wrapper.get('[data-testid="export-quality-draft"]').trigger('click');
+            await saveButton(wrapper)!.trigger('click');
+            await flushPromises();
+            expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+            expect(router.currentRoute.value.path).toBe('/');
+        });
     });
 });

@@ -60,10 +60,10 @@ describe('AnalysisSettings.vue', () => {
         await wrapper.find('input[type="number"]').setValue(3);
         expect(wrapper.emitted('update:speakerCount')![0]).toEqual([3]);
 
-        await wrapper.findAll('.cursor-pointer')[0].trigger('click');
+        await wrapper.get('[data-testid="remove-filler-words"]').trigger('click');
         expect(wrapper.emitted('update:removeFillerWords')![0]).toEqual([true]);
 
-        await wrapper.findAll('.cursor-pointer')[1].trigger('click');
+        await wrapper.get('[data-testid="trim-silence"]').trigger('click');
         expect(wrapper.emitted('update:trimSilence')![0]).toEqual([false]);
     });
 
@@ -81,8 +81,54 @@ describe('AnalysisSettings.vue', () => {
     });
 
     it('hides the engine row for the LLM-only pipeline', () => {
-        expect(mountPanel({ transcriptionBackend: 'llm' }).text()).not.toContain('Local Engine');
-        expect(mountPanel({ transcriptionBackend: 'local' }).text()).toContain('Local Engine');
+        const llm = mountPanel({ transcriptionBackend: 'llm' });
+        expect(llm.find('[data-testid="engine-picker"]').exists()).toBe(false);
+        expect(llm.text()).not.toContain('Local engine');
+        const local = mountPanel({ transcriptionBackend: 'local' });
+        expect(local.find('[data-testid="engine-picker"]').exists()).toBe(true);
+        expect(local.text()).toContain('Local engine');
+    });
+
+    it('gives the pipeline and engine cards radio semantics', async () => {
+        const wrapper = mountPanel({ transcriptionBackend: 'hybrid', localEngine: 'crisper' });
+
+        const groups = wrapper.findAll('[role="radiogroup"]');
+        expect(groups).toHaveLength(2);
+        const checked = wrapper
+            .findAll('[role="radio"][aria-checked="true"]')
+            .map((radio) => radio.text());
+        expect(checked).toHaveLength(2);
+        expect(checked[0]).toContain('Hybrid Cleanup');
+        expect(checked[1]).toContain('CrisperWhisper');
+
+        // Arrow keys move the selection like a native radio group.
+        await groups[0].trigger('keydown', { key: 'ArrowRight' });
+        expect(wrapper.emitted('update:transcriptionBackend')![0]).toEqual(['hybrid-merge']);
+
+        // Home and End jump to the first and last option.
+        await groups[0].trigger('keydown', { key: 'Home' });
+        expect(wrapper.emitted('update:transcriptionBackend')![1]).toEqual(['llm']);
+        await groups[1].trigger('keydown', { key: 'End' });
+        const engines = wrapper.findAll('[data-testid="engine-picker"] [role="radio"]');
+        expect(wrapper.emitted('update:localEngine')![0]).toEqual([
+            engines[engines.length - 1].text().includes('Apple Speech')
+                ? 'apple-speech'
+                : 'crisper',
+        ]);
+    });
+
+    it('labels every input and explains that these settings are per project', () => {
+        const wrapper = mountPanel({ transcriptionBackend: 'hybrid' });
+
+        expect(wrapper.text()).toContain('this project only');
+        for (const selector of ['textarea', 'input[type="number"]']) {
+            for (const field of wrapper.findAll(selector)) {
+                const id = field.attributes('id');
+                expect(id).toBeTruthy();
+                expect(wrapper.find(`label[for="${id}"]`).exists()).toBe(true);
+            }
+        }
+        expect(wrapper.get('input[type="number"]').attributes('placeholder')).toBe('Auto');
     });
 
     it.each<TranscriptionBackend>(['local', 'hybrid', 'hybrid-merge'])(
@@ -131,39 +177,73 @@ describe('AnalysisSettings.vue', () => {
         await speakerInput.setValue(4);
         expect(wrapper.emitted('update:speakerCount')![0]).toEqual([4]);
 
-        await wrapper.findAll('.cursor-pointer')[0].trigger('click');
+        await wrapper.get('[data-testid="remove-filler-words"]').trigger('click');
         expect(wrapper.emitted('update:removeFillerWords')![0]).toEqual([true]);
     });
 
-    it('disables LLM-only inputs for the local pipeline', () => {
+    it('hides LLM-only inputs for the local pipeline and says why', () => {
         const wrapper = mountPanel({ transcriptionBackend: 'local', localEngine: 'crisper' });
 
-        expect(wrapper.find('input[type="number"]').attributes('disabled')).toBeDefined();
-        expect(wrapper.findAll('textarea')[0].attributes('disabled')).toBeDefined();
+        expect(wrapper.find('[data-testid="llm-assist"]').exists()).toBe(false);
+        expect(wrapper.find('input[type="number"]').exists()).toBe(false);
+        expect(wrapper.findAll('textarea')).toHaveLength(0);
+        expect(wrapper.get('[data-testid="llm-assist-hint"]').text()).toContain(
+            'LLM and hybrid pipelines',
+        );
+
+        // Nothing to explain when the inputs are in use.
+        const hybrid = mountPanel({ transcriptionBackend: 'hybrid' });
+        expect(hybrid.find('[data-testid="llm-assist-hint"]').exists()).toBe(false);
+        expect(hybrid.findAll('textarea')).toHaveLength(2);
+    });
+
+    it('brings the LLM-only inputs back with their values when the pipeline uses an LLM again', async () => {
+        const wrapper = mountPanel({ transcriptionBackend: 'local' });
+        await wrapper.setProps({ transcriptionBackend: 'hybrid', context: 'kept' } as never);
+        expect(wrapper.get('#analysis-context').element).toHaveProperty('value', 'kept');
     });
 
     it('offers filler removal whenever the engine or an LLM stage can do it', async () => {
         // CrisperWhisper removes fillers itself.
         const crisper = mountPanel({ transcriptionBackend: 'local', localEngine: 'crisper' });
-        await crisper.findAll('.cursor-pointer')[0].trigger('click');
+        await crisper.get('[data-testid="remove-filler-words"]').trigger('click');
         expect(crisper.emitted('update:removeFillerWords')![0]).toEqual([true]);
 
         // So does an LLM cleanup pass, even with Parakeet as the engine.
         const hybrid = mountPanel({ transcriptionBackend: 'hybrid', localEngine: 'parakeet' });
-        await hybrid.findAll('.cursor-pointer')[0].trigger('click');
+        await hybrid.get('[data-testid="remove-filler-words"]').trigger('click');
         expect(hybrid.emitted('update:removeFillerWords')![0]).toEqual([true]);
     });
 
     it('disables filler removal for Parakeet alone, which has no such pass', async () => {
         const wrapper = mountPanel({ transcriptionBackend: 'local', localEngine: 'parakeet' });
 
-        const fillerCard = wrapper
-            .findAll('div')
-            .find((node) => node.text().trim() === 'Remove Filler Words');
-        expect(fillerCard).toBeTruthy();
-        expect(fillerCard!.classes()).toContain('cursor-not-allowed');
+        const fillerSwitch = wrapper.get('[data-testid="remove-filler-words"]');
+        expect(fillerSwitch.attributes('role')).toBe('switch');
+        expect(fillerSwitch.attributes('disabled')).toBeDefined();
 
-        await fillerCard!.trigger('click');
+        await fillerSwitch.trigger('click');
+        // Clicking its label does nothing either.
+        await wrapper.get(`label[for="${fillerSwitch.attributes('id')}"]`).trigger('click');
         expect(wrapper.emitted('update:removeFillerWords')).toBeUndefined();
+
+        // The row says why instead of silently dimming.
+        expect(wrapper.get('[data-testid="remove-filler-words-reason"]').text()).toContain(
+            'Parakeet keeps every word',
+        );
+    });
+
+    it('explains that Apple Speech already drops fillers', () => {
+        const wrapper = mountPanel({ transcriptionBackend: 'local', localEngine: 'apple-speech' });
+        expect(wrapper.get('[data-testid="remove-filler-words-reason"]').text()).toContain(
+            'Apple Speech',
+        );
+    });
+
+    it('toggles a switch from its label', async () => {
+        const wrapper = mountPanel();
+        const trim = wrapper.get('[data-testid="trim-silence"]');
+        await wrapper.get(`label[for="${trim.attributes('id')}"]`).trigger('click');
+        expect(wrapper.emitted('update:trimSilence')![0]).toEqual([false]);
     });
 });

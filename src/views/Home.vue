@@ -8,7 +8,7 @@ export default { name: 'Home' };
 </script>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch, watchEffect, toRef } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { useRouter } from 'vue-router';
@@ -17,7 +17,7 @@ import PodcastGenerator from '../components/PodcastGenerator.vue';
 import ErrorOverlay from '../components/ErrorOverlay.vue';
 import HomeSourcePanel from '../components/HomeSourcePanel.vue';
 import TranscriptWorkspacePanel from '../components/TranscriptWorkspacePanel.vue';
-import WorkspaceTabs from '../components/WorkspaceTabs.vue';
+import { resetWorkspaceNav, useWorkspaceNav } from '../composables/useWorkspaceNav';
 import type {
     AudioInfo,
     Clip,
@@ -128,7 +128,11 @@ const executionHistory = ref<
 const inputPath = ref('');
 const inputPathExists = ref(false);
 const extractedAudioPath = ref('');
-const activeTab = ref('source');
+// The shell rail navigates the workspace steps; Home owns the project, so it
+// starts the shared nav state fresh and keeps it in sync.
+resetWorkspaceNav();
+const workspaceNav = useWorkspaceNav();
+const activeTab = toRef(workspaceNav.state, 'activeStep');
 const segments = ref<TranscriptSegment[]>([]);
 const translations = ref<Record<string, TranscriptSegment[]>>({});
 const currentLanguage = ref('Original');
@@ -254,18 +258,18 @@ const currentModelDisplay = computed(() => {
 
 const currentEngineLabel = computed(() => {
     return workspaceSettings.value.transcriptionBackend === 'llm'
-        ? 'Current Model'
-        : 'Current Pipeline';
+        ? 'Current model'
+        : 'Current pipeline';
 });
 const hasTranscript = computed(() => segments.value.length > 0);
 const hasMediaFile = computed(() => inputPath.value.length > 0 && inputPathExists.value);
 
-const workspaceTabs = computed(() => [
-    { id: 'source', label: 'Source & Analysis', disabled: false },
-    { id: 'transcript', label: 'Transcript', disabled: !hasTranscript.value },
-    { id: 'clips', label: 'Viral Clips', disabled: !hasTranscript.value },
-    { id: 'podcast', label: 'Podcast', disabled: !hasTranscript.value },
-]);
+watchEffect(() => {
+    workspaceNav.state.hasTranscript = hasTranscript.value;
+    workspaceNav.state.mediaPath = inputPath.value;
+    workspaceNav.state.hasMediaFile = hasMediaFile.value;
+    workspaceNav.state.busy = isProcessing.value;
+});
 
 async function refreshExtractedAudioPath() {
     const input = inputPath.value;
@@ -609,6 +613,11 @@ watch(
     },
     { immediate: true },
 );
+
+// A step switch is a page change: start the new pane at the top.
+watch(activeTab, () => {
+    document.getElementById('app-main')?.scrollTo({ top: 0 });
+});
 
 watch(hasTranscript, (ready, wasReady) => {
     // Move into the transcript flow as soon as it becomes available, and fall
@@ -1525,17 +1534,13 @@ function updateProcessing(processing: boolean) {
 </script>
 
 <template>
-    <div
-        class="min-h-screen bg-gray-900 text-gray-200 p-8 pb-24 font-sans selection:bg-blue-500/30"
-    >
-        <div class="mx-auto w-full max-w-[1400px]">
-            <WorkspaceTabs
-                :tabs="workspaceTabs"
-                :activeTab="activeTab"
-                @update:activeTab="activeTab = $event"
-            />
-
-            <div v-show="activeTab === 'source'">
+    <div class="flex min-h-full flex-col">
+        <!-- Full-height column inside #app-main: the active step's page, then
+             the activity bar stuck to the bottom. All four panes stay mounted
+             (they hold state); showing one replays its entrance animation.
+             Keep this the single root: the route transition needs one. -->
+        <div class="flex-1">
+            <div v-show="activeTab === 'source'" class="step-pane">
                 <HomeSourcePanel
                     :currentEngineLabel="currentEngineLabel"
                     :currentModelDisplay="currentModelDisplay"
@@ -1568,8 +1573,8 @@ function updateProcessing(processing: boolean) {
                 />
             </div>
 
-            <!-- Editor Section -->
-            <div v-show="activeTab === 'transcript'">
+            <!-- Transcript -->
+            <div v-show="activeTab === 'transcript'" class="step-pane">
                 <transition name="fade">
                     <TranscriptWorkspacePanel
                         v-if="hasTranscript"
@@ -1596,8 +1601,8 @@ function updateProcessing(processing: boolean) {
                 </transition>
             </div>
 
-            <!-- Viral Clips Generator -->
-            <div v-show="activeTab === 'clips'">
+            <!-- Viral clips -->
+            <div v-show="activeTab === 'clips'" class="step-pane">
                 <transition name="fade">
                     <ViralClipsGenerator
                         v-if="hasTranscript"
@@ -1607,7 +1612,6 @@ function updateProcessing(processing: boolean) {
                         :busy="isProcessing"
                         :state="viralClipsState"
                         :cancelGeneration="cancelGeneration"
-                        class="mb-8"
                         @update:status="updateStatus"
                         @update:processing="updateProcessing"
                         @update:state="viralClipsState = $event"
@@ -1616,8 +1620,8 @@ function updateProcessing(processing: boolean) {
                 </transition>
             </div>
 
-            <!-- Podcast Generator -->
-            <div v-show="activeTab === 'podcast'">
+            <!-- Podcast -->
+            <div v-show="activeTab === 'podcast'" class="step-pane">
                 <transition name="fade">
                     <PodcastGenerator
                         v-if="hasTranscript"
@@ -1626,9 +1630,9 @@ function updateProcessing(processing: boolean) {
                         :hasMediaFile="hasMediaFile"
                         :busy="isProcessing"
                         :context="context"
+                        :speakerOrder="uniqueSpeakers"
                         :state="podcastWorkspaceState"
                         :cancelGeneration="cancelGeneration"
-                        class="mb-20"
                         @update:status="updateStatus"
                         @update:processing="updateProcessing"
                         @update:state="podcastWorkspaceState = $event"
@@ -1636,38 +1640,40 @@ function updateProcessing(processing: boolean) {
                 </transition>
             </div>
         </div>
-    </div>
 
-    <!-- Error Overlay -->
-    <ErrorOverlay
-        :show="showErrorOverlay"
-        :message="errorDetails.message"
-        :rawResponse="errorDetails.rawResponse"
-        :parseError="errorDetails.parseError"
-        @dismiss="dismissError"
-        @update:status="updateStatus"
-    />
-    <StatusBar
-        :status="status"
-        :isProcessing="isProcessing"
-        :progressPercentage="progressPercentage"
-        :progressEtaSeconds="progressEtaSeconds"
-        :isCancelling="isCancelling"
-        @cancel="cancelCurrentRun"
-    />
+        <StatusBar
+            :status="status"
+            :isProcessing="isProcessing"
+            :progressPercentage="progressPercentage"
+            :progressEtaSeconds="progressEtaSeconds"
+            :isCancelling="isCancelling"
+            @cancel="cancelCurrentRun"
+        />
+
+        <ErrorOverlay
+            :show="showErrorOverlay"
+            :message="errorDetails.message"
+            :rawResponse="errorDetails.rawResponse"
+            :parseError="errorDetails.parseError"
+            @dismiss="dismissError"
+            @update:status="updateStatus"
+        />
+    </div>
 </template>
 
 <style scoped>
-.fade-enter-active,
-.fade-leave-active {
-    transition:
-        opacity 0.5s ease,
-        transform 0.5s ease;
+/* Entrance for a step pane. A pane hidden with v-show is display:none, and an
+   animation restarts whenever its element is displayed again — so each switch
+   replays it with no extra state. Leave is instant (no layout jump). Fill mode
+   `backwards` only, so no transform lingers to trap fixed/sticky children. */
+.step-pane {
+    animation: step-enter var(--duration-slow) var(--ease-out-expo) backwards;
 }
 
-.fade-enter-from,
-.fade-leave-to {
-    opacity: 0;
-    transform: translateY(20px);
+@keyframes step-enter {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
 }
 </style>

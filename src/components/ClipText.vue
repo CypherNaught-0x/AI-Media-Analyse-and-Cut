@@ -2,6 +2,9 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import type { CutWord } from '../types';
 import type { ClipWord } from '../utils/shortClips';
+import { Loader2, Undo2, WandSparkles } from '@lucide/vue';
+import UiSegmented, { type SegmentedOption } from './ui/UiSegmented.vue';
+import { speakerColor } from '../utils/speakerColors';
 
 interface Props {
     words: ClipWord[];
@@ -15,6 +18,8 @@ interface Props {
     autoEditing?: boolean;
     /** Auto editing may start (nothing else runs). */
     canAutoEdit?: boolean;
+    /** The transcript's speakers in order, so each keeps its app-wide colour. */
+    speakerOrder?: string[];
 }
 
 const props = defineProps<Props>();
@@ -28,6 +33,10 @@ const emit = defineEmits<{
 
 type Mode = 'edit' | 'cut';
 const mode = ref<Mode>('edit');
+const MODES: SegmentedOption<Mode>[] = [
+    { value: 'edit', label: 'Edit words', testId: 'clip-text-mode-edit' },
+    { value: 'cut', label: 'Cut out', testId: 'clip-text-mode-cut' },
+];
 const container = ref<HTMLElement | null>(null);
 const editing = ref<number | null>(null);
 const draft = ref('');
@@ -66,6 +75,14 @@ const active = computed(() => {
     if (time === null) return -1;
     return props.words.findIndex((word) => word.start <= time && time < word.end);
 });
+
+/** Speakers in order (the transcript's, else as they appear), for their colours. */
+const speakers = computed(
+    () =>
+        props.speakerOrder ?? [
+            ...new Set(props.words.map((word) => word.speaker).filter((name) => !!name)),
+        ],
+);
 
 const cutCount = computed(() => props.words.filter(userCut).length);
 
@@ -139,82 +156,67 @@ function restoreAll() {
 </script>
 
 <template>
-    <div class="rounded-lg bg-black/30" data-testid="clip-text-panel">
-        <div
-            class="flex flex-wrap items-center gap-2 border-b border-white/5 px-3 py-1.5 text-[11px]"
-        >
-            <div
-                class="flex overflow-hidden rounded-md border border-white/10"
-                role="radiogroup"
-                aria-label="Text mode"
-            >
-                <button
-                    v-for="option in [
-                        { value: 'edit', label: 'Edit words' },
-                        { value: 'cut', label: 'Cut out' },
-                    ] as const"
-                    :key="option.value"
-                    type="button"
-                    role="radio"
-                    :aria-checked="mode === option.value"
-                    class="px-2 py-0.5 transition-colors"
-                    :class="
-                        mode === option.value
-                            ? 'bg-pink-600/70 font-semibold text-white'
-                            : 'text-gray-300 hover:bg-white/10'
-                    "
-                    :data-testid="`clip-text-mode-${option.value}`"
-                    @click="mode = option.value"
-                >
-                    {{ option.label }}
-                </button>
-            </div>
+    <div
+        class="overflow-hidden rounded-md border border-line bg-well"
+        data-testid="clip-text-panel"
+    >
+        <div class="flex flex-wrap items-center gap-2 border-b border-line px-2.5 py-2">
+            <UiSegmented v-model="mode" :options="MODES" label="Text mode" size="sm" />
             <button
                 type="button"
-                class="ml-auto rounded px-1.5 py-0.5 text-orange-300 hover:bg-white/10 disabled:opacity-40"
+                class="btn-ghost btn-sm ml-auto"
                 :disabled="!canAutoEdit"
-                title="Let an LLM cut false starts, repetitions and asides; replaces earlier auto cuts"
+                :aria-busy="autoEditing ? 'true' : undefined"
+                :title="
+                    canAutoEdit
+                        ? 'Let an LLM cut false starts, repetitions and asides; replaces earlier auto cuts'
+                        : 'Wait for the running job to finish'
+                "
                 data-testid="clip-text-auto-edit"
                 @click="emit('auto-edit')"
             >
-                {{ autoEditing ? 'Auto editing...' : 'Auto edit' }}
+                <Loader2 v-if="autoEditing" class="animate-spin" aria-hidden="true" />
+                <WandSparkles v-else aria-hidden="true" />
+                {{ autoEditing ? 'Auto editing' : 'Auto edit' }}
             </button>
             <button
                 v-if="cutCount > 0"
                 type="button"
-                class="rounded px-1.5 py-0.5 text-red-300 hover:bg-white/10"
+                class="btn-secondary btn-sm"
                 data-testid="clip-text-restore"
                 @click="restoreAll"
             >
+                <Undo2 aria-hidden="true" />
                 Restore {{ cutCount }} cut word{{ cutCount === 1 ? '' : 's' }}
             </button>
-            <span class="basis-full text-gray-500">
+            <p class="hint basis-full text-[11px]">
                 {{
                     mode === 'edit'
                         ? 'Click a word to correct it in the transcript.'
                         : 'Click a word to cut it from this clip, Shift-click for a range. The transcript stays as it is.'
                 }}
-            </span>
+            </p>
         </div>
         <div
             ref="container"
-            class="relative max-h-48 overflow-y-auto p-3 text-sm leading-relaxed text-gray-200"
+            class="relative max-h-48 overflow-y-auto px-3 py-2.5 text-[13px] leading-relaxed text-fg"
             data-testid="clip-text"
             @wheel.passive="onUserScroll"
             @touchmove.passive="onUserScroll"
             @pointerdown="onUserScroll"
         >
-            <p v-if="words.length === 0" class="text-xs text-gray-500">No transcript words here.</p>
+            <p v-if="words.length === 0" class="hint">No transcript words here.</p>
             <template v-for="(word, index) in words" :key="`${word.segment}:${word.index}`">
                 <span
                     v-if="speakerBefore(index)"
-                    class="mr-1 mt-1 block text-[10px] font-semibold uppercase tracking-wider text-pink-300/80 first:mt-0"
+                    class="mt-1.5 mb-0.5 block text-[10px] font-semibold tracking-wider uppercase first:mt-0"
+                    :style="{ color: speakerColor(speakerBefore(index)!, speakers) }"
                     >{{ speakerBefore(index) }}</span
                 >
                 <input
                     v-if="editing === index"
                     v-model="draft"
-                    class="mx-0.5 rounded bg-white/15 px-1 text-white outline-none ring-1 ring-pink-400"
+                    class="mx-0.5 rounded-xs bg-surface-3 px-1 text-fg ring-1 ring-accent outline-none"
                     :style="{ width: `${Math.max(draft.length, 2) + 1}ch` }"
                     :aria-label="`Edit “${word.text}”`"
                     autocapitalize="off"
@@ -230,18 +232,18 @@ function restoreAll() {
                     v-else
                     role="button"
                     tabindex="0"
-                    class="rounded px-px transition-colors"
+                    class="rounded-xs px-px transition-colors duration-100"
                     :class="[
                         mode === 'cut'
-                            ? 'cursor-pointer hover:bg-red-500/20'
-                            : 'cursor-text hover:bg-white/10',
-                        index === active ? 'bg-[#ffd60a] text-black' : '',
+                            ? 'cursor-pointer hover:bg-danger/20'
+                            : 'cursor-text hover:bg-surface-hover',
+                        index === active ? 'bg-accent text-accent-fg' : '',
                         autoCut(word)
-                            ? 'bg-orange-500/10 text-orange-300/70 line-through decoration-orange-400'
+                            ? 'bg-warning/10 text-warning/80 line-through decoration-warning'
                             : userCut(word)
-                              ? 'bg-red-500/10 text-red-300/70 line-through decoration-red-400'
+                              ? 'bg-danger/10 text-danger/75 line-through decoration-danger'
                               : '',
-                        tightened(word) ? 'text-gray-500 line-through decoration-gray-500/70' : '',
+                        tightened(word) ? 'text-fg-faint line-through decoration-fg-faint' : '',
                     ]"
                     :title="wordTitle(word)"
                     :data-word="index"
