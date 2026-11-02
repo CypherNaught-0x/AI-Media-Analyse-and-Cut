@@ -13,8 +13,13 @@
     "windows": [
       {
         "title": "AI Media Cutter",
-        "width": 1032,
-        "height": 876
+        "width": 1280,
+        "height": 840,
+        "minWidth": 960,
+        "minHeight": 620,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#0a0b0d"
       }
     ],
     "security": {
