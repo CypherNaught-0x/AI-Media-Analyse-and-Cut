@@ -1017,6 +1017,7 @@ async fn export_vertical_clips(
         .map(|_| ())
     })
     .await
+    .inspect_err(|error| warn!("Vertical export failed: {error}"))
     .map_err(AppError::from)
 }
 

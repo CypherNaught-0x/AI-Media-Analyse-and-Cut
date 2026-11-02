@@ -133,9 +133,13 @@ where
     // Seek the input to the first kept range: ffmpeg then starts decoding
     // there instead of at 0:00, and stays frame-accurate because the output is
     // re-encoded.
+    command.arg("-y");
+    for seek in &plan.seeks {
+        command
+            .args(["-ss", &format!("{seek:.6}")])
+            .input(input_path.to_str().unwrap());
+    }
     command
-        .args(["-y", "-ss", &format!("{:.6}", plan.seek_seconds)])
-        .input(input_path.to_str().unwrap())
         .args(["-filter_complex", &plan.filter])
         .args(
             plan.maps
@@ -170,8 +174,9 @@ where
 /// How to cut and join source ranges in one ffmpeg pass.
 #[derive(Debug, PartialEq)]
 struct CutPlan {
-    /// Input seek (seconds); trims in `filter` are relative to it.
-    seek_seconds: f64,
+    /// Seek of each source input (seconds); trims in `filter` are relative
+    /// to their input's (see `reframe::source_inputs`).
+    seeks: Vec<f64>,
     filter: String,
     /// Output labels to `-map`.
     maps: Vec<String>,
@@ -239,20 +244,18 @@ fn plan_cut(segments: &[Segment], video_fps: Option<f64>, has_audio: bool) -> Re
 
     // A second early, as in vertical renders (see `reframe::SEEK_MARGIN`):
     // seeking right to a range's start can hand over audio that starts late.
-    let seek = (ranges
-        .iter()
-        .map(|(start, _)| *start)
-        .fold(f64::INFINITY, f64::min)
-        - crate::reframe::SEEK_MARGIN)
-        .max(0.0);
+    // A range that jumps back (a looped clip) reads its own input, so ffmpeg
+    // doesn't hold the frames before it until its turn.
+    let (seeks, input_of) = crate::reframe::source_inputs(&ranges);
 
     let mut filter = String::new();
     let mut concat_inputs = String::new();
     for (i, (start, end)) in ranges.iter().enumerate() {
-        let (start, end) = (start - seek, end - seek);
+        let input = input_of[i];
+        let (start, end) = (start - seeks[input], end - seeks[input]);
         if has_video {
             filter.push_str(&format!(
-                "[0:v]trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS[v{i}];",
+                "[{input}:v]trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS[v{i}];",
                 start - half_frame,
                 end - half_frame
             ));
@@ -260,7 +263,7 @@ fn plan_cut(segments: &[Segment], video_fps: Option<f64>, has_audio: bool) -> Re
         }
         if has_audio {
             filter.push_str(&format!(
-                "[0:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS[a{i}];"
+                "[{input}:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS[a{i}];"
             ));
             concat_inputs.push_str(&format!("[a{i}]"));
         }
@@ -284,7 +287,7 @@ fn plan_cut(segments: &[Segment], video_fps: Option<f64>, has_audio: bool) -> Re
     ));
 
     Ok(CutPlan {
-        seek_seconds: seek,
+        seeks,
         filter,
         maps,
     })
@@ -488,7 +491,7 @@ mod tests {
         )
         .unwrap();
         // A second early; video half a frame (20 ms at 25 fps) before audio.
-        assert_eq!(plan.seek_seconds, 9.0);
+        assert_eq!(plan.seeks, [9.0]);
         assert_eq!(
             plan.filter,
             "[0:v]trim=start=0.980000:end=10.980000,setpts=PTS-STARTPTS[v0];\
@@ -501,18 +504,20 @@ mod tests {
     }
 
     #[test]
-    fn plan_cut_keeps_spliced_order_and_seeks_before_the_earliest_range() {
+    fn plan_cut_keeps_spliced_order_and_reads_a_range_that_jumps_back_from_its_own_input() {
         let plan = plan_cut(
             &[segment("00:30", "00:31"), segment("00:05", "00:06")],
             Some(25.0),
             false,
         )
         .unwrap();
-        assert_eq!(plan.seek_seconds, 4.0);
-        assert!(plan
-            .filter
-            .starts_with("[0:v]trim=start=25.980000:end=26.980000"));
-        assert!(plan.filter.ends_with("[v0][v1]concat=n=2:v=1:a=0[v]"));
+        assert_eq!(plan.seeks, [29.0, 4.0]);
+        assert_eq!(
+            plan.filter,
+            "[0:v]trim=start=0.980000:end=1.980000,setpts=PTS-STARTPTS[v0];\
+             [1:v]trim=start=0.980000:end=1.980000,setpts=PTS-STARTPTS[v1];\
+             [v0][v1]concat=n=2:v=1:a=0[v]"
+        );
         assert_eq!(plan.maps, ["[v]"]);
     }
 
@@ -521,7 +526,7 @@ mod tests {
         // 10.345-12.019 at 30 fps: frames 310 to 361.
         let plan = plan_cut(&[segment("00:10.345", "00:12.019")], Some(30.0), true).unwrap();
         // The seek is a second before the snapped start.
-        assert!((plan.seek_seconds - (310.0 / 30.0 - 1.0)).abs() < 1e-9);
+        assert!((plan.seeks[0] - (310.0 / 30.0 - 1.0)).abs() < 1e-9);
         let (start, end) = (1.0, 1.0 + 51.0 / 30.0);
         let half = 0.5 / 30.0;
         assert!(plan.filter.starts_with(&format!(
@@ -538,7 +543,7 @@ mod tests {
     fn plan_cut_handles_audio_only_sources() {
         let plan = plan_cut(&[segment("00:01", "00:02")], None, true).unwrap();
         // The seek can't go before the start.
-        assert_eq!(plan.seek_seconds, 0.0);
+        assert_eq!(plan.seeks, [0.0]);
         assert_eq!(
             plan.filter,
             "[0:a]atrim=start=1.000000:end=2.000000,asetpts=PTS-STARTPTS[a0];\
