@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { mediaUrl } from '../utils/mediaUrl';
 import type {
     ClipRole,
@@ -34,12 +34,26 @@ import {
 import { beginRun, isRunCancelled } from '../composables/useRunCancellation';
 import { formatTime, parseTime } from '../composables/useTimeFormat';
 
-import FolderOpenIcon from '../assets/icons/folder-open.svg?component';
-import ArrowPathIcon from '../assets/icons/arrow-path.svg?component';
-import CubeIcon from '../assets/icons/cube.svg?component';
-import HeartIcon from '../assets/icons/heart.svg?component';
-import LightBulbIcon from '../assets/icons/light-bulb.svg?component';
-import LightningIcon from '../assets/icons/lightning.svg?component';
+import {
+    Box,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    Clapperboard,
+    Download,
+    FileWarning,
+    FolderOpen,
+    Heart,
+    Lightbulb,
+    Loader2,
+    Play,
+    Repeat,
+    ScanFace,
+    Sparkles,
+    Square,
+    TextQuote,
+    Zap,
+} from '@lucide/vue';
 import {
     commands,
     type ClipSegment,
@@ -54,6 +68,11 @@ import { captionAt, videoBox, type ShownWord, type VideoBox } from '../utils/ver
 import { errorMessage } from '../utils/appError';
 import ClipText from './ClipText.vue';
 import TransitionPicker from './TransitionPicker.vue';
+import PageHeader from './ui/PageHeader.vue';
+import EmptyState from './ui/EmptyState.vue';
+import SectionCard from './ui/SectionCard.vue';
+import UiSwitch from './ui/UiSwitch.vue';
+import UiSegmented, { type SegmentedOption } from './ui/UiSegmented.vue';
 
 interface Props {
     segments: TranscriptSegment[];
@@ -78,12 +97,19 @@ const emit = defineEmits<{
 const { settings } = useSettings();
 
 const isProcessing = ref(false);
+/** What this workspace is running, for specific busy labels. */
+type Job = 'find' | 'preview' | 'faces' | 'autoEdit' | 'export';
+const job = ref<Job | null>(null);
+/** The clip whose preview is being prepared. */
+const preparingClip = ref<string | null>(null);
 const silenceIntervalsCache = ref<{ path: string; intervals: SilenceInterval[] } | null>(null);
 const activeRunId = ref<number | null>(null);
 
 function invalidateRun() {
     activeRunId.value = null;
     isProcessing.value = false;
+    job.value = null;
+    preparingClip.value = null;
     emit('update:processing', false);
 }
 
@@ -150,12 +176,42 @@ const TOGGLES = [
     },
 ] as const;
 
+type ToggleKey = (typeof TOGGLES)[number]['key'];
+
+function toggles(...keys: ToggleKey[]) {
+    return TOGGLES.filter((toggle) => (keys as string[]).includes(toggle.key));
+}
+
+/** Shape of the clips. */
+const STYLE_TOGGLES = toggles('looped', 'autoEdit');
+/** Rarely changed. */
+const ADVANCED_TOGGLES = toggles('allowSplicing', 'trimBoundarySilence');
+const VERTICAL_TOGGLE = toggles('vertical')[0];
+const CAPTIONS_TOGGLE = toggles('captions')[0];
+
+function setFlag(key: ToggleKey, value: boolean) {
+    updateState({ [key]: value });
+}
+
+/** Min longer than max can't be met. */
+const durationError = computed(() =>
+    Number(clipMinDuration.value) > Number(clipMaxDuration.value)
+        ? 'Min seconds is longer than max seconds.'
+        : '',
+);
+
 const INTENSITIES: { value: Intensity; label: string; text: string }[] = [
     { value: 'off', label: 'Off', text: 'Keep every pause and filler.' },
     { value: 'chill', label: 'Chill', text: 'Pauses up to 350 ms, no fillers.' },
     { value: 'punchy', label: 'Punchy', text: 'Pauses up to 180 ms, no fillers or stutters.' },
     { value: 'hyper', label: 'Hyper', text: 'Pauses up to 90 ms: rapid-fire.' },
 ];
+const INTENSITY_OPTIONS: SegmentedOption<Intensity>[] = INTENSITIES.map((option) => ({
+    value: option.value,
+    label: option.label,
+    title: option.text,
+    testId: `clips-intensity-${option.value}`,
+}));
 const intensity = setting('intensity');
 const transitions = setting('transitions');
 const intensityText = computed(
@@ -201,6 +257,72 @@ function setSelected(clip: ShortClip, selected: boolean) {
     updateClip(clip.id, (current) => ({ ...current, selected }));
 }
 
+function selectAll(selected: boolean) {
+    updateState({ clips: clips.value.map((clip) => ({ ...clip, selected })) });
+}
+
+const allSelected = computed(
+    () => clips.value.length > 0 && selectedClips.value.length === clips.value.length,
+);
+
+/** Clips whose full reason is shown (it's clamped to two lines otherwise). */
+const expandedReasons = ref(new Set<string>());
+
+function toggleReason(clip: ShortClip) {
+    const next = new Set(expandedReasons.value);
+    if (!next.delete(clip.id)) next.add(clip.id);
+    expandedReasons.value = next;
+}
+
+/** Clips whose reason doesn't fit in two lines, so they get a Show more toggle. */
+const overflowingReasons = ref(new Set<string>());
+const reasonElements = new Map<string, HTMLElement>();
+const reasonObserver =
+    typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver((entries) => {
+              for (const entry of entries) {
+                  const id = (entry.target as HTMLElement).dataset.reason;
+                  if (id) checkReason(id);
+              }
+          });
+
+/** Whether the clamped reason cuts text off (an expanded one keeps its toggle). */
+function checkReason(id: string) {
+    const el = reasonElements.get(id);
+    if (!el || expandedReasons.value.has(id)) return;
+    const overflows = el.scrollHeight > el.clientHeight + 1;
+    if (overflows === overflowingReasons.value.has(id)) return;
+    const next = new Set(overflowingReasons.value);
+    if (overflows) next.add(id);
+    else next.delete(id);
+    overflowingReasons.value = next;
+}
+
+function setReasonElement(id: string, el: Element | null) {
+    const previous = reasonElements.get(id);
+    if (previous === el) return;
+    if (previous) reasonObserver?.unobserve(previous);
+    if (el instanceof HTMLElement) {
+        reasonElements.set(id, el);
+        reasonObserver?.observe(el);
+        void nextTick(() => checkReason(id));
+    } else {
+        reasonElements.delete(id);
+    }
+}
+
+// The text can change without the box resizing (a new search reuses ids).
+watch(
+    () => clips.value.map((clip) => `${clip.id}:${clip.reason}`).join('|'),
+    () => void nextTick(() => reasonElements.forEach((_, id) => checkReason(id))),
+);
+
+onBeforeUnmount(() => reasonObserver?.disconnect());
+
+const SCORE_TITLE =
+    'Ranking score, 0-100: mostly the ratings below (hook 35%, standalone 25%, emotion and info 20% each), plus small bonuses for back-and-forth, laughter and a lively pace.';
+
 const ROLE_LABELS: Record<ClipRole, string> = {
     hook: 'Hook',
     body: 'Body',
@@ -213,32 +335,55 @@ const RATINGS = [
     {
         key: 'hook',
         label: 'Hook',
-        icon: LightningIcon,
+        icon: Zap,
         text: 'Do the first seconds grab attention?',
     },
     {
         key: 'standalone',
         label: 'Standalone',
-        icon: CubeIcon,
+        icon: Box,
         text: 'Does it work without context?',
     },
     {
         key: 'emotion',
         label: 'Emotion',
-        icon: HeartIcon,
+        icon: Heart,
         text: 'Humour, surprise, conflict, passion',
     },
-    { key: 'info', label: 'Info', icon: LightBulbIcon, text: 'Is it useful or insightful?' },
+    { key: 'info', label: 'Info', icon: Lightbulb, text: 'Is it useful or insightful?' },
 ] as const;
 
-/** Tile colours per rating tone: high values stand out, low ones fade. */
-const TONE_CLASSES: Record<ReturnType<typeof ratingTone>, string> = {
-    top: 'bg-emerald-400/20 text-emerald-200 ring-1 ring-emerald-300/50',
-    high: 'bg-emerald-500/15 text-emerald-300',
-    good: 'bg-lime-500/10 text-lime-300',
-    mid: 'bg-white/5 text-gray-300',
-    low: 'bg-white/[0.03] text-gray-500',
+/** Bar and value colours per rating tone: high values stand out, low ones fade. */
+const TONE_CLASSES: Record<ReturnType<typeof ratingTone>, { bar: string; value: string }> = {
+    top: { bar: 'bg-success', value: 'text-success' },
+    high: { bar: 'bg-success/75', value: 'text-success' },
+    good: { bar: 'bg-success/45', value: 'text-fg' },
+    mid: { bar: 'bg-fg-subtle', value: 'text-fg-muted' },
+    low: { bar: 'bg-fg-faint', value: 'text-fg-subtle' },
 };
+
+/** The ratings a clip shows: the four, plus loop continuity for looped clips. */
+function clipRatings(clip: ShortClip) {
+    if (!clip.ratings) return [];
+    const ratings = clip.ratings;
+    const rows = RATINGS.map((rating) => ({
+        key: rating.key as string,
+        label: rating.label as string,
+        icon: rating.icon,
+        text: rating.text as string,
+        value: ratings[rating.key],
+    }));
+    if (clip.looped) {
+        rows.push({
+            key: 'loop',
+            label: 'Loop',
+            icon: Repeat,
+            text: 'How seamlessly the ending leads back into the opening',
+            value: ratings.loopContinuity,
+        });
+    }
+    return rows;
+}
 
 function clock(seconds: number): string {
     // Milliseconds are noise on a card; show whole seconds.
@@ -249,6 +394,30 @@ function clock(seconds: number): string {
 // in 9:16 mode, the planned framing) in the player above. ----
 /** CSS size of the 9:16 preview frame. */
 const VERTICAL_FRAME = { width: 270, height: 480 };
+/** The 9:16 frame is drawn smaller on the stage, so it fits beside the clip list. */
+const DEFAULT_STAGE_SCALE = 0.68;
+/** The stage well, sized to the window; the 9:16 frame scales to fit it. */
+const stageWell = ref<HTMLElement | null>(null);
+const stageWellHeight = ref(0);
+const stageScale = computed(() =>
+    stageWellHeight.value > 0
+        ? Math.min(1, Math.max(0.3, (stageWellHeight.value - 16) / VERTICAL_FRAME.height))
+        : DEFAULT_STAGE_SCALE,
+);
+const stageObserver =
+    typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(([entry]) => {
+              stageWellHeight.value = entry?.contentRect.height ?? 0;
+          });
+watch(stageWell, (el, previous) => {
+    if (previous) stageObserver?.unobserve(previous);
+    if (el) {
+        stageWellHeight.value = el.clientHeight;
+        stageObserver?.observe(el);
+    }
+});
+onBeforeUnmount(() => stageObserver?.disconnect());
 
 interface PlaybackRange {
     start: number;
@@ -351,6 +520,8 @@ async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> 
     const runId = await beginRun();
     activeRunId.value = runId;
     isProcessing.value = true;
+    job.value = 'preview';
+    preparingClip.value = clip.id;
     emit('update:processing', true);
     emit(
         'update:status',
@@ -396,9 +567,11 @@ async function preparePreview(clip: ShortClip): Promise<PreparedPreview | null> 
         }
         return null;
     } finally {
+        if (preparingClip.value === clip.id) preparingClip.value = null;
         if (activeRunId.value === runId) {
             activeRunId.value = null;
             isProcessing.value = false;
+            job.value = null;
             emit('update:processing', false);
         }
     }
@@ -551,6 +724,7 @@ async function detectFaces(status = 'Finding faces...') {
     const runId = await beginRun();
     activeRunId.value = runId;
     isProcessing.value = true;
+    job.value = 'faces';
     emit('update:processing', true);
     emit('update:status', status);
     stopPreview();
@@ -575,6 +749,7 @@ async function detectFaces(status = 'Finding faces...') {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
             isProcessing.value = false;
+            job.value = null;
             emit('update:processing', false);
         }
     }
@@ -659,6 +834,7 @@ async function autoEditClip(clip: ShortClip) {
     const runId = await beginRun();
     activeRunId.value = runId;
     isProcessing.value = true;
+    job.value = 'autoEdit';
     autoEditingClip.value = clip.id;
     emit('update:processing', true);
     emit('update:status', 'Auto-editing the clip...');
@@ -677,6 +853,7 @@ async function autoEditClip(clip: ShortClip) {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
             isProcessing.value = false;
+            job.value = null;
             emit('update:processing', false);
         }
     }
@@ -690,6 +867,7 @@ async function generateClips() {
     activeRunId.value = runId;
     emit('update:status', 'Finding clips...');
     isProcessing.value = true;
+    job.value = 'find';
     emit('update:processing', true);
     stopPreview();
 
@@ -733,6 +911,7 @@ async function generateClips() {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
             isProcessing.value = false;
+            job.value = null;
             emit('update:processing', false);
         }
     }
@@ -750,6 +929,7 @@ async function exportClips(toExport: ShortClip[]) {
     activeRunId.value = runId;
     emit('update:status', 'Exporting clips...');
     isProcessing.value = true;
+    job.value = 'export';
     emit('update:processing', true);
     stopPreview();
 
@@ -850,10 +1030,98 @@ async function exportClips(toExport: ShortClip[]) {
         if (activeRunId.value === runId) {
             activeRunId.value = null;
             isProcessing.value = false;
+            job.value = null;
             emit('update:processing', false);
         }
     }
 }
+
+const BUSY_LABELS: Record<Job, string> = {
+    find: 'Finding clips…',
+    preview: 'Preparing the preview…',
+    faces: 'Finding faces…',
+    autoEdit: 'Auto editing…',
+    export: 'Exporting…',
+};
+
+const generateBlocked = computed(() => {
+    // Finding clips shows on the button itself.
+    if (job.value === 'find') return '';
+    if (isProcessing.value) {
+        return `${job.value ? BUSY_LABELS[job.value] : 'Working…'} Wait for it to finish.`;
+    }
+    if (props.busy) return 'Wait for the running job to finish.';
+    if (props.segments.length === 0) return 'There is no transcript to pick clips from.';
+    return '';
+});
+
+const exportBlocked = computed(() => {
+    if (!props.hasMediaFile) return 'The media file is missing; relink it on the Source step.';
+    if (isProcessing.value || props.busy) return 'Wait for the running job to finish.';
+    if (selectedClips.value.length === 0) return 'Include at least one clip to export.';
+    return '';
+});
+
+const previewingClip = computed(() =>
+    previewing.value
+        ? (clips.value.find((clip) => clip.id === previewing.value?.id) ?? null)
+        : null,
+);
+
+// ---- Setup inspector: on wide layouts it sticks beside the clips and is
+// capped to what's visible of the page (above the status bar), so Find clips
+// at its bottom is always in reach. ----
+const inspector = ref<HTMLElement | null>(null);
+const inspectorMaxHeight = ref<string | undefined>(undefined);
+/** Space kept free under the inspector. */
+const INSPECTOR_GAP = 12;
+let scrollRoot: HTMLElement | null = null;
+let fitFrame: number | null = null;
+
+function fitInspector() {
+    fitFrame = null;
+    const el = inspector.value;
+    if (!el || getComputedStyle(el).position !== 'sticky') {
+        inspectorMaxHeight.value = undefined;
+        return;
+    }
+    const root = scrollRoot ?? document.documentElement;
+    const rootRect = root.getBoundingClientRect();
+    const visibleTop = scrollRoot ? rootRect.top : 0;
+    const visibleBottom = scrollRoot ? rootRect.bottom : window.innerHeight;
+    // The status bar sticks to the bottom of the scroll container.
+    const statusBar = root.querySelector<HTMLElement>('[data-testid="status-bar"]');
+    const covered = statusBar ? statusBar.getBoundingClientRect().height : 0;
+    const top = Math.max(el.getBoundingClientRect().top, visibleTop);
+    inspectorMaxHeight.value = `${Math.max(240, visibleBottom - covered - INSPECTOR_GAP - top)}px`;
+}
+
+function scheduleFit() {
+    if (fitFrame === null) fitFrame = requestAnimationFrame(fitInspector);
+}
+
+const inspectorObserver =
+    typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleFit);
+
+onMounted(() => {
+    scrollRoot = document.getElementById('app-main');
+    (scrollRoot ?? window).addEventListener('scroll', scheduleFit, { passive: true });
+    window.addEventListener('resize', scheduleFit);
+    // The page above can change height (the header gains its actions).
+    if (scrollRoot) inspectorObserver?.observe(scrollRoot);
+    if (inspector.value?.parentElement) inspectorObserver?.observe(inspector.value.parentElement);
+    scheduleFit();
+});
+
+// Home is kept alive; the page may have scrolled or resized meanwhile.
+onActivated(scheduleFit);
+
+onBeforeUnmount(() => {
+    (scrollRoot ?? window).removeEventListener('scroll', scheduleFit);
+    window.removeEventListener('resize', scheduleFit);
+    inspectorObserver?.disconnect();
+    if (fitFrame !== null) cancelAnimationFrame(fitFrame);
+});
 
 async function openExportFolder() {
     if (lastExportPath.value) {
@@ -863,494 +1131,578 @@ async function openExportFolder() {
 </script>
 
 <template>
-    <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl">
-        <div class="flex justify-between items-center mb-6">
-            <h2 class="text-2xl font-bold text-white">Viral Clips</h2>
-        </div>
-
-        <!-- Options -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-            <div>
-                <label
-                    for="clips-count"
-                    class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Count</label
-                >
-                <input
-                    id="clips-count"
-                    v-model.number="clipCount"
-                    type="number"
-                    min="1"
-                    max="10"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white"
-                />
-            </div>
-            <div>
-                <label
-                    for="clips-min"
-                    class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Min seconds</label
-                >
-                <input
-                    id="clips-min"
-                    v-model.number="clipMinDuration"
-                    type="number"
-                    min="5"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white"
-                />
-            </div>
-            <div>
-                <label
-                    for="clips-max"
-                    class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >Max seconds</label
-                >
-                <input
-                    id="clips-max"
-                    v-model.number="clipMaxDuration"
-                    type="number"
-                    min="10"
-                    class="w-full p-3 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white"
-                />
-            </div>
-        </div>
-
-        <div class="mb-6">
-            <label
-                for="clips-topic"
-                class="block text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                >Topic (optional)</label
-            >
-            <input
-                id="clips-topic"
-                v-model="clipTopic"
-                type="text"
-                class="w-full p-4 rounded-xl bg-black/20 border border-white/10 focus:border-pink-500/50 outline-none text-white placeholder-gray-600"
-                placeholder="e.g. 'Funny moments', 'Technical explanation', 'Rants'..."
-            />
-        </div>
-
-        <div class="mb-8 grid grid-cols-1 gap-3 md:grid-cols-3">
-            <label
-                v-for="toggle in TOGGLES"
-                :key="toggle.key"
-                class="flex cursor-pointer items-start gap-3 rounded-xl border border-white/5 bg-black/20 p-4"
-            >
-                <input
-                    type="checkbox"
-                    role="switch"
-                    :data-testid="`clips-toggle-${toggle.key}`"
-                    :checked="state[toggle.key]"
-                    class="mt-0.5 h-4 w-4 rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
-                    @change="
-                        updateState({
-                            [toggle.key]: ($event.target as HTMLInputElement).checked,
-                        })
-                    "
-                />
-                <span>
-                    <span class="block text-sm font-semibold text-gray-200">{{
-                        toggle.title
-                    }}</span>
-                    <span class="block text-xs text-gray-500">{{ toggle.text }}</span>
-                </span>
-            </label>
-        </div>
-
-        <div class="mb-8 flex flex-wrap items-center gap-3">
-            <span class="text-xs font-bold uppercase tracking-wider text-gray-400">Tightening</span>
-            <div
-                class="flex overflow-hidden rounded-xl border border-white/10"
-                role="radiogroup"
-                aria-label="Tightening"
-            >
-                <button
-                    v-for="option in INTENSITIES"
-                    :key="option.value"
-                    type="button"
-                    role="radio"
-                    :aria-checked="intensity === option.value"
-                    :data-testid="`clips-intensity-${option.value}`"
-                    class="px-4 py-2 text-sm transition-colors"
-                    :class="
-                        intensity === option.value
-                            ? 'bg-pink-600/80 font-semibold text-white'
-                            : 'bg-black/20 text-gray-300 hover:bg-white/10'
-                    "
-                    @click="intensity = option.value"
-                >
-                    {{ option.label }}
-                </button>
-            </div>
-            <span class="text-xs text-gray-500">{{ intensityText }}</span>
-        </div>
-
-        <TransitionPicker
-            v-model="transitions"
-            :intensity="intensity"
-            :inactive="!state.vertical"
-        />
-
-        <button
-            @click="generateClips"
-            :disabled="isProcessing || busy"
-            data-testid="clips-generate"
-            class="w-full mb-8 bg-gradient-to-r from-pink-600 to-purple-600 hover:from-pink-500 hover:to-purple-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+    <div class="@container mx-auto w-full max-w-[1400px] px-8 pt-8 pb-10">
+        <PageHeader
+            title="Viral clips"
+            description="Find the strongest moments and export them as shorts."
         >
-            {{ isProcessing ? 'Processing...' : clips.length ? 'Find Clips Again' : 'Find Clips' }}
-        </button>
-
-        <div v-if="clips.length > 0">
-            <!-- Preview player; in 9:16 mode it shows the planned framing. -->
-            <div
-                v-if="hasMediaFile"
-                class="mb-6 overflow-hidden rounded-2xl border border-white/10 bg-black"
-            >
-                <div
-                    :class="
-                        verticalBox
-                            ? 'relative mx-auto my-4 overflow-hidden rounded-lg ring-1 ring-white/20'
-                            : ''
-                    "
-                    :style="
-                        verticalBox
-                            ? {
-                                  width: `${VERTICAL_FRAME.width}px`,
-                                  height: `${VERTICAL_FRAME.height}px`,
-                              }
-                            : undefined
-                    "
-                    data-testid="clips-player-frame"
+            <template v-if="clips.length > 0" #actions>
+                <button
+                    type="button"
+                    class="btn-ghost btn-sm"
+                    data-testid="clips-select-all"
+                    @click="selectAll(!allSelected)"
                 >
-                    <video
-                        ref="player"
-                        :src="mediaSrc"
-                        :class="verticalBox ? 'absolute max-w-none' : 'mx-auto max-h-80 w-full'"
-                        :style="
-                            verticalBox
-                                ? {
-                                      width: `${verticalBox.width}px`,
-                                      height: `${verticalBox.height}px`,
-                                      left: `${verticalBox.left}px`,
-                                      top: `${verticalBox.top}px`,
-                                  }
-                                : undefined
-                        "
-                        preload="metadata"
-                        :controls="!verticalBox"
-                        data-testid="clips-player"
-                        @timeupdate="onTimeUpdate"
-                    />
-                    <!-- Captions as the export burns them in (68% down). -->
-                    <p
-                        v-if="verticalBox && verticalCaption"
-                        class="vertical-caption pointer-events-none absolute inset-x-3 text-center"
-                        data-testid="clips-player-caption"
-                    >
-                        <span
-                            v-for="(word, i) in verticalCaption"
-                            :key="i"
-                            :class="word.active ? 'text-[#ffd60a]' : 'text-white'"
-                            >{{ word.text }}{{ i < verticalCaption.length - 1 ? ' ' : '' }}</span
-                        >
-                    </p>
-                </div>
-            </div>
-
-            <!-- Faces the 9:16 framing works with -->
-            <section
-                v-if="state.vertical && hasMediaFile"
-                class="mb-6 rounded-2xl border border-white/10 bg-black/20 p-5"
-                data-testid="clips-faces"
-            >
-                <div class="mb-3 flex flex-wrap items-center gap-3">
-                    <h3 class="text-sm font-bold uppercase tracking-wider text-gray-300">Faces</h3>
-                    <span class="flex-1 text-xs text-gray-500">
-                        The camera follows these in 9:16. Turn off faces that aren't people in the
-                        room (a TV, a poster); name a face if the wrong one gets followed.
-                    </span>
-                    <button
-                        type="button"
-                        class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-40"
-                        :disabled="isProcessing || busy"
-                        data-testid="clips-detect-faces"
-                        @click="detectFaces()"
-                    >
-                        {{ detectedFaces.length ? 'Refresh faces' : 'Find faces' }}
-                    </button>
-                </div>
-                <p v-if="!detectedFaces.length && state.faces.length" class="text-xs text-gray-500">
-                    {{ state.faces.length }} face setting{{ state.faces.length === 1 ? '' : 's' }}
-                    saved; find faces to review them.
-                </p>
-                <ul
-                    v-if="detectedFaces.length"
-                    class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+                    {{ allSelected ? 'Select none' : 'Select all' }}
+                </button>
+                <button
+                    v-if="lastExportPath"
+                    type="button"
+                    class="btn-secondary btn-icon"
+                    title="Open folder"
+                    aria-label="Open export folder"
+                    @click="openExportFolder"
                 >
-                    <li
-                        v-for="(face, index) in detectedFaces"
-                        :key="index"
-                        class="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-3"
-                        :data-testid="`clips-face-${index}`"
-                    >
-                        <div class="flex items-center gap-3">
-                            <img
-                                v-if="face.thumbnail"
-                                :src="face.thumbnail"
-                                alt=""
-                                class="h-16 w-16 rounded-lg object-cover transition"
-                                :class="faceIgnored(face) ? 'opacity-30 grayscale' : ''"
-                            />
-                            <div
-                                v-else
-                                class="h-16 w-16 rounded-lg bg-white/5"
-                                :class="faceIgnored(face) ? 'opacity-30' : ''"
-                            />
-                            <label class="flex flex-col gap-1 text-xs text-gray-300">
-                                <span class="flex items-center gap-1.5">
+                    <FolderOpen aria-hidden="true" />
+                </button>
+                <button
+                    type="button"
+                    class="btn-primary"
+                    :disabled="isProcessing || busy || !hasMediaFile || selectedClips.length === 0"
+                    :title="exportBlocked || undefined"
+                    data-testid="clips-export-selected"
+                    @click="exportClips(selectedClips)"
+                >
+                    <Loader2 v-if="job === 'export'" class="animate-spin" aria-hidden="true" />
+                    <Download v-else aria-hidden="true" />
+                    Export {{ selectedClips.length }} selected
+                </button>
+            </template>
+        </PageHeader>
+
+        <div
+            class="grid items-start gap-5 @3xl:grid-cols-[300px_minmax(0,1fr)] @5xl:grid-cols-[340px_minmax(0,1fr)]"
+        >
+            <!-- Setup inspector -->
+            <aside
+                ref="inspector"
+                class="flex min-w-0 flex-col @3xl:sticky @3xl:top-4 @3xl:max-h-[calc(100vh-5.5rem)]"
+                :style="inspectorMaxHeight ? { maxHeight: inspectorMaxHeight } : undefined"
+                aria-label="Clip setup"
+            >
+                <div class="-mx-1 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-1 pb-1">
+                    <SectionCard title="Basics">
+                        <div class="grid grid-cols-3 gap-2.5">
+                            <div>
+                                <label for="clips-count" class="field-label">Count</label>
+                                <input
+                                    id="clips-count"
+                                    v-model.number="clipCount"
+                                    type="number"
+                                    min="1"
+                                    max="10"
+                                    class="input"
+                                />
+                            </div>
+                            <div>
+                                <label for="clips-min" class="field-label">Min length</label>
+                                <div class="relative">
                                     <input
-                                        type="checkbox"
-                                        role="switch"
-                                        :checked="!faceIgnored(face)"
-                                        :data-testid="`clips-face-enabled-${index}`"
-                                        class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
-                                        @change="
-                                            changeFace(index, {
-                                                ignored: !($event.target as HTMLInputElement)
-                                                    .checked,
-                                            })
+                                        id="clips-min"
+                                        v-model.number="clipMinDuration"
+                                        type="number"
+                                        min="5"
+                                        class="input pr-6"
+                                        :aria-invalid="durationError ? 'true' : undefined"
+                                        :aria-describedby="
+                                            durationError ? 'clips-duration-error' : undefined
                                         "
                                     />
-                                    Follow
-                                </span>
-                                <span class="text-gray-500"
-                                    >{{ Math.round(face.seconds) }} s on screen</span
-                                >
-                                <span
-                                    v-if="face.views > 1"
-                                    class="text-gray-500"
-                                    :data-testid="`clips-face-views-${index}`"
-                                    >{{ face.views }} camera angles</span
-                                >
-                            </label>
+                                    <span class="unit" aria-hidden="true">s</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="clips-max" class="field-label">Max length</label>
+                                <div class="relative">
+                                    <input
+                                        id="clips-max"
+                                        v-model.number="clipMaxDuration"
+                                        type="number"
+                                        min="10"
+                                        class="input pr-6"
+                                        :aria-invalid="durationError ? 'true' : undefined"
+                                        :aria-describedby="
+                                            durationError ? 'clips-duration-error' : undefined
+                                        "
+                                    />
+                                    <span class="unit" aria-hidden="true">s</span>
+                                </div>
+                            </div>
                         </div>
-                        <select
-                            :value="faceSpeakerValue(face)"
-                            :disabled="faceIgnored(face)"
-                            :aria-label="`Speaker of face ${index + 1}`"
-                            :data-testid="`clips-face-speaker-${index}`"
-                            class="w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs text-white disabled:opacity-40"
-                            @change="
-                                setFaceSpeaker(index, ($event.target as HTMLSelectElement).value)
-                            "
+                        <p
+                            v-if="durationError"
+                            id="clips-duration-error"
+                            class="mt-1.5 text-[12px] text-danger"
+                            role="alert"
                         >
-                            <option value="auto">{{ autoLabel(face) }}</option>
-                            <option v-for="name in speakers" :key="name" :value="`named:${name}`">
-                                {{ name }}
-                            </option>
-                            <option value="nobody">Not a speaker</option>
-                        </select>
-                    </li>
-                </ul>
-            </section>
+                            {{ durationError }}
+                        </p>
+                        <label for="clips-topic" class="field-label mt-3">
+                            Topic <span class="text-fg-subtle">(optional)</span>
+                        </label>
+                        <input
+                            id="clips-topic"
+                            v-model="clipTopic"
+                            type="text"
+                            class="input"
+                            placeholder="Funny moments, rants, a technical explanation…"
+                        />
+                    </SectionCard>
 
-            <!-- Clip cards -->
-            <ul class="grid grid-cols-1 gap-4 lg:grid-cols-2" data-testid="clip-cards">
-                <li
-                    v-for="clip in clips"
-                    :key="clip.id"
-                    class="flex flex-col rounded-2xl border bg-black/20 p-5 transition-colors"
-                    :class="
-                        previewing?.id === clip.id
-                            ? 'border-pink-500/60'
-                            : clip.selected
-                              ? 'border-white/10'
-                              : 'border-white/5 opacity-60'
-                    "
-                    :data-testid="`clip-card-${clip.id}`"
-                >
-                    <div class="mb-2 flex items-start justify-between gap-3">
-                        <h3 class="text-base font-bold text-pink-300">
-                            {{ clip.title || 'Untitled clip' }}
-                        </h3>
-                        <span
-                            v-if="clip.score !== null"
-                            class="shrink-0 rounded-full bg-pink-500/15 px-2.5 py-0.5 text-sm font-bold text-pink-200"
-                            title="Ranking score (0-100)"
-                            >{{ clip.score }}</span
+                    <SectionCard title="Style">
+                        <div class="flex flex-col gap-3">
+                            <div
+                                v-for="toggle in STYLE_TOGGLES"
+                                :key="toggle.key"
+                                class="flex items-start gap-3"
+                            >
+                                <div class="min-w-0 flex-1">
+                                    <label
+                                        :for="`clips-flag-${toggle.key}`"
+                                        class="block cursor-pointer text-[13px] font-medium text-fg"
+                                        >{{ toggle.title }}</label
+                                    >
+                                    <p class="hint mt-0.5">{{ toggle.text }}</p>
+                                </div>
+                                <UiSwitch
+                                    :id="`clips-flag-${toggle.key}`"
+                                    :model-value="state[toggle.key]"
+                                    :data-testid="`clips-toggle-${toggle.key}`"
+                                    @update:model-value="setFlag(toggle.key, $event)"
+                                />
+                            </div>
+                            <div class="divider" />
+                            <div>
+                                <p id="clips-tightening-label" class="field-label">Tightening</p>
+                                <UiSegmented
+                                    v-model="intensity"
+                                    :options="INTENSITY_OPTIONS"
+                                    label="Tightening"
+                                    size="sm"
+                                    class="w-full [&>button]:flex-1 [&>button]:justify-center"
+                                />
+                                <p class="hint mt-1.5">{{ intensityText }}</p>
+                            </div>
+                        </div>
+                    </SectionCard>
+
+                    <!-- Everything only 9:16 uses, shown once it's on. -->
+                    <section class="panel" data-testid="clips-vertical">
+                        <div class="flex items-start gap-3 px-4 py-3.5">
+                            <div class="min-w-0 flex-1">
+                                <label
+                                    :for="`clips-flag-${VERTICAL_TOGGLE.key}`"
+                                    class="section-title block cursor-pointer"
+                                    >{{ VERTICAL_TOGGLE.title }}</label
+                                >
+                                <p class="hint mt-0.5">{{ VERTICAL_TOGGLE.text }}</p>
+                            </div>
+                            <UiSwitch
+                                :id="`clips-flag-${VERTICAL_TOGGLE.key}`"
+                                :model-value="state.vertical"
+                                :data-testid="`clips-toggle-${VERTICAL_TOGGLE.key}`"
+                                @update:model-value="setFlag(VERTICAL_TOGGLE.key, $event)"
+                            />
+                        </div>
+                        <div
+                            v-show="state.vertical"
+                            class="animate-rise-in border-t border-line px-4 pt-3.5 pb-4"
                         >
+                            <div class="flex items-start gap-3">
+                                <div class="min-w-0 flex-1">
+                                    <label
+                                        :for="`clips-flag-${CAPTIONS_TOGGLE.key}`"
+                                        class="block cursor-pointer text-[13px] font-medium text-fg"
+                                        >{{ CAPTIONS_TOGGLE.title }}</label
+                                    >
+                                    <p class="hint mt-0.5">{{ CAPTIONS_TOGGLE.text }}</p>
+                                </div>
+                                <UiSwitch
+                                    :id="`clips-flag-${CAPTIONS_TOGGLE.key}`"
+                                    :model-value="state.captions"
+                                    :data-testid="`clips-toggle-${CAPTIONS_TOGGLE.key}`"
+                                    @update:model-value="setFlag(CAPTIONS_TOGGLE.key, $event)"
+                                />
+                            </div>
+
+                            <div class="divider my-3.5" />
+                            <TransitionPicker
+                                v-model="transitions"
+                                :intensity="intensity"
+                                :inactive="!state.vertical"
+                            />
+
+                            <div class="divider my-3.5" />
+                            <!-- Faces the 9:16 framing works with -->
+                            <section
+                                v-if="clips.length > 0 && hasMediaFile"
+                                data-testid="clips-faces"
+                            >
+                                <div class="flex items-center gap-3">
+                                    <h3 class="min-w-0 flex-1 text-[13px] font-medium text-fg">
+                                        Faces
+                                    </h3>
+                                    <button
+                                        type="button"
+                                        class="btn-secondary btn-sm"
+                                        :disabled="isProcessing || busy"
+                                        :title="
+                                            isProcessing || busy
+                                                ? 'Wait for the running job to finish.'
+                                                : undefined
+                                        "
+                                        data-testid="clips-detect-faces"
+                                        @click="detectFaces()"
+                                    >
+                                        <Loader2
+                                            v-if="job === 'faces'"
+                                            class="animate-spin"
+                                            aria-hidden="true"
+                                        />
+                                        <ScanFace v-else aria-hidden="true" />
+                                        {{ detectedFaces.length ? 'Refresh faces' : 'Find faces' }}
+                                    </button>
+                                </div>
+                                <p class="hint mt-0.5">The 9:16 crop follows these faces.</p>
+                                <details class="group mt-1">
+                                    <summary
+                                        class="hint inline-flex cursor-pointer list-none items-center gap-1 hover:text-fg-muted [&::-webkit-details-marker]:hidden"
+                                    >
+                                        <ChevronDown
+                                            class="h-3 w-3 transition-transform group-open:rotate-180"
+                                            aria-hidden="true"
+                                        />
+                                        When to change them
+                                    </summary>
+                                    <p class="hint mt-1">
+                                        Turn off faces that aren't people in the room (a TV, a
+                                        poster). Name a face if the wrong one gets followed.
+                                    </p>
+                                </details>
+                                <p
+                                    v-if="!detectedFaces.length && state.faces.length"
+                                    class="hint mt-2"
+                                >
+                                    {{ state.faces.length }} face setting{{
+                                        state.faces.length === 1 ? '' : 's'
+                                    }}
+                                    saved; find faces to review them.
+                                </p>
+                                <TransitionGroup
+                                    v-if="detectedFaces.length"
+                                    name="list"
+                                    tag="ul"
+                                    class="relative mt-3 flex flex-col gap-2"
+                                >
+                                    <li
+                                        v-for="(face, index) in detectedFaces"
+                                        :key="face.thumbnail ?? index"
+                                        class="flex gap-3 rounded-md border border-line bg-surface-2 p-2.5"
+                                        :data-testid="`clips-face-${index}`"
+                                    >
+                                        <img
+                                            v-if="face.thumbnail"
+                                            :src="face.thumbnail"
+                                            alt=""
+                                            class="h-[72px] w-[72px] shrink-0 rounded-md object-cover transition-[opacity,filter] duration-200"
+                                            :class="faceIgnored(face) ? 'opacity-30 grayscale' : ''"
+                                        />
+                                        <div
+                                            v-else
+                                            class="flex h-[72px] w-[72px] shrink-0 items-center justify-center rounded-md bg-well text-fg-faint"
+                                            :class="faceIgnored(face) ? 'opacity-30' : ''"
+                                        >
+                                            <ScanFace class="h-6 w-6" aria-hidden="true" />
+                                        </div>
+                                        <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+                                            <div class="flex items-center gap-2">
+                                                <label
+                                                    :for="`clips-face-follow-${index}`"
+                                                    class="flex-1 cursor-pointer text-[12px] font-medium text-fg"
+                                                    >Follow</label
+                                                >
+                                                <UiSwitch
+                                                    :id="`clips-face-follow-${index}`"
+                                                    size="sm"
+                                                    :model-value="!faceIgnored(face)"
+                                                    :data-testid="`clips-face-enabled-${index}`"
+                                                    @update:model-value="
+                                                        changeFace(index, { ignored: !$event })
+                                                    "
+                                                />
+                                            </div>
+                                            <select
+                                                :value="faceSpeakerValue(face)"
+                                                :disabled="faceIgnored(face)"
+                                                :title="
+                                                    faceIgnored(face)
+                                                        ? 'Turn Follow on to name this face'
+                                                        : undefined
+                                                "
+                                                :aria-label="`Speaker of face ${index + 1}`"
+                                                :data-testid="`clips-face-speaker-${index}`"
+                                                class="input input-sm"
+                                                @change="
+                                                    setFaceSpeaker(
+                                                        index,
+                                                        ($event.target as HTMLSelectElement).value,
+                                                    )
+                                                "
+                                            >
+                                                <option value="auto">{{ autoLabel(face) }}</option>
+                                                <option
+                                                    v-for="name in speakers"
+                                                    :key="name"
+                                                    :value="`named:${name}`"
+                                                >
+                                                    {{ name }}
+                                                </option>
+                                                <option value="nobody">Not a speaker</option>
+                                            </select>
+                                            <p class="text-[11px] text-fg-subtle">
+                                                {{ Math.round(face.seconds) }} s on screen<span
+                                                    v-if="face.views > 1"
+                                                    :data-testid="`clips-face-views-${index}`"
+                                                >
+                                                    · {{ face.views }} camera angles</span
+                                                >
+                                            </p>
+                                        </div>
+                                    </li>
+                                </TransitionGroup>
+                            </section>
+                            <div v-else>
+                                <h3 class="text-[13px] font-medium text-fg">Faces</h3>
+                                <p class="hint mt-0.5">
+                                    {{
+                                        hasMediaFile
+                                            ? 'Faces are found in your clips once you have some.'
+                                            : 'Finding faces needs the media file.'
+                                    }}
+                                </p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <SectionCard title="Advanced" collapsible :default-open="false">
+                        <div class="flex flex-col gap-3">
+                            <div
+                                v-for="toggle in ADVANCED_TOGGLES"
+                                :key="toggle.key"
+                                class="flex items-start gap-3"
+                            >
+                                <div class="min-w-0 flex-1">
+                                    <label
+                                        :for="`clips-flag-${toggle.key}`"
+                                        class="block cursor-pointer text-[13px] font-medium text-fg"
+                                        >{{ toggle.title }}</label
+                                    >
+                                    <p class="hint mt-0.5">{{ toggle.text }}</p>
+                                </div>
+                                <UiSwitch
+                                    :id="`clips-flag-${toggle.key}`"
+                                    :model-value="state[toggle.key]"
+                                    :data-testid="`clips-toggle-${toggle.key}`"
+                                    @update:model-value="setFlag(toggle.key, $event)"
+                                />
+                            </div>
+                        </div>
+                    </SectionCard>
+                </div>
+
+                <div class="pt-3">
+                    <button
+                        type="button"
+                        class="btn-primary btn-lg w-full"
+                        :disabled="isProcessing || busy"
+                        :title="generateBlocked || undefined"
+                        :aria-busy="job === 'find' ? 'true' : undefined"
+                        data-testid="clips-generate"
+                        @click="generateClips"
+                    >
+                        <Loader2 v-if="job === 'find'" class="animate-spin" aria-hidden="true" />
+                        <Sparkles v-else aria-hidden="true" />
+                        {{
+                            job === 'find'
+                                ? BUSY_LABELS.find
+                                : clips.length
+                                  ? 'Find clips again'
+                                  : 'Find clips'
+                        }}
+                    </button>
+                    <p v-if="generateBlocked" class="hint mt-1.5 text-center">
+                        {{ generateBlocked }}
+                    </p>
+                </div>
+            </aside>
+
+            <!-- Preview stage and clips -->
+            <div class="flex min-w-0 flex-col gap-4">
+                <template v-if="clips.length > 0">
+                    <!-- Sticky only where the window is tall enough to keep the list in view. -->
+                    <div
+                        class="z-10 -mx-px -mt-4 bg-canvas px-px pt-4 pb-1 @3xl:[@media(min-height:760px)]:sticky @3xl:[@media(min-height:760px)]:top-0"
+                        data-testid="clips-stage"
+                    >
+                        <div
+                            v-if="hasMediaFile"
+                            class="overflow-hidden rounded-lg border border-line bg-black"
+                        >
+                            <!-- Preview player; in 9:16 mode it shows the planned framing. -->
+                            <div
+                                ref="stageWell"
+                                class="flex h-[clamp(200px,36vh,340px)] items-center justify-center"
+                            >
+                                <div
+                                    :class="verticalBox ? 'relative shrink-0' : 'h-full w-full'"
+                                    :style="
+                                        verticalBox
+                                            ? {
+                                                  width: `${VERTICAL_FRAME.width * stageScale}px`,
+                                                  height: `${VERTICAL_FRAME.height * stageScale}px`,
+                                              }
+                                            : undefined
+                                    "
+                                >
+                                    <div
+                                        :class="
+                                            verticalBox
+                                                ? 'absolute top-0 left-0 origin-top-left overflow-hidden rounded-md ring-1 ring-line-strong'
+                                                : 'h-full w-full'
+                                        "
+                                        :style="
+                                            verticalBox
+                                                ? {
+                                                      width: `${VERTICAL_FRAME.width}px`,
+                                                      height: `${VERTICAL_FRAME.height}px`,
+                                                      transform: `scale(${stageScale})`,
+                                                  }
+                                                : undefined
+                                        "
+                                        data-testid="clips-player-frame"
+                                    >
+                                        <video
+                                            ref="player"
+                                            :src="mediaSrc"
+                                            :class="
+                                                verticalBox
+                                                    ? 'absolute max-w-none'
+                                                    : 'h-full w-full object-contain'
+                                            "
+                                            :style="
+                                                verticalBox
+                                                    ? {
+                                                          width: `${verticalBox.width}px`,
+                                                          height: `${verticalBox.height}px`,
+                                                          left: `${verticalBox.left}px`,
+                                                          top: `${verticalBox.top}px`,
+                                                      }
+                                                    : undefined
+                                            "
+                                            preload="metadata"
+                                            :controls="!verticalBox"
+                                            data-testid="clips-player"
+                                            @timeupdate="onTimeUpdate"
+                                        />
+                                        <!-- Captions as the export burns them in (68% down, yellow highlight). -->
+                                        <p
+                                            v-if="verticalBox && verticalCaption"
+                                            class="vertical-caption pointer-events-none absolute inset-x-3 text-center"
+                                            data-testid="clips-player-caption"
+                                        >
+                                            <span
+                                                v-for="(word, i) in verticalCaption"
+                                                :key="i"
+                                                :class="
+                                                    word.active ? 'text-[#ffd60a]' : 'text-white'
+                                                "
+                                                >{{ word.text
+                                                }}{{
+                                                    i < verticalCaption.length - 1 ? ' ' : ''
+                                                }}</span
+                                            >
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div
+                                class="flex items-center gap-3 border-t border-line bg-surface px-3 py-2"
+                            >
+                                <template v-if="previewingClip">
+                                    <span class="chip-accent shrink-0">
+                                        <Play aria-hidden="true" />
+                                        Playing
+                                    </span>
+                                    <span class="min-w-0 flex-1 truncate text-[13px] text-fg">
+                                        {{ previewingClip.title || 'Untitled clip' }}
+                                    </span>
+                                    <span v-if="state.vertical" class="hint shrink-0"
+                                        >9:16 framing</span
+                                    >
+                                    <button
+                                        type="button"
+                                        class="btn-ghost btn-sm"
+                                        data-testid="clips-stage-stop"
+                                        @click="stopPreview"
+                                    >
+                                        <Square aria-hidden="true" />
+                                        Stop
+                                    </button>
+                                </template>
+                                <p v-else class="hint flex-1">
+                                    Press Preview on a clip to play what its export will contain{{
+                                        state.vertical ? ', framed for 9:16' : ''
+                                    }}.
+                                </p>
+                            </div>
+                        </div>
+                        <EmptyState
+                            v-else
+                            compact
+                            :icon="FileWarning"
+                            title="Media file not found"
+                            description="Preview and export need the source file. Relink it on the Source step."
+                        />
                     </div>
 
-                    <p v-if="clip.hookLine" class="mb-2 text-sm italic text-gray-200">
-                        “{{ clip.hookLine }}”
-                    </p>
-                    <p class="mb-3 text-xs leading-relaxed text-gray-400">{{ clip.reason }}</p>
-
-                    <ClipText
-                        v-if="openTexts.has(clip.id)"
-                        class="mb-3"
-                        :words="clipWords(segments, clip.ranges)"
-                        :kept="keptRanges(clip)"
-                        :playhead="previewing?.id === clip.id ? playhead : null"
-                        :cut-words="clip.cutWords"
-                        :auto-editing="autoEditingClip === clip.id"
-                        :can-auto-edit="!isProcessing && !busy"
-                        @edit="editClipWord"
-                        @cut="(words, cut) => cutClipWords(clip, words, cut)"
-                        @auto-edit="autoEditClip(clip)"
-                    />
-
-                    <!-- Facts, ratings and actions sit at the bottom, so cards in a row line up. -->
-                    <div class="mt-auto">
-                        <div class="mb-3 flex flex-wrap items-center gap-1.5 text-xs">
-                            <span class="rounded bg-white/10 px-2 py-0.5 font-mono text-gray-200">{{
-                                clock(clipDuration(clip))
-                            }}</span>
-                            <span
-                                v-if="clip.looped"
-                                class="rounded bg-purple-500/20 px-2 py-0.5 font-semibold text-purple-200"
-                                >Loop</span
+                    <div class="flex items-baseline justify-between gap-3">
+                        <h2 class="section-title">
+                            {{ clips.length }} clip{{ clips.length === 1 ? '' : 's' }}
+                            <span class="font-normal text-fg-subtle"
+                                >· {{ selectedClips.length }} included</span
                             >
-                            <span
-                                v-for="(range, i) in clip.ranges"
-                                :key="i"
-                                class="rounded border border-white/10 px-2 py-0.5 text-gray-400"
-                            >
-                                <span v-if="clip.ranges.length > 1" class="mr-1 text-gray-300">
-                                    {{ ROLE_LABELS[range.role] }}
-                                </span>
-                                <span class="font-mono">
-                                    {{ clock(range.start) }}–{{ clock(range.end) }}</span
-                                >
-                            </span>
-                        </div>
+                        </h2>
+                        <p class="hint">Ranked by score</p>
+                    </div>
 
-                        <dl
-                            v-if="clip.ratings"
-                            class="mb-4 grid gap-1.5 text-center"
-                            :class="clip.looped ? 'grid-cols-5' : 'grid-cols-4'"
-                            :data-testid="`clip-ratings-${clip.id}`"
+                    <!-- Clip cards -->
+                    <TransitionGroup
+                        name="list"
+                        tag="ul"
+                        class="relative grid grid-cols-1 gap-3 @6xl:grid-cols-2"
+                        data-testid="clip-cards"
+                    >
+                        <li
+                            v-for="(clip, rank) in clips"
+                            :key="clip.id"
+                            class="flex flex-col rounded-lg border p-4 transition-[border-color,background-color,box-shadow] duration-150"
+                            :class="
+                                previewing?.id === clip.id
+                                    ? 'border-accent/60 bg-surface inset-ring inset-ring-accent/25'
+                                    : clip.selected
+                                      ? 'border-line bg-surface hover:border-line-strong'
+                                      : 'border-dashed border-line-strong bg-transparent'
+                            "
+                            :data-testid="`clip-card-${clip.id}`"
                         >
-                            <div
-                                v-for="rating in RATINGS"
-                                :key="rating.key"
-                                class="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1.5"
-                                :class="TONE_CLASSES[ratingTone(clip.ratings[rating.key])]"
-                                :title="rating.text"
-                                :data-tone="ratingTone(clip.ratings[rating.key])"
-                            >
-                                <dt
-                                    class="flex min-w-0 max-w-full flex-col items-center gap-0.5 text-[10px] opacity-80"
-                                >
-                                    <component
-                                        :is="rating.icon"
-                                        class="h-4 w-4"
-                                        aria-hidden="true"
-                                    />
-                                    <span class="max-w-full truncate">{{ rating.label }}</span>
-                                </dt>
-                                <dd class="text-base font-bold leading-none">
-                                    {{ clip.ratings[rating.key] }}
-                                </dd>
-                            </div>
-                            <div
-                                v-if="clip.looped"
-                                class="flex min-w-0 flex-col items-center gap-1 rounded-lg px-1 py-1.5"
-                                :class="TONE_CLASSES[ratingTone(clip.ratings.loopContinuity)]"
-                                title="How seamlessly the ending leads back into the opening"
-                            >
-                                <dt
-                                    class="flex min-w-0 max-w-full flex-col items-center gap-0.5 text-[10px] opacity-80"
-                                >
-                                    <ArrowPathIcon class="h-4 w-4" aria-hidden="true" />
-                                    <span class="max-w-full truncate">Loop</span>
-                                </dt>
-                                <dd class="text-base font-bold leading-none">
-                                    {{ clip.ratings.loopContinuity }}
-                                </dd>
-                            </div>
-                        </dl>
-
-                        <div class="flex flex-wrap items-center gap-2">
-                            <button
-                                type="button"
-                                class="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/20 disabled:opacity-40"
-                                :disabled="!hasMediaFile"
-                                :data-testid="`clip-preview-${clip.id}`"
-                                @click="preview(clip)"
-                            >
-                                {{ previewing?.id === clip.id ? 'Stop' : 'Preview' }}
-                            </button>
-                            <button
-                                type="button"
-                                class="rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-white/20"
-                                :class="
-                                    openTexts.has(clip.id)
-                                        ? 'bg-pink-600/60 text-white'
-                                        : 'bg-white/10 text-white'
-                                "
-                                :aria-pressed="openTexts.has(clip.id)"
-                                :data-testid="`clip-text-toggle-${clip.id}`"
-                                @click="toggleText(clip)"
-                            >
-                                Text
-                            </button>
-
-                            <div
-                                class="flex items-center gap-1 text-xs text-gray-400"
-                                role="group"
-                                aria-label="Trim start"
-                            >
-                                Start
-                                <button
-                                    type="button"
-                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                    aria-label="Start one word earlier"
-                                    :data-testid="`clip-start-earlier-${clip.id}`"
-                                    @click="trim(clip, 'start', -1)"
-                                >
-                                    ◀
-                                </button>
-                                <button
-                                    type="button"
-                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                    aria-label="Start one word later"
-                                    :data-testid="`clip-start-later-${clip.id}`"
-                                    @click="trim(clip, 'start', 1)"
-                                >
-                                    ▶
-                                </button>
-                            </div>
-                            <div
-                                class="flex items-center gap-1 text-xs text-gray-400"
-                                role="group"
-                                aria-label="Trim end"
-                            >
-                                End
-                                <button
-                                    type="button"
-                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                    aria-label="End one word earlier"
-                                    @click="trim(clip, 'end', -1)"
-                                >
-                                    ◀
-                                </button>
-                                <button
-                                    type="button"
-                                    class="rounded bg-white/5 px-1.5 py-1 hover:bg-white/15"
-                                    aria-label="End one word later"
-                                    @click="trim(clip, 'end', 1)"
-                                >
-                                    ▶
-                                </button>
-                            </div>
-
-                            <label class="ml-auto flex items-center gap-1.5 text-xs text-gray-300">
+                            <div class="flex items-start gap-3">
                                 <input
                                     type="checkbox"
                                     :checked="clip.selected"
+                                    :aria-label="`Include “${clip.title || 'Untitled clip'}” in the export`"
+                                    title="Include in “Export selected”"
                                     :data-testid="`clip-select-${clip.id}`"
-                                    class="rounded border-white/20 bg-white/10 text-pink-500 focus:ring-pink-500/50"
+                                    class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer"
                                     @change="
                                         setSelected(
                                             clip,
@@ -1358,46 +1710,335 @@ async function openExportFolder() {
                                         )
                                     "
                                 />
-                                Include
-                            </label>
-                            <button
-                                type="button"
-                                class="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-200 hover:bg-white/10 disabled:opacity-40"
-                                :disabled="isProcessing || busy || !hasMediaFile"
-                                :data-testid="`clip-export-${clip.id}`"
-                                @click="exportClips([clip])"
-                            >
-                                Export
-                            </button>
-                        </div>
-                    </div>
-                </li>
-            </ul>
+                                <div class="min-w-0 flex-1">
+                                    <h3
+                                        class="text-[14px] leading-snug font-semibold"
+                                        :class="clip.selected ? 'text-fg' : 'text-fg-muted'"
+                                    >
+                                        <span
+                                            class="mr-1 font-mono text-[12px] font-normal text-fg-subtle"
+                                            >#{{ rank + 1 }}</span
+                                        >
+                                        {{ clip.title || 'Untitled clip' }}
+                                    </h3>
+                                    <p
+                                        v-if="clip.hookLine"
+                                        class="mt-1 text-[13px] italic"
+                                        :class="clip.selected ? 'text-fg-muted' : 'text-fg-subtle'"
+                                    >
+                                        “{{ clip.hookLine }}”
+                                    </p>
+                                </div>
+                                <button
+                                    v-if="clip.score !== null"
+                                    type="button"
+                                    class="shrink-0 cursor-help font-mono"
+                                    :class="clip.selected ? 'chip-accent' : 'chip'"
+                                    :title="SCORE_TITLE"
+                                    :data-testid="`clip-score-${clip.id}`"
+                                >
+                                    <span class="sr-only">Score </span>{{ clip.score
+                                    }}<span class="sr-only"> of 100. {{ SCORE_TITLE }}</span>
+                                </button>
+                            </div>
 
-            <div class="flex gap-4 mt-6">
-                <button
-                    @click="exportClips(selectedClips)"
-                    :disabled="isProcessing || busy || !hasMediaFile || selectedClips.length === 0"
-                    data-testid="clips-export-selected"
-                    class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                            <div class="mt-2 pl-7">
+                                <p
+                                    :id="`clip-reason-${clip.id}`"
+                                    :ref="(el) => setReasonElement(clip.id, el as Element | null)"
+                                    :data-reason="clip.id"
+                                    class="text-[12px] leading-relaxed text-fg-subtle"
+                                    :class="expandedReasons.has(clip.id) ? '' : 'line-clamp-2'"
+                                    :data-testid="`clip-reason-${clip.id}`"
+                                >
+                                    {{ clip.reason }}
+                                </p>
+                                <button
+                                    v-if="
+                                        clip.reason &&
+                                        (overflowingReasons.has(clip.id) ||
+                                            expandedReasons.has(clip.id))
+                                    "
+                                    type="button"
+                                    class="mt-0.5 text-[12px] text-fg-muted hover:text-fg"
+                                    :aria-expanded="expandedReasons.has(clip.id) ? 'true' : 'false'"
+                                    :aria-controls="`clip-reason-${clip.id}`"
+                                    :data-testid="`clip-reason-toggle-${clip.id}`"
+                                    @click="toggleReason(clip)"
+                                >
+                                    {{ expandedReasons.has(clip.id) ? 'Show less' : 'Show more' }}
+                                </button>
+                            </div>
+
+                            <div class="mt-3 flex flex-wrap items-center gap-1.5">
+                                <span class="chip font-mono text-fg" title="Duration">{{
+                                    clock(clipDuration(clip))
+                                }}</span>
+                                <span v-if="clip.looped" class="chip-accent" title="Looped short">
+                                    <Repeat aria-hidden="true" />
+                                    Loop
+                                </span>
+                                <span v-for="(range, i) in clip.ranges" :key="i" class="chip">
+                                    <span v-if="clip.ranges.length > 1" class="text-fg">{{
+                                        ROLE_LABELS[range.role]
+                                    }}</span>
+                                    <span class="font-mono"
+                                        >{{ clock(range.start) }}–{{ clock(range.end) }}</span
+                                    >
+                                </span>
+                            </div>
+
+                            <dl
+                                v-if="clip.ratings"
+                                class="mt-3 grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-x-5 gap-y-1.5"
+                                :data-testid="`clip-ratings-${clip.id}`"
+                            >
+                                <div
+                                    v-for="rating in clipRatings(clip)"
+                                    :key="rating.key"
+                                    class="flex items-center gap-2"
+                                    :title="rating.text"
+                                    :data-tone="ratingTone(rating.value)"
+                                >
+                                    <dt
+                                        class="flex w-[84px] shrink-0 items-center gap-1.5 truncate text-[12px] text-fg-muted"
+                                    >
+                                        <component
+                                            :is="rating.icon"
+                                            class="h-3.5 w-3.5 text-fg-subtle"
+                                            aria-hidden="true"
+                                        />
+                                        {{ rating.label }}
+                                    </dt>
+                                    <dd class="flex min-w-0 flex-1 items-center gap-2">
+                                        <span
+                                            class="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3"
+                                            aria-hidden="true"
+                                        >
+                                            <span
+                                                class="block h-full rounded-full"
+                                                :class="TONE_CLASSES[ratingTone(rating.value)].bar"
+                                                :style="{
+                                                    width: `${Math.min(100, Math.max(0, rating.value * 10))}%`,
+                                                }"
+                                            />
+                                        </span>
+                                        <span
+                                            class="w-4 text-right font-mono text-[12px] font-semibold"
+                                            :class="TONE_CLASSES[ratingTone(rating.value)].value"
+                                            >{{ rating.value }}</span
+                                        >
+                                    </dd>
+                                </div>
+                            </dl>
+
+                            <ClipText
+                                v-if="openTexts.has(clip.id)"
+                                class="animate-rise-in mt-3"
+                                :words="clipWords(segments, clip.ranges)"
+                                :kept="keptRanges(clip)"
+                                :playhead="previewing?.id === clip.id ? playhead : null"
+                                :cut-words="clip.cutWords"
+                                :auto-editing="autoEditingClip === clip.id"
+                                :can-auto-edit="!isProcessing && !busy"
+                                :speaker-order="speakers"
+                                @edit="editClipWord"
+                                @cut="(words, cut) => cutClipWords(clip, words, cut)"
+                                @auto-edit="autoEditClip(clip)"
+                            />
+
+                            <!-- Actions sit at the bottom, so cards in a row line up. -->
+                            <div class="mt-auto flex flex-wrap items-center gap-x-3 gap-y-2 pt-3">
+                                <div class="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        class="btn-secondary btn-sm"
+                                        :class="
+                                            previewing?.id === clip.id
+                                                ? 'border-accent/50 bg-accent/15 text-accent-soft'
+                                                : ''
+                                        "
+                                        :disabled="!hasMediaFile"
+                                        :title="
+                                            hasMediaFile
+                                                ? previewing?.id === clip.id
+                                                    ? 'Stop the preview'
+                                                    : 'Play what the export will contain'
+                                                : 'The media file is missing'
+                                        "
+                                        :aria-pressed="
+                                            previewing?.id === clip.id ? 'true' : 'false'
+                                        "
+                                        :data-testid="`clip-preview-${clip.id}`"
+                                        @click="preview(clip)"
+                                    >
+                                        <Loader2
+                                            v-if="preparingClip === clip.id"
+                                            class="animate-spin"
+                                            aria-hidden="true"
+                                        />
+                                        <Square
+                                            v-else-if="previewing?.id === clip.id"
+                                            aria-hidden="true"
+                                        />
+                                        <Play v-else aria-hidden="true" />
+                                        {{
+                                            preparingClip === clip.id
+                                                ? 'Preparing'
+                                                : previewing?.id === clip.id
+                                                  ? 'Stop'
+                                                  : 'Preview'
+                                        }}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="btn-ghost btn-sm"
+                                        :aria-pressed="openTexts.has(clip.id) ? 'true' : 'false'"
+                                        title="Show the clip's words to correct or cut them"
+                                        :data-testid="`clip-text-toggle-${clip.id}`"
+                                        @click="toggleText(clip)"
+                                    >
+                                        <TextQuote aria-hidden="true" />
+                                        Text
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="btn-ghost btn-sm"
+                                        :disabled="isProcessing || busy || !hasMediaFile"
+                                        :title="
+                                            !hasMediaFile
+                                                ? 'The media file is missing'
+                                                : isProcessing || busy
+                                                  ? 'Wait for the running job to finish'
+                                                  : 'Export just this clip'
+                                        "
+                                        :data-testid="`clip-export-${clip.id}`"
+                                        @click="exportClips([clip])"
+                                    >
+                                        <Download aria-hidden="true" />
+                                        Export
+                                    </button>
+                                </div>
+
+                                <div
+                                    class="ml-auto flex items-center gap-2 text-[12px] text-fg-subtle"
+                                >
+                                    <div class="trim-group" role="group" aria-label="Trim start">
+                                        <span class="px-1.5">Start</span>
+                                        <button
+                                            type="button"
+                                            class="btn-ghost btn-sm btn-icon"
+                                            aria-label="Start one word earlier"
+                                            title="Start one word earlier"
+                                            :data-testid="`clip-start-earlier-${clip.id}`"
+                                            @click="trim(clip, 'start', -1)"
+                                        >
+                                            <ChevronLeft aria-hidden="true" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="btn-ghost btn-sm btn-icon"
+                                            aria-label="Start one word later"
+                                            title="Start one word later"
+                                            :data-testid="`clip-start-later-${clip.id}`"
+                                            @click="trim(clip, 'start', 1)"
+                                        >
+                                            <ChevronRight aria-hidden="true" />
+                                        </button>
+                                    </div>
+                                    <div class="trim-group" role="group" aria-label="Trim end">
+                                        <span class="px-1.5">End</span>
+                                        <button
+                                            type="button"
+                                            class="btn-ghost btn-sm btn-icon"
+                                            aria-label="End one word earlier"
+                                            title="End one word earlier"
+                                            :data-testid="`clip-end-earlier-${clip.id}`"
+                                            @click="trim(clip, 'end', -1)"
+                                        >
+                                            <ChevronLeft aria-hidden="true" />
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="btn-ghost btn-sm btn-icon"
+                                            aria-label="End one word later"
+                                            title="End one word later"
+                                            :data-testid="`clip-end-later-${clip.id}`"
+                                            @click="trim(clip, 'end', 1)"
+                                        >
+                                            <ChevronRight aria-hidden="true" />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </li>
+                    </TransitionGroup>
+                </template>
+
+                <!-- While the first search runs: placeholders where the clips will land. -->
+                <ul
+                    v-else-if="job === 'find'"
+                    class="grid grid-cols-1 gap-3 @6xl:grid-cols-2"
+                    aria-hidden="true"
                 >
-                    Export {{ selectedClips.length }} selected
-                </button>
-                <button
-                    v-if="lastExportPath"
-                    @click="openExportFolder"
-                    class="px-6 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-2xl border border-gray-700 transition-all"
-                    title="Open folder"
-                    aria-label="Open export folder"
-                >
-                    <FolderOpenIcon class="h-6 w-6" />
-                </button>
+                    <li
+                        v-for="n in Math.min(Math.max(Number(clipCount) || 3, 1), 4)"
+                        :key="n"
+                        class="panel p-4"
+                    >
+                        <div class="shimmer h-4 w-2/3 rounded-sm bg-surface-3" />
+                        <div class="shimmer mt-2.5 h-3 w-5/6 rounded-sm bg-surface-2" />
+                        <div class="shimmer mt-1.5 h-3 w-1/2 rounded-sm bg-surface-2" />
+                        <div class="mt-4 grid grid-cols-2 gap-2">
+                            <div
+                                v-for="m in 4"
+                                :key="m"
+                                class="shimmer h-2 rounded-full bg-surface-2"
+                            />
+                        </div>
+                    </li>
+                </ul>
+
+                <EmptyState
+                    v-else
+                    :icon="Clapperboard"
+                    title="No clips yet"
+                    description="Set up the search on the left and press Find clips. The strongest moments show up here, ranked, with a hook line, ratings, a preview and export."
+                    data-testid="clips-empty"
+                />
             </div>
         </div>
     </div>
 </template>
 
 <style scoped>
+.unit {
+    position: absolute;
+    top: 50%;
+    right: 0.625rem;
+    transform: translateY(-50%);
+    font-size: 12px;
+    color: var(--color-fg-subtle);
+    pointer-events: none;
+}
+
+/* Hide the number spinners: the unit suffix sits there. */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.trim-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.0625rem;
+    padding: 0.125rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-line);
+    background: var(--color-well);
+}
+
 .vertical-caption {
     top: 68%;
     transform: translateY(-50%);

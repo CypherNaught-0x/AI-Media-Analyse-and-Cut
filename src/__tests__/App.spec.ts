@@ -23,7 +23,11 @@ vi.mock('@tauri-apps/plugin-process', () => ({
 
 const router = createRouter({
     history: createWebHistory(),
-    routes: [{ path: '/', component: { template: '<div>Home</div>' } }],
+    routes: [
+        { path: '/', component: { template: '<div>Home</div>' } },
+        // The shell rail links here.
+        { path: '/settings', component: { template: '<div>Settings</div>' } },
+    ],
 });
 
 describe('App.vue', () => {

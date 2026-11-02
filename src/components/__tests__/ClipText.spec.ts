@@ -32,7 +32,7 @@ describe('ClipText', () => {
                 playhead: 12.4,
             },
         });
-        expect(wrapper.get('[data-testid="clip-word-2"]').classes()).toContain('bg-[#ffd60a]');
+        expect(wrapper.get('[data-testid="clip-word-2"]').classes()).toContain('bg-accent');
         expect(wrapper.get('[data-testid="clip-word-1"]').classes()).toContain('line-through');
         expect(wrapper.get('[data-testid="clip-word-0"]').classes()).not.toContain('line-through');
         expect(wrapper.text()).toMatch(/Host.*So.*Guest.*Right/);
@@ -96,6 +96,13 @@ describe('ClipText', () => {
         expect(cut.attributes('title')).toBe('Cut by auto editing: Füllwort');
         await wrapper.get('[data-testid="clip-text-auto-edit"]').trigger('click');
         expect(wrapper.emitted('auto-edit')).toHaveLength(1);
+
+        // While it runs, the button shows a spinner.
+        await wrapper.setProps({ autoEditing: true });
+        expect(wrapper.get('[data-testid="clip-text-auto-edit"]').text()).toBe('Auto editing');
+        expect(wrapper.find('[data-testid="clip-text-auto-edit"] .animate-spin').exists()).toBe(
+            true,
+        );
 
         await wrapper.setProps({ canAutoEdit: false });
         expect(

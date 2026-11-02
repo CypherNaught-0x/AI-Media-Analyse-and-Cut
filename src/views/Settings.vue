@@ -1,6 +1,35 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, reactive, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import {
+    AudioLines,
+    ChevronRight,
+    Cpu,
+    ExternalLink,
+    Eye,
+    EyeOff,
+    FileArchive,
+    Film,
+    FolderOpen,
+    Info,
+    KeyRound,
+    LifeBuoy,
+    List,
+    Loader2,
+    PenLine,
+    RefreshCw,
+    Scale,
+    Sparkles,
+    Timer,
+    TriangleAlert,
+} from '@lucide/vue';
+import PageHeader from '../components/ui/PageHeader.vue';
+import SectionCard from '../components/ui/SectionCard.vue';
+import UiDialog from '../components/ui/UiDialog.vue';
+import OptionCardGroup, { type OptionCard } from '../components/settings/OptionCardGroup.vue';
+import SettingsSwitchRow from '../components/settings/SettingsSwitchRow.vue';
+import DisclosureCard from '../components/settings/DisclosureCard.vue';
+import { useWorkspaceNav } from '../composables/useWorkspaceNav';
 import { refreshApiKeyStatus, useSettings } from '../composables/useSettings';
 import { appleSpeechLocale, useAppleSpeech } from '../composables/useAppleSpeech';
 import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
@@ -22,7 +51,7 @@ import type {
 import { commands } from '../bindings';
 import { errorMessage } from '../utils/appError';
 
-const PIPELINE_OPTIONS: { value: TranscriptionBackend; title: string; description: string }[] = [
+const PIPELINE_OPTIONS: OptionCard<TranscriptionBackend>[] = [
     {
         value: 'llm',
         title: 'LLM Only',
@@ -45,28 +74,25 @@ const PIPELINE_OPTIONS: { value: TranscriptionBackend; title: string; descriptio
     },
 ];
 
-const ENGINE_OPTIONS: { value: LocalEngine; title: string; badge?: string; description: string }[] =
-    [
-        {
-            value: 'parakeet',
-            title: 'Parakeet',
-            description: 'Parakeet TDT + Sortformer diarization with word timestamps.',
-        },
-        {
-            value: 'crisper',
-            title: 'CrisperWhisper',
-            badge: 'EN / DE',
-            description:
-                'Verbatim transcription with precise word timings. English and German only.',
-        },
-        {
-            value: 'apple-speech',
-            title: 'Apple Speech',
-            badge: 'macOS 26+',
-            description:
-                "macOS's built-in on-device model. Very fast, ~45 languages; drops fillers.",
-        },
-    ];
+const ENGINE_OPTIONS: OptionCard<LocalEngine>[] = [
+    {
+        value: 'parakeet',
+        title: 'Parakeet',
+        description: 'Parakeet TDT + Sortformer diarization with word timestamps.',
+    },
+    {
+        value: 'crisper',
+        title: 'CrisperWhisper',
+        badge: 'EN / DE',
+        description: 'Verbatim transcription with precise word timings. English and German only.',
+    },
+    {
+        value: 'apple-speech',
+        title: 'Apple Speech',
+        badge: 'macOS 26+',
+        description: "macOS's built-in on-device model. Very fast, ~45 languages; drops fillers.",
+    },
+];
 
 const router = useRouter();
 const { settings, apiKeyStored, updateSettings, modelFetchState, updateModelFetchState } =
@@ -90,11 +116,40 @@ const availableModels = ref<string[]>(modelFetchState.value.availableModels);
 const localPreClipPadding = ref(settings.value.preClipPadding || 0);
 const localPostClipPadding = ref(settings.value.postClipPadding || 0);
 const localExportQuality = ref(settings.value.exportQuality ?? 'balanced');
-const EXPORT_QUALITY_OPTIONS = [
-    { value: 'high', label: 'High', description: 'Visually lossless; larger files, slower.' },
-    { value: 'balanced', label: 'Balanced', description: 'Good quality at a sensible size.' },
-    { value: 'draft', label: 'Draft', description: 'Fast and small, for previews.' },
-] as const;
+const EXPORT_QUALITY_OPTIONS: OptionCard<'high' | 'balanced' | 'draft'>[] = [
+    {
+        value: 'high',
+        title: 'High',
+        description: 'Visually lossless; larger files, slower.',
+        testId: 'export-quality-high',
+    },
+    {
+        value: 'balanced',
+        title: 'Balanced',
+        description: 'Good quality at a sensible size.',
+        testId: 'export-quality-balanced',
+    },
+    {
+        value: 'draft',
+        title: 'Draft',
+        description: 'Fast and small, for previews.',
+        testId: 'export-quality-draft',
+    },
+];
+const CRISPER_MODE_OPTIONS: OptionCard<CrisperMode>[] = [
+    {
+        value: 'verbatim',
+        title: 'Verbatim',
+        description:
+            'Exactly what was said, including fillers, repetitions and stutters. Best for cutting: you can see and remove every “um”.',
+    },
+    {
+        value: 'intended',
+        title: 'Intended',
+        description:
+            'The clean version the speaker meant, with numbers and dates formatted for reading. Best for subtitles.',
+    },
+];
 const localTranscriptionBackend = ref<TranscriptionBackend>(
     settings.value.transcriptionBackend ?? 'llm',
 );
@@ -160,6 +215,16 @@ const appleSpeechLocaleOptions = computed(() => {
 });
 const isFetchingModels = ref(false);
 const fetchError = ref('');
+/**
+ * The model list is the built-in fallback, not what the endpoint offers. The
+ * list itself persists across visits, so a fallback from an earlier fetch is
+ * flagged as soon as the page opens.
+ */
+const usingFallbackModels = ref(
+    modelFetchState.value.supportsModelFetch === false &&
+        modelFetchState.value.availableModels.length > 0,
+);
+const showApiKey = ref(false);
 const showManualInput = ref(false);
 
 // Check if the current model is not in the available models list
@@ -476,6 +541,7 @@ async function fetchModels(silent = false) {
         if (!list.supported) {
             updateModelFetchState({ supportsModelFetch: false, availableModels: [] });
             availableModels.value = [];
+            usingFallbackModels.value = false;
             if (!silent) {
                 fetchError.value = 'This endpoint does not support model listing';
             }
@@ -488,6 +554,7 @@ async function fetchModels(silent = false) {
         }
 
         availableModels.value = fetchedModels;
+        usingFallbackModels.value = false;
         updateModelFetchState({ supportsModelFetch: true, availableModels: fetchedModels });
 
         // Restore model selection (it stays as-is, just ensuring dropdown has it)
@@ -504,6 +571,7 @@ async function fetchModels(silent = false) {
         } else {
             availableModels.value = ['gpt-4', 'gpt-3.5-turbo'];
         }
+        usingFallbackModels.value = true;
         // Restore model selection
         localModel.value = currentModel;
     } finally {
@@ -622,1013 +690,1430 @@ async function saveSettings() {
         appleSpeechLocale: localAppleSpeechLocale.value,
         appleSpeechDiarize: localAppleSpeechDiarize.value,
     });
+    allowLeave = true;
     router.push('/');
 }
 
+/** Back to the workspace; with unsaved edits the leave guard asks first. */
 function cancel() {
     router.push('/');
 }
+
+// ---------------------------------------------------------------- Leaving
+// Any navigation away (Cancel/Discard, the rail) asks before dropping edits.
+const leaveDialogOpen = ref(false);
+let allowLeave = false;
+let resolveLeave: ((leave: boolean) => void) | null = null;
+// The rail switches the workspace step before it navigates, so a navigation
+// the user then cancels would leave Home on a step they never opened. Put the
+// step back to the one Settings was opened from.
+const { state: workspaceNav } = useWorkspaceNav();
+const stepOnEntry = workspaceNav.activeStep;
+
+const removeLeaveGuard = router.beforeEach(() => {
+    if (allowLeave || !hasChanges.value) return true;
+    resolveLeave?.(false);
+    leaveDialogOpen.value = true;
+    return new Promise<boolean>((resolve) => {
+        resolveLeave = resolve;
+    });
+});
+onUnmounted(removeLeaveGuard);
+
+function answerLeave(leave: boolean) {
+    leaveDialogOpen.value = false;
+    if (leave) allowLeave = true;
+    else workspaceNav.activeStep = stepOnEntry;
+    const resolve = resolveLeave;
+    resolveLeave = null;
+    resolve?.(leave);
+}
+
+// ---------------------------------------------------------------- Sections
+const SECTIONS = [
+    { id: 'transcription', label: 'Transcription defaults', icon: AudioLines },
+    { id: 'ai-provider', label: 'AI provider', icon: Sparkles },
+    { id: 'engines', label: 'Local engines', icon: Cpu },
+    { id: 'long-audio', label: 'Long audio & validation', icon: Timer },
+    { id: 'export', label: 'Export & clips', icon: Film },
+    { id: 'updates', label: 'Updates & logs', icon: LifeBuoy },
+    { id: 'about', label: 'About & licences', icon: Scale },
+] as const;
+type SectionId = (typeof SECTIONS)[number]['id'];
+
+const activeSection = ref<SectionId>('transcription');
+let sectionObserver: IntersectionObserver | null = null;
+const visibleSections = new Set<string>();
+// Ignore the scroll-spy while a nav click scrolls smoothly to its target.
+let spyPausedUntil = 0;
+
+function scrollToSection(id: SectionId) {
+    activeSection.value = id;
+    spyPausedUntil = Date.now() + 900;
+    document
+        .getElementById(`settings-${id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+onMounted(() => {
+    // jsdom (specs) has no IntersectionObserver.
+    if (typeof IntersectionObserver === 'undefined') return;
+    sectionObserver = new IntersectionObserver(
+        (entries) => {
+            for (const entry of entries) {
+                const id = (entry.target as HTMLElement).dataset.section ?? '';
+                if (entry.isIntersecting) visibleSections.add(id);
+                else visibleSections.delete(id);
+            }
+            if (Date.now() < spyPausedUntil) return;
+            const first = SECTIONS.find((section) => visibleSections.has(section.id));
+            if (first) activeSection.value = first.id;
+        },
+        { root: document.getElementById('app-main'), rootMargin: '-15% 0px -55% 0px' },
+    );
+    for (const section of SECTIONS) {
+        const element = document.getElementById(`settings-${section.id}`);
+        if (element) sectionObserver.observe(element);
+    }
+});
+onUnmounted(() => sectionObserver?.disconnect());
+
+// ---------------------------------------------------------------- Status
+type Chip = { label: string; tone: string; busy?: boolean };
+
+const pipelineUsesLlm = computed(() => localTranscriptionBackend.value !== 'local');
+const pipelineUsesEngine = computed(() => localTranscriptionBackend.value !== 'llm');
+
+const parakeetChip = computed<Chip>(() =>
+    localParakeetModelPath.value.trim() || localSortformerModelPath.value.trim()
+        ? { label: 'Custom model', tone: 'chip' }
+        : { label: 'Downloads on first use', tone: 'chip' },
+);
+const crisperChip = computed<Chip>(() => {
+    if (isInstallingCrisper.value) return { label: 'Installing', tone: 'chip-accent', busy: true };
+    if (isCheckingCrisper.value) return { label: 'Checking', tone: 'chip', busy: true };
+    if (crisperStatus.value?.ready) return { label: 'Ready', tone: 'chip-success' };
+    return { label: 'Not installed', tone: 'chip-warning' };
+});
+const appleSpeechChip = computed<Chip>(() => {
+    if (isInstallingAppleSpeech.value)
+        return { label: 'Downloading', tone: 'chip-accent', busy: true };
+    if (isCheckingAppleSpeech.value) return { label: 'Checking', tone: 'chip', busy: true };
+    if (appleSpeechStatus.value?.available)
+        return appleSpeechLocaleInstalled.value
+            ? { label: 'Ready', tone: 'chip-success' }
+            : { label: 'Not downloaded', tone: 'chip-warning' };
+    return { label: 'Unavailable', tone: 'chip-warning' };
+});
+
+/**
+ * Engine cards start open only for the engine the default pipeline runs.
+ * Picking another default opens its card too, but never closes one the user
+ * opened by hand.
+ */
+function engineOpen(engine: LocalEngine) {
+    return pipelineUsesEngine.value && localLocalEngine.value === engine;
+}
+const openEngines = reactive<Record<LocalEngine, boolean>>({
+    parakeet: engineOpen('parakeet'),
+    crisper: engineOpen('crisper'),
+    'apple-speech': engineOpen('apple-speech'),
+});
+watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
+    if (usesEngine) openEngines[engine] = true;
+});
 </script>
 
 <template>
-    <div class="min-h-screen bg-gray-900 text-gray-200 p-8 font-sans">
-        <div class="mx-auto w-full max-w-4xl">
-            <header class="mb-10">
-                <h1 class="text-4xl font-bold text-white mb-2">AI Settings</h1>
-                <p class="text-gray-400">
-                    Configure the transcription pipeline, local engines, and remote LLM access
-                </p>
-            </header>
+    <div class="@container mx-auto w-full max-w-[1400px] px-8 pt-8 pb-10">
+        <PageHeader
+            title="Settings"
+            description="Defaults for new projects, AI provider and local engines."
+        />
 
-            <div
-                class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl"
-            >
-                <div class="mb-6">
-                    <label
-                        class="mb-3 block text-sm font-medium uppercase tracking-wider text-gray-400"
-                    >
-                        Default Pipeline
-                    </label>
-                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <button
-                            v-for="pipeline in PIPELINE_OPTIONS"
-                            :key="pipeline.value"
-                            type="button"
-                            class="flex h-full flex-col rounded-2xl border p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
+        <div class="@3xl:grid @3xl:grid-cols-[14rem_minmax(0,1fr)] @3xl:gap-8">
+            <!-- Section nav -->
+            <nav aria-label="Settings sections" class="hidden @3xl:block">
+                <ol class="sticky top-8 space-y-0.5">
+                    <li v-for="section in SECTIONS" :key="section.id">
+                        <a
+                            :href="`#settings-${section.id}`"
+                            :aria-current="activeSection === section.id ? 'location' : undefined"
+                            class="relative flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150"
                             :class="
-                                localTranscriptionBackend === pipeline.value
-                                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'
+                                activeSection === section.id
+                                    ? 'bg-surface-hover text-fg'
+                                    : 'text-fg-subtle hover:bg-surface-2 hover:text-fg'
                             "
-                            @click="localTranscriptionBackend = pipeline.value"
+                            @click.prevent="scrollToSection(section.id)"
                         >
-                            <span class="text-sm font-semibold">{{ pipeline.title }}</span>
-                            <span class="mt-1 text-xs leading-relaxed text-gray-400">{{
-                                pipeline.description
-                            }}</span>
-                        </button>
-                    </div>
-                </div>
+                            <span
+                                v-if="activeSection === section.id"
+                                class="absolute top-1.5 bottom-1.5 left-0 w-[2px] rounded-full bg-accent"
+                                aria-hidden="true"
+                            />
+                            <component
+                                :is="section.icon"
+                                class="h-3.5 w-3.5 shrink-0"
+                                aria-hidden="true"
+                            />
+                            <span class="truncate">{{ section.label }}</span>
+                        </a>
+                    </li>
+                </ol>
+            </nav>
 
-                <div class="mb-6">
-                    <label
-                        class="mb-3 block text-sm font-medium uppercase tracking-wider text-gray-400"
-                    >
-                        Default Local Engine
-                    </label>
-                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <button
-                            v-for="engine in engineOptions"
-                            :key="engine.value"
-                            type="button"
-                            class="flex h-full flex-col rounded-2xl border p-4 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
-                            :class="
-                                localLocalEngine === engine.value
-                                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'
-                            "
-                            @click="localLocalEngine = engine.value"
+            <div class="min-w-0 max-w-[880px] space-y-10">
+                <!-- Transcription defaults -->
+                <section
+                    id="settings-transcription"
+                    data-section="transcription"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-transcription-title"
+                >
+                    <header class="mb-3">
+                        <h2
+                            id="settings-transcription-title"
+                            class="text-[15px] font-semibold text-fg"
                         >
-                            <span class="flex items-center gap-2">
-                                <span class="text-sm font-semibold">{{ engine.title }}</span>
-                                <span
-                                    v-if="engine.badge"
-                                    class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300"
-                                    >{{ engine.badge }}</span
-                                >
-                            </span>
-                            <span class="mt-1 text-xs leading-relaxed text-gray-400">{{
-                                engine.description
-                            }}</span>
-                        </button>
-                    </div>
-                    <p class="mt-2 text-xs text-gray-500">
-                        Used by every pipeline except <strong>LLM Only</strong> &mdash; including
-                        both hybrids, which layer the AI pass on top of whichever engine you pick.
-                    </p>
-                </div>
-
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
-                    >
-                        Parakeet Settings
-                    </label>
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-500 mb-2"
-                                >Parakeet TDT Model Directory</label
-                            >
-                            <div class="flex gap-3">
-                                <input
-                                    v-model="localParakeetModelPath"
-                                    type="text"
-                                    class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                                    placeholder="Leave blank to auto-download into app data"
-                                />
-                                <button
-                                    @click="selectParakeetModelDirectory"
-                                    class="px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-2xl transition-all border border-white/10"
-                                >
-                                    Browse
-                                </button>
-                            </div>
-                            <p class="text-xs text-gray-500 mt-2">
-                                Leave blank to let the app download an int8 TDT model into Tauri app
-                                data. Custom directories should contain encoder, decoder, and
-                                `vocab.txt`.
+                            Transcription defaults
+                        </h2>
+                        <p class="hint mt-0.5">
+                            New projects start with these. Each project can override them on its
+                            Source page.
+                        </p>
+                    </header>
+                    <div class="panel divide-y divide-line">
+                        <div class="p-4">
+                            <p id="settings-pipeline-label" class="field-label">Default pipeline</p>
+                            <OptionCardGroup
+                                v-model="localTranscriptionBackend"
+                                class="grid-cols-1 @xl:grid-cols-2"
+                                aria-labelledby="settings-pipeline-label"
+                                :options="PIPELINE_OPTIONS"
+                                data-testid="default-pipeline"
+                            />
+                        </div>
+                        <div class="p-4">
+                            <p id="settings-engine-label" class="field-label">
+                                Default local engine
                             </p>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-500 mb-2"
-                                >Sortformer Model File</label
-                            >
-                            <div class="flex gap-3">
-                                <input
-                                    v-model="localSortformerModelPath"
-                                    type="text"
-                                    class="flex-1 p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                                    placeholder="Leave blank to auto-download into app data"
-                                />
-                                <button
-                                    @click="selectSortformerModelFile"
-                                    class="px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-2xl transition-all border border-white/10"
-                                >
-                                    Browse
-                                </button>
-                            </div>
-                            <p class="text-xs text-gray-500 mt-2">
-                                Leave blank to let the app download Sortformer v2 automatically, or
-                                provide your own `.onnx` file.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
-                    >
-                        CrisperWhisper Settings
-                    </label>
-
-                    <div class="mb-4 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30">
-                        <p class="text-xs text-amber-200 font-semibold mb-1">
-                            English and German only
-                        </p>
-                        <p class="text-xs text-amber-100/80">
-                            The CrisperWhisper 2.0 model card is published for English
-                            (<code>en</code>) and German (<code>de</code>). Other languages are not
-                            supported by this backend &mdash; use the Parakeet engine or the LLM
-                            Only pipeline for those.
-                        </p>
-                        <p class="text-xs text-amber-100/80 mt-2">
-                            {{ crisperWeightsNotice }} The app installs the model on first use.
-                        </p>
-                    </div>
-
-                    <!-- Environment status -->
-                    <div class="mb-4 p-4 rounded-2xl bg-black/20 border border-white/10">
-                        <div class="flex items-start justify-between gap-3 mb-2">
-                            <div>
-                                <p
-                                    class="text-xs font-medium text-gray-400 uppercase tracking-wider"
-                                >
-                                    Runtime
-                                </p>
-                                <p
-                                    v-if="isInstallingCrisper || isCheckingCrisper"
-                                    class="text-sm text-gray-300 mt-1"
-                                >
-                                    {{
-                                        crisperProgress ||
-                                        (isInstallingCrisper ? 'Installing...' : 'Checking...')
-                                    }}
-                                </p>
-                                <p
-                                    v-else-if="crisperStatus?.ready"
-                                    class="text-sm text-green-400 mt-1"
-                                >
-                                    Ready &mdash; CrisperWhisper
-                                    {{ crisperStatus.crisperwhisperVersion }}, Python
-                                    {{ crisperStatus.python }},
-                                    {{ crisperStatus.backends.join(' + ') }}
-                                    <span v-if="crisperStatus.cuda">(CUDA)</span>
-                                    <span v-else-if="crisperStatus.mps">(Apple GPU available)</span>
-                                    <span v-else>(CPU)</span>
-                                </p>
-                                <p v-else class="text-sm text-amber-300 mt-1">
-                                    {{ crisperStatus?.message ?? 'Not set up yet.' }}
-                                </p>
-                            </div>
-                            <div class="flex gap-2 shrink-0">
-                                <button
-                                    type="button"
-                                    :disabled="isCheckingCrisper || isInstallingCrisper"
-                                    @click="refreshCrisperStatus"
-                                    class="px-3 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all border border-white/10"
-                                >
-                                    Re-check
-                                </button>
-                                <button
-                                    v-if="!crisperStatus?.ready"
-                                    type="button"
-                                    :disabled="isInstallingCrisper"
-                                    @click="setUpCrisperEnvironment"
-                                    class="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all"
-                                >
-                                    {{ isInstallingCrisper ? 'Installing...' : 'Set up' }}
-                                </button>
-                            </div>
-                        </div>
-                        <p class="text-xs text-gray-500">
-                            CrisperWhisper ships only PyTorch and CTranslate2 weights, so it runs
-                            through a private Python environment the app manages at
-                            <code class="break-all">{{
-                                crisperStatus?.environmentDir || 'the app data directory'
-                            }}</code
-                            >. Setup needs Python {{ crisperStatus?.minimumPython || '3.10' }} or
-                            newer on your system.
-                        </p>
-                    </div>
-
-                    <div class="space-y-4">
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <div>
-                                <label class="block text-xs font-medium text-gray-500 mb-2"
-                                    >Model Size</label
-                                >
-                                <select
-                                    v-model="localCrisperModel"
-                                    class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300"
-                                >
-                                    <option
-                                        v-for="size in CRISPER_MODELS"
-                                        :key="size"
-                                        :value="size"
-                                    >
-                                        {{ size }}
-                                    </option>
-                                </select>
-                                <p class="text-xs text-gray-500 mt-2">
-                                    <code>large</code> is the most accurate, <code>turbo</code> the
-                                    fastest, <code>medium</code> the best tradeoff.
-                                </p>
-                            </div>
-                            <div>
-                                <label class="block text-xs font-medium text-gray-500 mb-2"
-                                    >Language</label
-                                >
-                                <select
-                                    v-model="localCrisperLanguage"
-                                    class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300"
-                                >
-                                    <option
-                                        v-for="language in CRISPER_LANGUAGES"
-                                        :key="language.value"
-                                        :value="language.value"
-                                    >
-                                        {{ language.label }}
-                                    </option>
-                                </select>
-                                <p class="text-xs text-gray-500 mt-2">
-                                    Only English and German are supported.
-                                </p>
-                            </div>
-                        </div>
-
-                        <div>
-                            <label class="block text-xs font-medium text-gray-500 mb-2"
-                                >Transcription Mode</label
-                            >
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <button
-                                    type="button"
-                                    class="text-left p-4 rounded-2xl border transition-all"
-                                    :class="
-                                        localCrisperMode === 'verbatim'
-                                            ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                            : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'
-                                    "
-                                    @click="localCrisperMode = 'verbatim'"
-                                >
-                                    <div class="text-sm font-semibold">Verbatim</div>
-                                    <p class="text-xs text-gray-400 mt-1">
-                                        Exactly what was said, including fillers, repetitions and
-                                        stutters. Best for cutting &mdash; you can see and remove
-                                        every &ldquo;um&rdquo;.
-                                    </p>
-                                </button>
-                                <button
-                                    type="button"
-                                    class="text-left p-4 rounded-2xl border transition-all"
-                                    :class="
-                                        localCrisperMode === 'intended'
-                                            ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                            : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'
-                                    "
-                                    @click="localCrisperMode = 'intended'"
-                                >
-                                    <div class="text-sm font-semibold">Intended</div>
-                                    <p class="text-xs text-gray-400 mt-1">
-                                        The clean version the speaker meant, with numbers and dates
-                                        formatted for reading. Best for subtitles.
-                                    </p>
-                                </button>
-                            </div>
-                            <p class="text-xs text-gray-500 mt-2">
-                                Filler removal is toggled per run with
-                                <strong>Remove Filler Words</strong> on the analysis panel. In
-                                verbatim mode it cuts the filler out of the exported video too.
-                            </p>
-                        </div>
-
-                        <div class="flex flex-col sm:flex-row gap-3">
-                            <div
-                                class="flex items-center gap-3 p-4 flex-1 bg-black/20 rounded-2xl border border-white/10 cursor-pointer hover:bg-black/30 transition-colors"
-                                @click="
-                                    localCrisperRemoveVocalEvents = !localCrisperRemoveVocalEvents
+                            <OptionCardGroup
+                                v-model="localLocalEngine"
+                                class="grid-cols-1"
+                                :class="
+                                    engineOptions.length > 2
+                                        ? '@2xl:grid-cols-3'
+                                        : '@xl:grid-cols-2'
                                 "
-                            >
-                                <div
-                                    class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0"
-                                    :class="
-                                        localCrisperRemoveVocalEvents
-                                            ? 'bg-blue-600'
-                                            : 'bg-gray-700'
-                                    "
-                                >
-                                    <span
-                                        class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                        :class="
-                                            localCrisperRemoveVocalEvents
-                                                ? 'translate-x-6'
-                                                : 'translate-x-1'
-                                        "
-                                    />
-                                </div>
-                                <div>
-                                    <span class="text-sm font-medium text-gray-300"
-                                        >Remove Vocal Events</span
-                                    >
-                                    <p class="text-xs text-gray-500">
-                                        Cuts [laughter], [breath], [cough], [sigh]&hellip;
-                                    </p>
-                                </div>
-                            </div>
-                            <div
-                                class="flex items-center gap-3 p-4 flex-1 bg-black/20 rounded-2xl border border-white/10 cursor-pointer hover:bg-black/30 transition-colors"
-                                @click="localCrisperDiarize = !localCrisperDiarize"
-                            >
-                                <div
-                                    class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0"
-                                    :class="localCrisperDiarize ? 'bg-blue-600' : 'bg-gray-700'"
-                                >
-                                    <span
-                                        class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                        :class="
-                                            localCrisperDiarize ? 'translate-x-6' : 'translate-x-1'
-                                        "
-                                    />
-                                </div>
-                                <div>
-                                    <span class="text-sm font-medium text-gray-300"
-                                        >Identify Speakers</span
-                                    >
-                                    <p class="text-xs text-gray-500">
-                                        Adds Sortformer diarization; slower.
-                                    </p>
-                                </div>
-                            </div>
+                                aria-labelledby="settings-engine-label"
+                                :options="engineOptions"
+                                data-testid="default-engine"
+                            />
+                            <p class="hint mt-2">
+                                Used by every pipeline except LLM Only, including both hybrids,
+                                which layer the AI pass on top of whichever engine you pick.
+                            </p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- AI provider -->
+                <section
+                    id="settings-ai-provider"
+                    data-section="ai-provider"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-ai-provider-title"
+                >
+                    <header class="mb-3">
+                        <h2
+                            id="settings-ai-provider-title"
+                            class="text-[15px] font-semibold text-fg"
+                        >
+                            AI provider
+                        </h2>
+                        <p class="hint mt-0.5">
+                            The remote model for LLM transcription, hybrid cleanup, translation and
+                            clip suggestions.
+                        </p>
+                    </header>
+                    <p
+                        v-if="!pipelineUsesLlm"
+                        class="mb-3 flex items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-[12px] text-fg-muted"
+                        data-testid="ai-provider-unused"
+                    >
+                        <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
+                        Only used by LLM and hybrid pipelines. Your default pipeline is Local Only.
+                    </p>
+                    <div class="panel divide-y divide-line">
+                        <div class="p-4">
+                            <label for="settings-base-url" class="field-label">Base URL</label>
+                            <input
+                                id="settings-base-url"
+                                v-model="localBaseUrl"
+                                type="text"
+                                spellcheck="false"
+                                class="input font-mono text-[12px]"
+                                placeholder="https://generativelanguage.googleapis.com"
+                                aria-describedby="settings-base-url-hint"
+                            />
+                            <p id="settings-base-url-hint" class="hint mt-1.5">
+                                The API endpoint. Trailing slashes are removed and https:// is added
+                                when missing.
+                            </p>
                         </div>
 
-                        <details class="rounded-2xl bg-black/20 border border-white/10">
-                            <summary
-                                class="p-4 text-xs font-medium text-gray-400 uppercase tracking-wider cursor-pointer select-none"
-                            >
-                                Advanced runtime options
-                            </summary>
-                            <div class="px-4 pb-4 space-y-4">
-                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-500 mb-2"
-                                            >Inference Backend</label
-                                        >
-                                        <select
-                                            v-model="localCrisperBackend"
-                                            class="w-full p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 text-sm"
-                                        >
-                                            <option value="auto">Auto</option>
-                                            <option value="transformers">PyTorch (portable)</option>
-                                            <option value="ct2">
-                                                CTranslate2 (Linux + NVIDIA)
-                                            </option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-500 mb-2"
-                                            >Device</label
-                                        >
-                                        <select
-                                            v-model="localCrisperDevice"
-                                            class="w-full p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 text-sm"
-                                        >
-                                            <option value="auto">Auto</option>
-                                            <option value="cpu">CPU</option>
-                                            <option value="cuda">CUDA</option>
-                                            <option value="mps">Apple GPU (MPS)</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-500 mb-2"
-                                            >Precision</label
-                                        >
-                                        <select
-                                            v-model="localCrisperComputeType"
-                                            class="w-full p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 text-sm"
-                                        >
-                                            <option value="auto">Auto</option>
-                                            <option value="float32">float32</option>
-                                            <option value="float16">float16</option>
-                                            <option value="int8_float16">
-                                                int8_float16 (fastest)
-                                            </option>
-                                        </select>
-                                    </div>
-                                </div>
-                                <p class="text-xs text-gray-500">
-                                    CTranslate2 is roughly 4&ndash;5&times; faster but its wheels
-                                    are Linux x86_64 only; everywhere else the portable PyTorch
-                                    backend is used. Auto precision picks float32 on CPU and float16
-                                    on a GPU. On Apple Silicon, Auto uses the GPU (MPS, float16):
-                                    the app's own decoding loop runs about twice as fast there as on
-                                    the CPU, with the same transcript.
-                                    <strong>int8_float16</strong> is another ~1.4&times; faster on
-                                    GPU and CPU; on 10 minutes of German the word error rate was
-                                    unchanged, and up to 14 of 2,076 words differed, mostly fillers
-                                    and punctuation.
-                                </p>
-                                <div>
-                                    <label class="block text-xs font-medium text-gray-500 mb-2"
-                                        >Python Interpreter</label
+                        <div class="p-4">
+                            <div class="mb-1.5 flex items-center justify-between gap-3">
+                                <label for="settings-api-key" class="field-label !mb-0"
+                                    >API key</label
+                                >
+                                <span
+                                    v-if="apiKeyStored"
+                                    class="chip-success"
+                                    data-testid="api-key-stored"
+                                >
+                                    <KeyRound aria-hidden="true" />
+                                    Saved in keychain
+                                </span>
+                                <span v-else class="chip-warning">No key saved</span>
+                            </div>
+                            <div class="flex gap-2">
+                                <div class="relative min-w-0 flex-1">
+                                    <input
+                                        id="settings-api-key"
+                                        v-model="localApiKey"
+                                        :type="showApiKey ? 'text' : 'password'"
+                                        autocomplete="off"
+                                        spellcheck="false"
+                                        data-testid="api-key-input"
+                                        class="input pr-9"
+                                        aria-describedby="settings-api-key-hint"
+                                        :placeholder="
+                                            apiKeyStored
+                                                ? 'Saved in the system keychain — enter a new key to replace it'
+                                                : 'Enter your API key'
+                                        "
+                                    />
+                                    <button
+                                        type="button"
+                                        class="btn-ghost btn-sm btn-icon absolute top-1/2 right-1 -translate-y-1/2"
+                                        data-testid="api-key-visibility"
+                                        :aria-label="showApiKey ? 'Hide API key' : 'Show API key'"
+                                        :aria-pressed="showApiKey ? 'true' : 'false'"
+                                        @click="showApiKey = !showApiKey"
                                     >
-                                    <div class="flex gap-3">
+                                        <EyeOff v-if="showApiKey" aria-hidden="true" />
+                                        <Eye v-else aria-hidden="true" />
+                                    </button>
+                                </div>
+                                <button
+                                    v-if="apiKeyStored"
+                                    type="button"
+                                    data-testid="api-key-remove"
+                                    class="btn-danger"
+                                    @click="removeApiKey"
+                                >
+                                    Remove
+                                </button>
+                            </div>
+                            <p id="settings-api-key-hint" class="hint mt-1.5">
+                                Stored in your system keychain (macOS Keychain, Windows Credential
+                                Manager or the Secret Service on Linux), never in the app's
+                                settings. A new key is saved when you press Save.
+                            </p>
+                        </div>
+
+                        <div class="p-4">
+                            <label for="settings-model" class="field-label">Model</label>
+                            <div class="flex gap-2">
+                                <div class="relative min-w-0 flex-1">
+                                    <select
+                                        v-if="!showManualInput"
+                                        id="settings-model"
+                                        v-model="localModel"
+                                        class="input"
+                                        :aria-invalid="
+                                            modelNotInList && !usingFallbackModels
+                                                ? 'true'
+                                                : undefined
+                                        "
+                                        aria-describedby="settings-model-hint"
+                                    >
+                                        <option
+                                            v-if="
+                                                availableModels.length === 0 ||
+                                                !availableModels.includes(localModel)
+                                            "
+                                            :value="localModel"
+                                        >
+                                            {{ localModel }}
+                                        </option>
+                                        <option
+                                            v-for="model in availableModels"
+                                            :key="model"
+                                            :value="model"
+                                        >
+                                            {{ model }}
+                                        </option>
+                                    </select>
+                                    <input
+                                        v-else
+                                        id="settings-model"
+                                        v-model="localModel"
+                                        type="text"
+                                        spellcheck="false"
+                                        class="input font-mono text-[12px]"
+                                        placeholder="Enter model name manually"
+                                        aria-describedby="settings-model-hint"
+                                    />
+                                </div>
+                                <button
+                                    type="button"
+                                    class="btn-secondary"
+                                    :disabled="isFetchingModels || !canUseApiKey"
+                                    :title="!canUseApiKey ? 'Enter an API key first' : undefined"
+                                    @click="fetchModels()"
+                                >
+                                    <RefreshCw
+                                        :class="isFetchingModels ? 'animate-spin' : ''"
+                                        aria-hidden="true"
+                                    />
+                                    {{ isFetchingModels ? 'Fetching…' : 'Refresh models' }}
+                                </button>
+                            </div>
+                            <div class="mt-1.5 flex items-start justify-between gap-3">
+                                <p
+                                    v-if="fetchError"
+                                    id="settings-model-hint"
+                                    class="text-[12px] leading-normal text-danger"
+                                    role="alert"
+                                >
+                                    {{ fetchError }}
+                                </p>
+                                <p v-else id="settings-model-hint" class="hint">
+                                    {{ endpointInfo }}
+                                    <template v-if="!canUseApiKey">
+                                        · Enter an API key to load the model list.</template
+                                    >
+                                </p>
+                                <button
+                                    type="button"
+                                    class="btn-ghost btn-sm -mr-1 shrink-0"
+                                    data-testid="model-manual-toggle"
+                                    @click="showManualInput = !showManualInput"
+                                >
+                                    <List v-if="showManualInput" aria-hidden="true" />
+                                    <PenLine v-else aria-hidden="true" />
+                                    {{ showManualInput ? 'Choose from list' : 'Enter manually' }}
+                                </button>
+                            </div>
+                            <p
+                                v-if="usingFallbackModels && !showManualInput"
+                                class="mt-2 flex items-start gap-2 text-[12px] leading-normal text-warning"
+                                data-testid="model-fallback-warning"
+                            >
+                                <TriangleAlert
+                                    class="mt-0.5 h-3.5 w-3.5 shrink-0"
+                                    aria-hidden="true"
+                                />
+                                Couldn't load this endpoint's models, so the list is a built-in
+                                fallback and may be out of date. Enter the model manually if yours
+                                is missing.
+                            </p>
+                            <p
+                                v-else-if="modelNotInList && !showManualInput"
+                                class="mt-2 flex items-start gap-2 text-[12px] leading-normal text-warning"
+                                data-testid="model-not-in-list"
+                            >
+                                <TriangleAlert
+                                    class="mt-0.5 h-3.5 w-3.5 shrink-0"
+                                    aria-hidden="true"
+                                />
+                                “{{ localModel }}” isn't in this endpoint's model list. It may be
+                                retired or misspelled.
+                            </p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Local engines -->
+                <section
+                    id="settings-engines"
+                    data-section="engines"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-engines-title"
+                >
+                    <header class="mb-3">
+                        <h2 id="settings-engines-title" class="text-[15px] font-semibold text-fg">
+                            Local engines
+                        </h2>
+                        <p class="hint mt-0.5">
+                            On-device speech recognition. The default engine is expanded; the others
+                            keep their settings for projects that pick them.
+                        </p>
+                    </header>
+                    <p
+                        v-if="!pipelineUsesEngine"
+                        class="mb-3 flex items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-[12px] text-fg-muted"
+                        data-testid="engines-unused"
+                    >
+                        <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
+                        Only used by Local and hybrid pipelines. Your default pipeline is LLM Only.
+                    </p>
+                    <div class="space-y-3">
+                        <!-- Parakeet -->
+                        <DisclosureCard
+                            title="Parakeet"
+                            description="Parakeet TDT transcription with Sortformer speaker labels."
+                            v-model:open="openEngines['parakeet']"
+                            data-testid="engine-card-parakeet"
+                        >
+                            <template #actions>
+                                <span v-if="localLocalEngine === 'parakeet'" class="chip-accent"
+                                    >Default</span
+                                >
+                                <span :class="parakeetChip.tone">{{ parakeetChip.label }}</span>
+                            </template>
+                            <div class="space-y-4">
+                                <div>
+                                    <label for="settings-parakeet-path" class="field-label"
+                                        >Parakeet TDT model directory</label
+                                    >
+                                    <div class="flex gap-2">
                                         <input
-                                            v-model="localCrisperPythonPath"
+                                            id="settings-parakeet-path"
+                                            v-model="localParakeetModelPath"
                                             type="text"
-                                            class="flex-1 p-3 rounded-xl bg-black/30 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600 text-sm"
-                                            placeholder="Leave blank to use the app-managed environment"
+                                            spellcheck="false"
+                                            class="input font-mono text-[12px]"
+                                            placeholder="Leave blank to auto-download into app data"
+                                            aria-describedby="settings-parakeet-path-hint"
                                         />
                                         <button
-                                            @click="selectCrisperPython"
-                                            class="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-all border border-white/10"
+                                            type="button"
+                                            class="btn-secondary"
+                                            @click="selectParakeetModelDirectory"
                                         >
+                                            <FolderOpen aria-hidden="true" />
                                             Browse
                                         </button>
                                     </div>
-                                    <p class="text-xs text-gray-500 mt-2">
-                                        Point this at your own environment if you already have
-                                        <code>crisperwhisper</code> installed.
+                                    <p id="settings-parakeet-path-hint" class="hint mt-1.5">
+                                        Leave blank to let the app download an int8 TDT model into
+                                        app data. Custom directories should contain encoder, decoder
+                                        and <code>vocab.txt</code>.
+                                    </p>
+                                </div>
+                                <div>
+                                    <label for="settings-sortformer-path" class="field-label"
+                                        >Sortformer model file</label
+                                    >
+                                    <div class="flex gap-2">
+                                        <input
+                                            id="settings-sortformer-path"
+                                            v-model="localSortformerModelPath"
+                                            type="text"
+                                            spellcheck="false"
+                                            class="input font-mono text-[12px]"
+                                            placeholder="Leave blank to auto-download into app data"
+                                            aria-describedby="settings-sortformer-path-hint"
+                                        />
+                                        <button
+                                            type="button"
+                                            class="btn-secondary"
+                                            @click="selectSortformerModelFile"
+                                        >
+                                            <FolderOpen aria-hidden="true" />
+                                            Browse
+                                        </button>
+                                    </div>
+                                    <p id="settings-sortformer-path-hint" class="hint mt-1.5">
+                                        Leave blank to download Sortformer v2 automatically, or
+                                        provide your own <code>.onnx</code> file.
                                     </p>
                                 </div>
                             </div>
-                        </details>
-                    </div>
-                </div>
+                        </DisclosureCard>
 
-                <div
-                    v-if="appleSpeechSupported"
-                    class="mb-6 group border-t border-white/10 pt-6 mt-6"
-                >
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
-                    >
-                        Apple Speech Settings
-                    </label>
-
-                    <div class="mb-4 p-4 rounded-2xl bg-black/20 border border-white/10">
-                        <div class="flex items-start justify-between gap-3 mb-2">
-                            <div>
-                                <p
-                                    class="text-xs font-medium text-gray-400 uppercase tracking-wider"
-                                >
-                                    Runtime
-                                </p>
-                                <p
-                                    v-if="isInstallingAppleSpeech"
-                                    class="text-sm text-gray-300 mt-1"
-                                >
-                                    {{ appleSpeechProgress || 'Downloading...' }}
-                                </p>
-                                <p
-                                    v-else-if="isCheckingAppleSpeech"
-                                    class="text-sm text-gray-300 mt-1"
-                                >
-                                    Checking...
-                                </p>
-                                <p
-                                    v-else-if="appleSpeechStatus?.available"
-                                    class="text-sm mt-1"
-                                    :class="
-                                        appleSpeechLocaleInstalled
-                                            ? 'text-green-400'
-                                            : 'text-amber-300'
-                                    "
-                                >
-                                    <template v-if="appleSpeechLocaleInstalled">
-                                        Ready &mdash; {{ effectiveAppleSpeechLocale }} is installed.
-                                    </template>
-                                    <template v-else>
-                                        The {{ effectiveAppleSpeechLocale }} model is not downloaded
-                                        yet; it downloads on first use, or now.
-                                    </template>
-                                </p>
-                                <p v-else class="text-sm text-amber-300 mt-1">
-                                    {{ appleSpeechStatus?.message ?? 'Not available.' }}
-                                </p>
-                            </div>
-                            <div class="flex gap-2 shrink-0">
-                                <button
-                                    type="button"
-                                    :disabled="isCheckingAppleSpeech || isInstallingAppleSpeech"
-                                    @click="refreshAppleSpeechStatus"
-                                    class="px-3 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all border border-white/10"
-                                >
-                                    Re-check
-                                </button>
-                                <button
-                                    v-if="
-                                        appleSpeechStatus?.available && !appleSpeechLocaleInstalled
-                                    "
-                                    type="button"
-                                    :disabled="isInstallingAppleSpeech"
-                                    @click="downloadAppleSpeechLocale"
-                                    class="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium rounded-xl transition-all"
-                                >
-                                    {{ isInstallingAppleSpeech ? 'Downloading...' : 'Download' }}
-                                </button>
-                            </div>
-                        </div>
-                        <p class="text-xs text-gray-500">
-                            Runs macOS's own on-device speech model (macOS 26 or newer). Nothing
-                            leaves this Mac; macOS downloads one model per language and manages it.
-                            It is not verbatim &mdash; fillers like &ldquo;um&rdquo; are dropped
-                            &mdash; so use CrisperWhisper to cut those out.
-                        </p>
-                    </div>
-
-                    <div class="space-y-4">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-500 mb-2"
-                                >Language</label
-                            >
-                            <select
-                                v-model="localAppleSpeechLocale"
-                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300"
-                            >
-                                <option value="">
-                                    System language ({{ appleSpeechLocale('') }})
-                                </option>
-                                <option
-                                    v-for="locale in appleSpeechLocaleOptions"
-                                    :key="locale.value"
-                                    :value="locale.value"
-                                >
-                                    {{ locale.label }}
-                                </option>
-                            </select>
-                            <p class="text-xs text-gray-500 mt-2">
-                                &#10003; marks languages already downloaded.
-                            </p>
-                        </div>
-
-                        <div
-                            class="flex items-center gap-3 p-4 bg-black/20 rounded-2xl border border-white/10 cursor-pointer hover:bg-black/30 transition-colors"
-                            @click="localAppleSpeechDiarize = !localAppleSpeechDiarize"
+                        <!-- CrisperWhisper -->
+                        <DisclosureCard
+                            title="CrisperWhisper"
+                            description="Verbatim transcription with precise word timings. English and German."
+                            v-model:open="openEngines['crisper']"
+                            data-testid="engine-card-crisper"
                         >
-                            <div
-                                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0"
-                                :class="localAppleSpeechDiarize ? 'bg-blue-600' : 'bg-gray-700'"
-                            >
-                                <span
-                                    class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                    :class="
-                                        localAppleSpeechDiarize ? 'translate-x-6' : 'translate-x-1'
-                                    "
-                                />
-                            </div>
-                            <div>
-                                <span class="text-sm font-medium text-gray-300"
-                                    >Identify Speakers</span
+                            <template #actions>
+                                <span v-if="localLocalEngine === 'crisper'" class="chip-accent"
+                                    >Default</span
                                 >
-                                <p class="text-xs text-gray-500">
-                                    Adds Sortformer diarization; Apple Speech does not tell speakers
-                                    apart.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Base URL -->
-                <div class="mb-6 group">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        LLM Base URL
-                    </label>
-                    <input
-                        v-model="localBaseUrl"
-                        type="text"
-                        class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                        placeholder="https://generativelanguage.googleapis.com"
-                    />
-                    <p class="text-xs text-gray-500 mt-2">
-                        The base URL for the LLM API endpoint (trailing slashes will be removed)
-                    </p>
-                </div>
-
-                <!-- API Key -->
-                <div class="mb-6 group">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        LLM API Key
-                    </label>
-                    <div class="flex gap-3">
-                        <input
-                            v-model="localApiKey"
-                            type="password"
-                            autocomplete="off"
-                            data-testid="api-key-input"
-                            class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                            :placeholder="
-                                apiKeyStored
-                                    ? 'Saved in the system keychain — enter a new key to replace it'
-                                    : 'Enter your API key'
-                            "
-                        />
-                        <button
-                            v-if="apiKeyStored"
-                            type="button"
-                            data-testid="api-key-remove"
-                            class="shrink-0 px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-2xl transition-all border border-white/10"
-                            @click="removeApiKey"
-                        >
-                            Remove
-                        </button>
-                    </div>
-                    <p class="text-xs text-gray-500 mt-2">
-                        Stored in your system keychain (macOS Keychain, Windows Credential Manager
-                        or the Secret Service on Linux), never in the app's settings.
-                    </p>
-                </div>
-
-                <!-- Model Selection -->
-                <div class="mb-6 group">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        LLM Model
-                    </label>
-                    <div class="flex gap-3 mb-2">
-                        <div class="flex-1 relative">
-                            <select
-                                v-if="!showManualInput"
-                                v-model="localModel"
-                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300"
-                                :class="{ 'pr-12': modelNotInList }"
-                            >
-                                <option
-                                    v-if="
-                                        availableModels.length === 0 ||
-                                        !availableModels.includes(localModel)
-                                    "
-                                    :value="localModel"
-                                >
-                                    {{ localModel }}
-                                </option>
-                                <option
-                                    v-for="model in availableModels"
-                                    :key="model"
-                                    :value="model"
-                                >
-                                    {{ model }}
-                                </option>
-                            </select>
-                            <input
-                                v-else
-                                v-model="localModel"
-                                type="text"
-                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                                placeholder="Enter model name manually"
-                            />
-                            <!-- Warning indicator when model is not in the available list -->
-                            <div
-                                v-if="modelNotInList && !showManualInput"
-                                class="absolute right-4 top-1/2 -translate-y-1/2 group/tooltip"
-                            >
-                                <svg
-                                    class="w-5 h-5 text-amber-400"
-                                    fill="currentColor"
-                                    viewBox="0 0 20 20"
-                                >
-                                    <path
-                                        fill-rule="evenodd"
-                                        d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                                        clip-rule="evenodd"
+                                <span :class="crisperChip.tone" data-testid="crisper-status-chip">
+                                    <Loader2
+                                        v-if="crisperChip.busy"
+                                        class="animate-spin"
+                                        aria-hidden="true"
                                     />
-                                </svg>
+                                    {{ crisperChip.label }}
+                                </span>
+                            </template>
+                            <div class="space-y-4">
                                 <div
-                                    class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-gray-800 text-xs text-amber-300 rounded-lg whitespace-nowrap opacity-0 group-hover/tooltip:opacity-100 transition-opacity pointer-events-none border border-amber-500/30"
+                                    class="flex gap-2.5 rounded-md border border-warning/25 bg-warning/[0.06] px-3 py-2.5"
+                                    role="note"
                                 >
-                                    Model not found in available models list
+                                    <TriangleAlert
+                                        class="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning"
+                                        aria-hidden="true"
+                                    />
+                                    <div class="space-y-1">
+                                        <p class="text-[12px] font-semibold text-warning">
+                                            English and German only
+                                        </p>
+                                        <p class="hint">
+                                            The CrisperWhisper 2.0 model card is published for
+                                            English (<code>en</code>) and German (<code>de</code>).
+                                            For other languages use Parakeet or the LLM Only
+                                            pipeline.
+                                        </p>
+                                        <p class="hint">
+                                            {{ crisperWeightsNotice }} The app installs the model on
+                                            first use.
+                                        </p>
+                                    </div>
                                 </div>
+
+                                <!-- Environment status -->
+                                <div class="well px-3 py-2.5" data-testid="crisper-runtime">
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div class="min-w-0" aria-live="polite">
+                                            <p class="eyebrow">Runtime</p>
+                                            <p
+                                                v-if="isInstallingCrisper || isCheckingCrisper"
+                                                class="mt-1 truncate text-[13px] text-fg-muted"
+                                            >
+                                                {{
+                                                    crisperProgress ||
+                                                    (isInstallingCrisper
+                                                        ? 'Installing...'
+                                                        : 'Checking...')
+                                                }}
+                                            </p>
+                                            <p
+                                                v-else-if="crisperStatus?.ready"
+                                                class="mt-1 text-[13px] text-success"
+                                            >
+                                                Ready &mdash; CrisperWhisper
+                                                {{ crisperStatus.crisperwhisperVersion }}, Python
+                                                {{ crisperStatus.python }},
+                                                {{ crisperStatus.backends.join(' + ') }}
+                                                <span v-if="crisperStatus.cuda">(CUDA)</span>
+                                                <span v-else-if="crisperStatus.mps"
+                                                    >(Apple GPU available)</span
+                                                >
+                                                <span v-else>(CPU)</span>
+                                            </p>
+                                            <p v-else class="mt-1 text-[13px] text-warning">
+                                                {{ crisperStatus?.message ?? 'Not set up yet.' }}
+                                            </p>
+                                        </div>
+                                        <div class="flex shrink-0 gap-2">
+                                            <button
+                                                type="button"
+                                                class="btn-ghost btn-sm"
+                                                :disabled="isCheckingCrisper || isInstallingCrisper"
+                                                @click="refreshCrisperStatus"
+                                            >
+                                                <RefreshCw aria-hidden="true" />
+                                                Re-check
+                                            </button>
+                                            <button
+                                                v-if="!crisperStatus?.ready"
+                                                type="button"
+                                                class="btn-primary btn-sm"
+                                                :disabled="isInstallingCrisper"
+                                                @click="setUpCrisperEnvironment"
+                                            >
+                                                {{
+                                                    isInstallingCrisper ? 'Installing...' : 'Set up'
+                                                }}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div
+                                        v-if="isInstallingCrisper"
+                                        class="mt-2.5 h-1 overflow-hidden rounded-full bg-accent/25"
+                                        role="progressbar"
+                                        aria-label="Installing CrisperWhisper"
+                                        data-testid="crisper-progress"
+                                    >
+                                        <div class="shimmer h-full w-full bg-accent/60" />
+                                    </div>
+                                    <details class="group mt-2">
+                                        <summary
+                                            class="inline-flex cursor-pointer list-none items-center gap-1 text-[12px] text-fg-subtle hover:text-fg [&::-webkit-details-marker]:hidden"
+                                        >
+                                            <ChevronRight
+                                                class="h-3 w-3 transition-transform duration-150 group-open:rotate-90"
+                                                aria-hidden="true"
+                                            />
+                                            Details
+                                        </summary>
+                                        <p class="hint mt-1.5">
+                                            CrisperWhisper ships only PyTorch and CTranslate2
+                                            weights, so it runs through a private Python environment
+                                            the app manages at
+                                            <code class="break-all text-fg-muted">{{
+                                                crisperStatus?.environmentDir ||
+                                                'the app data directory'
+                                            }}</code
+                                            >. Setup needs Python
+                                            {{ crisperStatus?.minimumPython || '3.10' }} or newer on
+                                            your system, and uses the Python path and backend shown
+                                            here even before you save.
+                                        </p>
+                                    </details>
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-4 @xl:grid-cols-2">
+                                    <div>
+                                        <label for="settings-crisper-model" class="field-label"
+                                            >Model size</label
+                                        >
+                                        <select
+                                            id="settings-crisper-model"
+                                            v-model="localCrisperModel"
+                                            class="input"
+                                            aria-describedby="settings-crisper-model-hint"
+                                        >
+                                            <option
+                                                v-for="size in CRISPER_MODELS"
+                                                :key="size"
+                                                :value="size"
+                                            >
+                                                {{ size }}
+                                            </option>
+                                        </select>
+                                        <p id="settings-crisper-model-hint" class="hint mt-1.5">
+                                            <code>large</code> is the most accurate,
+                                            <code>turbo</code> the fastest, <code>medium</code> the
+                                            best tradeoff.
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <label for="settings-crisper-language" class="field-label"
+                                            >Language</label
+                                        >
+                                        <select
+                                            id="settings-crisper-language"
+                                            v-model="localCrisperLanguage"
+                                            class="input"
+                                        >
+                                            <option
+                                                v-for="language in CRISPER_LANGUAGES"
+                                                :key="language.value"
+                                                :value="language.value"
+                                            >
+                                                {{ language.label }}
+                                            </option>
+                                        </select>
+                                        <p class="hint mt-1.5">
+                                            Only English and German are supported.
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <p id="settings-crisper-mode-label" class="field-label">
+                                        Transcription mode
+                                    </p>
+                                    <OptionCardGroup
+                                        v-model="localCrisperMode"
+                                        class="grid-cols-1 @xl:grid-cols-2"
+                                        aria-labelledby="settings-crisper-mode-label"
+                                        :options="CRISPER_MODE_OPTIONS"
+                                    />
+                                    <p class="hint mt-1.5">
+                                        Filler removal is toggled per project with
+                                        <strong class="font-medium text-fg-muted"
+                                            >Remove filler words</strong
+                                        >
+                                        on the Source page. In verbatim mode it cuts the filler out
+                                        of the exported video too.
+                                    </p>
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-2 @xl:grid-cols-2">
+                                    <SettingsSwitchRow
+                                        v-model="localCrisperRemoveVocalEvents"
+                                        test-id="crisper-remove-vocal-events"
+                                        title="Remove vocal events"
+                                        description="Cuts [laughter], [breath], [cough], [sigh]…"
+                                    />
+                                    <SettingsSwitchRow
+                                        v-model="localCrisperDiarize"
+                                        test-id="crisper-diarize"
+                                        title="Identify speakers"
+                                        description="Adds Sortformer diarization; slower."
+                                    />
+                                </div>
+
+                                <SectionCard
+                                    title="Advanced runtime options"
+                                    description="Backend, device, precision and a custom Python."
+                                    collapsible
+                                    :default-open="false"
+                                    class="!bg-surface-2"
+                                >
+                                    <div class="space-y-4">
+                                        <div class="grid grid-cols-1 gap-3 @xl:grid-cols-3">
+                                            <div>
+                                                <label
+                                                    for="settings-crisper-backend"
+                                                    class="field-label"
+                                                    >Inference backend</label
+                                                >
+                                                <select
+                                                    id="settings-crisper-backend"
+                                                    v-model="localCrisperBackend"
+                                                    class="input"
+                                                >
+                                                    <option value="auto">Auto</option>
+                                                    <option value="transformers">
+                                                        PyTorch (portable)
+                                                    </option>
+                                                    <option value="ct2">
+                                                        CTranslate2 (Linux + NVIDIA)
+                                                    </option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label
+                                                    for="settings-crisper-device"
+                                                    class="field-label"
+                                                    >Device</label
+                                                >
+                                                <select
+                                                    id="settings-crisper-device"
+                                                    v-model="localCrisperDevice"
+                                                    class="input"
+                                                >
+                                                    <option value="auto">Auto</option>
+                                                    <option value="cpu">CPU</option>
+                                                    <option value="cuda">CUDA</option>
+                                                    <option value="mps">Apple GPU (MPS)</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label
+                                                    for="settings-crisper-precision"
+                                                    class="field-label"
+                                                    >Precision</label
+                                                >
+                                                <select
+                                                    id="settings-crisper-precision"
+                                                    v-model="localCrisperComputeType"
+                                                    class="input"
+                                                >
+                                                    <option value="auto">Auto</option>
+                                                    <option value="float32">float32</option>
+                                                    <option value="float16">float16</option>
+                                                    <option value="int8_float16">
+                                                        int8_float16 (fastest)
+                                                    </option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <details class="group">
+                                            <summary
+                                                class="inline-flex cursor-pointer list-none items-center gap-1 text-[12px] text-fg-subtle hover:text-fg [&::-webkit-details-marker]:hidden"
+                                            >
+                                                <ChevronRight
+                                                    class="h-3 w-3 transition-transform duration-150 group-open:rotate-90"
+                                                    aria-hidden="true"
+                                                />
+                                                Performance details
+                                            </summary>
+                                            <p class="hint mt-1.5">
+                                                CTranslate2 is roughly 4&ndash;5&times; faster but
+                                                its wheels are Linux x86_64 only; everywhere else
+                                                the portable PyTorch backend is used. Auto precision
+                                                picks float32 on CPU and float16 on a GPU. On Apple
+                                                Silicon, Auto uses the GPU (MPS, float16): the app's
+                                                own decoding loop runs about twice as fast there as
+                                                on the CPU, with the same transcript.
+                                                <strong class="font-medium text-fg-muted"
+                                                    >int8_float16</strong
+                                                >
+                                                is another ~1.4&times; faster on GPU and CPU; on 10
+                                                minutes of German the word error rate was unchanged,
+                                                and up to 14 of 2,076 words differed, mostly fillers
+                                                and punctuation.
+                                            </p>
+                                        </details>
+                                        <div>
+                                            <label for="settings-crisper-python" class="field-label"
+                                                >Python interpreter</label
+                                            >
+                                            <div class="flex gap-2">
+                                                <input
+                                                    id="settings-crisper-python"
+                                                    v-model="localCrisperPythonPath"
+                                                    type="text"
+                                                    spellcheck="false"
+                                                    class="input font-mono text-[12px]"
+                                                    placeholder="Leave blank to use the app-managed environment"
+                                                    aria-describedby="settings-crisper-python-hint"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    class="btn-secondary"
+                                                    @click="selectCrisperPython"
+                                                >
+                                                    <FolderOpen aria-hidden="true" />
+                                                    Browse
+                                                </button>
+                                            </div>
+                                            <p
+                                                id="settings-crisper-python-hint"
+                                                class="hint mt-1.5"
+                                            >
+                                                Point this at your own environment if you already
+                                                have <code>crisperwhisper</code> installed.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </SectionCard>
+                            </div>
+                        </DisclosureCard>
+
+                        <!-- Apple Speech -->
+                        <DisclosureCard
+                            v-if="appleSpeechSupported"
+                            title="Apple Speech"
+                            description="macOS's on-device speech model (macOS 26 or newer)."
+                            v-model:open="openEngines['apple-speech']"
+                            data-testid="engine-card-apple-speech"
+                        >
+                            <template #actions>
+                                <span v-if="localLocalEngine === 'apple-speech'" class="chip-accent"
+                                    >Default</span
+                                >
+                                <span :class="appleSpeechChip.tone">
+                                    <Loader2
+                                        v-if="appleSpeechChip.busy"
+                                        class="animate-spin"
+                                        aria-hidden="true"
+                                    />
+                                    {{ appleSpeechChip.label }}
+                                </span>
+                            </template>
+                            <div class="space-y-4">
+                                <div class="well px-3 py-2.5">
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div class="min-w-0" aria-live="polite">
+                                            <p class="eyebrow">Runtime</p>
+                                            <p
+                                                v-if="isInstallingAppleSpeech"
+                                                class="mt-1 truncate text-[13px] text-fg-muted"
+                                            >
+                                                {{ appleSpeechProgress || 'Downloading...' }}
+                                            </p>
+                                            <p
+                                                v-else-if="isCheckingAppleSpeech"
+                                                class="mt-1 text-[13px] text-fg-muted"
+                                            >
+                                                Checking...
+                                            </p>
+                                            <p
+                                                v-else-if="appleSpeechStatus?.available"
+                                                class="mt-1 text-[13px]"
+                                                :class="
+                                                    appleSpeechLocaleInstalled
+                                                        ? 'text-success'
+                                                        : 'text-warning'
+                                                "
+                                            >
+                                                <template v-if="appleSpeechLocaleInstalled">
+                                                    Ready &mdash;
+                                                    {{ effectiveAppleSpeechLocale }} is installed.
+                                                </template>
+                                                <template v-else>
+                                                    The {{ effectiveAppleSpeechLocale }} model is
+                                                    not downloaded yet; it downloads on first use,
+                                                    or now.
+                                                </template>
+                                            </p>
+                                            <p v-else class="mt-1 text-[13px] text-warning">
+                                                {{ appleSpeechStatus?.message ?? 'Not available.' }}
+                                            </p>
+                                        </div>
+                                        <div class="flex shrink-0 gap-2">
+                                            <button
+                                                type="button"
+                                                class="btn-ghost btn-sm"
+                                                :disabled="
+                                                    isCheckingAppleSpeech || isInstallingAppleSpeech
+                                                "
+                                                @click="refreshAppleSpeechStatus"
+                                            >
+                                                <RefreshCw aria-hidden="true" />
+                                                Re-check
+                                            </button>
+                                            <button
+                                                v-if="
+                                                    appleSpeechStatus?.available &&
+                                                    !appleSpeechLocaleInstalled
+                                                "
+                                                type="button"
+                                                class="btn-primary btn-sm"
+                                                :disabled="isInstallingAppleSpeech"
+                                                @click="downloadAppleSpeechLocale"
+                                            >
+                                                {{
+                                                    isInstallingAppleSpeech
+                                                        ? 'Downloading...'
+                                                        : 'Download'
+                                                }}
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div
+                                        v-if="isInstallingAppleSpeech"
+                                        class="mt-2.5 h-1 overflow-hidden rounded-full bg-accent/25"
+                                        role="progressbar"
+                                        aria-label="Downloading the Apple Speech language"
+                                    >
+                                        <div class="shimmer h-full w-full bg-accent/60" />
+                                    </div>
+                                    <p class="hint mt-2">
+                                        Nothing leaves this Mac; macOS downloads one model per
+                                        language and manages it. It is not verbatim (fillers like
+                                        “um” are dropped), so use CrisperWhisper to cut those out.
+                                    </p>
+                                </div>
+
+                                <div>
+                                    <label for="settings-apple-locale" class="field-label"
+                                        >Language</label
+                                    >
+                                    <select
+                                        id="settings-apple-locale"
+                                        v-model="localAppleSpeechLocale"
+                                        class="input"
+                                        aria-describedby="settings-apple-locale-hint"
+                                    >
+                                        <option value="">
+                                            System language ({{ appleSpeechLocale('') }})
+                                        </option>
+                                        <option
+                                            v-for="locale in appleSpeechLocaleOptions"
+                                            :key="locale.value"
+                                            :value="locale.value"
+                                        >
+                                            {{ locale.label }}
+                                        </option>
+                                    </select>
+                                    <p id="settings-apple-locale-hint" class="hint mt-1.5">
+                                        &#10003; marks languages already downloaded.
+                                    </p>
+                                </div>
+
+                                <SettingsSwitchRow
+                                    v-model="localAppleSpeechDiarize"
+                                    test-id="apple-speech-diarize"
+                                    title="Identify speakers"
+                                    description="Adds Sortformer diarization; Apple Speech does not tell speakers apart."
+                                />
+                            </div>
+                        </DisclosureCard>
+                    </div>
+                </section>
+
+                <!-- Long audio & validation -->
+                <section
+                    id="settings-long-audio"
+                    data-section="long-audio"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-long-audio-title"
+                >
+                    <header class="mb-3">
+                        <h2
+                            id="settings-long-audio-title"
+                            class="text-[15px] font-semibold text-fg"
+                        >
+                            Long audio &amp; validation
+                        </h2>
+                        <p class="hint mt-0.5">How requests to the AI provider are shaped.</p>
+                    </header>
+                    <p
+                        v-if="!pipelineUsesLlm"
+                        class="mb-3 flex items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-[12px] text-fg-muted"
+                    >
+                        <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
+                        Only used by LLM and hybrid pipelines. Your default pipeline is Local Only.
+                    </p>
+                    <div class="panel divide-y divide-line">
+                        <div class="p-4">
+                            <label for="settings-chunk-minutes" class="field-label"
+                                >Max analysis chunk length</label
+                            >
+                            <div class="relative w-40">
+                                <input
+                                    id="settings-chunk-minutes"
+                                    v-model.number="localMaxAnalysisChunkMinutes"
+                                    type="number"
+                                    step="1"
+                                    min="0"
+                                    class="input no-spinner pr-11"
+                                    placeholder="30"
+                                    aria-describedby="settings-chunk-minutes-hint"
+                                />
+                                <span
+                                    class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                    aria-hidden="true"
+                                    >min</span
+                                >
+                            </div>
+                            <p id="settings-chunk-minutes-hint" class="hint mt-1.5">
+                                Longer audio is split into chunks before LLM transcription. Set to 0
+                                to disable chunking.
+                            </p>
+                            <details class="group mt-1.5">
+                                <summary
+                                    class="inline-flex cursor-pointer list-none items-center gap-1 text-[12px] text-fg-subtle hover:text-fg [&::-webkit-details-marker]:hidden"
+                                >
+                                    <ChevronRight
+                                        class="h-3 w-3 transition-transform duration-150 group-open:rotate-90"
+                                        aria-hidden="true"
+                                    />
+                                    Details
+                                </summary>
+                                <p class="hint mt-1.5">
+                                    Chunking keeps each request under the provider's request timeout
+                                    (avoids
+                                    <span class="text-fg-muted">504 Gateway Timeout</span> on long
+                                    videos). Splits prefer a ~1s silence near the boundary and fall
+                                    back to Parakeet word boundaries. Only applies to LLM-based
+                                    transcription.
+                                </p>
+                            </details>
+                        </div>
+                        <div class="p-4">
+                            <SettingsSwitchRow
+                                v-model="localEnforceJsonSchema"
+                                test-id="enforce-json-schema"
+                                title="Enforce structured JSON for transcript analysis"
+                                description="Sends a strict JSON schema with AI analysis requests on OpenAI-compatible APIs. Improves reliability, but some providers may respond slower or behave differently."
+                            />
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Export & clips -->
+                <section
+                    id="settings-export"
+                    data-section="export"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-export-title"
+                >
+                    <header class="mb-3">
+                        <h2 id="settings-export-title" class="text-[15px] font-semibold text-fg">
+                            Export &amp; clips
+                        </h2>
+                        <p class="hint mt-0.5">Video encoding and clip boundaries.</p>
+                    </header>
+                    <div class="panel divide-y divide-line">
+                        <div class="p-4">
+                            <p id="settings-export-quality-label" class="field-label">
+                                Video export quality
+                            </p>
+                            <OptionCardGroup
+                                v-model="localExportQuality"
+                                class="grid-cols-1 @xl:grid-cols-3"
+                                aria-labelledby="settings-export-quality-label"
+                                :options="EXPORT_QUALITY_OPTIONS"
+                            />
+                            <p class="hint mt-1.5">
+                                Applies to Export Video and clip exports. A hardware encoder is used
+                                when this machine has one.
+                            </p>
+                        </div>
+                        <div class="grid grid-cols-1 gap-4 p-4 @xl:grid-cols-2">
+                            <div>
+                                <label for="settings-pre-padding" class="field-label"
+                                    >Pre-clip padding</label
+                                >
+                                <div class="relative w-40">
+                                    <input
+                                        id="settings-pre-padding"
+                                        v-model.number="localPreClipPadding"
+                                        type="number"
+                                        step="0.1"
+                                        min="0"
+                                        class="input no-spinner pr-8"
+                                        placeholder="0.0"
+                                        aria-describedby="settings-pre-padding-hint"
+                                    />
+                                    <span
+                                        class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                        aria-hidden="true"
+                                        >s</span
+                                    >
+                                </div>
+                                <p id="settings-pre-padding-hint" class="hint mt-1.5">
+                                    Seconds added before the start of each clip.
+                                </p>
+                            </div>
+                            <div>
+                                <label for="settings-post-padding" class="field-label"
+                                    >Post-clip padding</label
+                                >
+                                <div class="relative w-40">
+                                    <input
+                                        id="settings-post-padding"
+                                        v-model.number="localPostClipPadding"
+                                        type="number"
+                                        step="0.1"
+                                        min="0"
+                                        class="input no-spinner pr-8"
+                                        placeholder="0.0"
+                                        aria-describedby="settings-post-padding-hint"
+                                    />
+                                    <span
+                                        class="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[12px] text-fg-subtle"
+                                        aria-hidden="true"
+                                        >s</span
+                                    >
+                                </div>
+                                <p id="settings-post-padding-hint" class="hint mt-1.5">
+                                    Seconds added after the end of each clip.
+                                </p>
                             </div>
                         </div>
-                        <button
-                            @click="fetchModels()"
-                            :disabled="isFetchingModels || !canUseApiKey"
-                            class="btn-primary px-6 py-3 flex items-center gap-2"
-                        >
-                            <svg
-                                v-if="!isFetchingModels"
-                                class="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
+                    </div>
+                </section>
+
+                <!-- Updates & troubleshooting -->
+                <section
+                    id="settings-updates"
+                    data-section="updates"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-updates-title"
+                >
+                    <header class="mb-3">
+                        <h2 id="settings-updates-title" class="text-[15px] font-semibold text-fg">
+                            Updates &amp; logs
+                        </h2>
+                    </header>
+                    <div class="panel divide-y divide-line">
+                        <div class="flex items-center justify-between gap-4 p-4">
+                            <div class="min-w-0">
+                                <p class="text-[13px] font-medium text-fg">
+                                    Version
+                                    <span class="ml-1 font-mono text-fg-muted">{{
+                                        appVersion
+                                    }}</span>
+                                </p>
+                                <p
+                                    v-if="updateStatus"
+                                    class="mt-0.5 text-[12px]"
+                                    :class="updateAvailable ? 'text-success' : 'text-fg-subtle'"
+                                    aria-live="polite"
+                                >
+                                    {{ updateStatus }}
+                                </p>
+                                <p v-else class="hint mt-0.5">The app also checks on launch.</p>
+                            </div>
+                            <button
+                                type="button"
+                                class="btn-secondary shrink-0"
+                                :disabled="isCheckingUpdate"
+                                @click="checkForUpdates"
                             >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                                <RefreshCw
+                                    :class="isCheckingUpdate ? 'animate-spin' : ''"
+                                    aria-hidden="true"
                                 />
-                            </svg>
-                            {{ isFetchingModels ? 'Fetching...' : 'Refresh Models' }}
-                        </button>
-                    </div>
-                    <div class="flex items-center gap-2 mb-1">
-                        <button
-                            @click="showManualInput = !showManualInput"
-                            class="text-xs text-blue-400 hover:text-blue-300 transition-colors underline"
-                        >
-                            {{ showManualInput ? 'Use dropdown' : 'Enter manually' }}
-                        </button>
-                    </div>
-                    <p v-if="fetchError" class="text-xs text-red-400 mt-1">{{ fetchError }}</p>
-                    <p v-else class="text-xs text-gray-500 mt-1">{{ endpointInfo }}</p>
-                </div>
-
-                <div class="mb-6 group">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        Response Validation
-                    </label>
-                    <div
-                        class="flex items-start gap-4 rounded-2xl bg-black/20 border border-white/10 p-4 cursor-pointer hover:bg-black/30 transition-colors"
-                        @click="localEnforceJsonSchema = !localEnforceJsonSchema"
-                    >
-                        <div
-                            class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
-                            :class="localEnforceJsonSchema ? 'bg-blue-600' : 'bg-gray-700'"
-                        >
-                            <span
-                                class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                                :class="localEnforceJsonSchema ? 'translate-x-6' : 'translate-x-1'"
-                            />
+                                {{ isCheckingUpdate ? 'Checking...' : 'Check for updates' }}
+                            </button>
                         </div>
-                        <div class="flex-1">
-                            <p class="text-sm font-medium text-gray-200">
-                                Enforce Structured JSON for transcript analysis
-                            </p>
-                            <p class="text-xs text-gray-500 mt-1">
-                                Sends a strict JSON schema with AI analysis requests on
-                                OpenAI-compatible APIs. Improves reliability, but some providers may
-                                respond slower or behave differently.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mb-6 group">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        Long Audio Handling
-                    </label>
-                    <label class="block text-xs font-medium text-gray-500 mb-2"
-                        >Max analysis chunk length (minutes)</label
-                    >
-                    <input
-                        v-model.number="localMaxAnalysisChunkMinutes"
-                        type="number"
-                        step="1"
-                        min="0"
-                        class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                        placeholder="30"
-                    />
-                    <p class="text-xs text-gray-500 mt-2">
-                        Audio longer than this is split into chunks before LLM transcription, so
-                        each request stays under the provider's request timeout (avoids
-                        <span class="text-gray-400">504 Gateway Timeout</span>
-                        on long videos). Splits prefer a ~1s silence near the boundary and fall back
-                        to Parakeet word boundaries. Set to 0 to disable chunking. Only applies to
-                        LLM-based transcription.
-                    </p>
-                </div>
-
-                <!-- Export -->
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
-                    >
-                        Video Export Quality
-                    </label>
-                    <div class="grid grid-cols-1 gap-3 sm:grid-cols-3" role="radiogroup">
-                        <button
-                            v-for="option in EXPORT_QUALITY_OPTIONS"
-                            :key="option.value"
-                            type="button"
-                            role="radio"
-                            :aria-checked="localExportQuality === option.value"
-                            :data-testid="`export-quality-${option.value}`"
-                            class="flex flex-col rounded-xl border px-4 py-3 text-left transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60"
-                            :class="
-                                localExportQuality === option.value
-                                    ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-black/30'
-                            "
-                            @click="localExportQuality = option.value"
-                        >
-                            <span class="text-sm font-semibold">{{ option.label }}</span>
-                            <span class="mt-1 text-xs text-gray-400">{{ option.description }}</span>
-                        </button>
-                    </div>
-                    <p class="text-xs text-gray-500 mt-2">
-                        Applies to Export Video and clip exports. A hardware encoder is used when
-                        this machine has one.
-                    </p>
-                </div>
-
-                <!-- Clip Settings -->
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-4 uppercase tracking-wider"
-                    >
-                        Clip Settings
-                    </label>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-500 mb-2"
-                                >Pre-Clip Padding (seconds)</label
+                        <div class="flex items-center justify-between gap-4 p-4">
+                            <div class="min-w-0">
+                                <p class="text-[13px] font-medium text-fg">Application logs</p>
+                                <p class="hint mt-0.5">
+                                    Export the logs as a zip file to attach to a bug report.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                class="btn-secondary shrink-0"
+                                @click="exportLogs"
                             >
-                            <input
-                                v-model.number="localPreClipPadding"
-                                type="number"
-                                step="0.1"
-                                min="0"
-                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                                placeholder="0.0"
-                            />
-                            <p class="text-xs text-gray-500 mt-2">
-                                Added before the start of each clip
-                            </p>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-500 mb-2"
-                                >Post-Clip Padding (seconds)</label
-                            >
-                            <input
-                                v-model.number="localPostClipPadding"
-                                type="number"
-                                step="0.1"
-                                min="0"
-                                class="w-full p-4 rounded-2xl bg-black/20 border border-white/10 focus:border-blue-500/50 outline-none transition-all text-gray-300 placeholder-gray-600"
-                                placeholder="0.0"
-                            />
-                            <p class="text-xs text-gray-500 mt-2">
-                                Added after the end of each clip
-                            </p>
+                                <FileArchive aria-hidden="true" />
+                                Export logs
+                            </button>
                         </div>
                     </div>
-                </div>
+                </section>
 
-                <!-- Licences of what the app downloads or bundles at runtime
+                <!-- About & licences: what the app downloads or bundles at runtime
                      (src/assets/runtime-licenses.json). -->
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        Third-Party Models &amp; Tools
-                    </label>
-                    <ul
-                        data-testid="runtime-licenses"
-                        class="divide-y divide-white/5 rounded-2xl border border-white/10 bg-black/20"
-                    >
+                <section
+                    id="settings-about"
+                    data-section="about"
+                    class="scroll-mt-8"
+                    aria-labelledby="settings-about-title"
+                >
+                    <header class="mb-3">
+                        <h2 id="settings-about-title" class="text-[15px] font-semibold text-fg">
+                            About &amp; licences
+                        </h2>
+                        <p class="hint mt-0.5">
+                            Third-party models and tools the app downloads or bundles.
+                        </p>
+                    </header>
+                    <ul data-testid="runtime-licenses" class="panel divide-y divide-line">
                         <li
                             v-for="download in runtimeLicenses.downloads"
                             :key="download.id"
                             class="px-4 py-3"
                         >
-                            <div class="flex items-baseline justify-between gap-3">
-                                <span class="text-sm text-gray-200">{{ download.name }}</span>
+                            <div class="flex items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                    <p class="text-[13px] font-medium text-fg">
+                                        {{ download.name }}
+                                    </p>
+                                    <p class="hint">{{ download.usedBy }}</p>
+                                </div>
                                 <button
                                     type="button"
-                                    class="shrink-0 text-xs text-blue-300 hover:text-blue-200 hover:underline"
+                                    class="btn-ghost btn-sm shrink-0"
                                     :title="download.licenseUrl"
                                     @click="openUrl(download.licenseUrl)"
                                 >
                                     {{ download.license.replace('LicenseRef-', '') }}
+                                    <ExternalLink aria-hidden="true" />
                                 </button>
                             </div>
-                            <p class="text-xs text-gray-400">{{ download.usedBy }}</p>
-                            <p v-if="download.notice" class="mt-1 text-xs text-gray-300">
-                                {{ download.notice }}
-                            </p>
+                            <details v-if="download.notice" class="group mt-1">
+                                <summary
+                                    class="inline-flex cursor-pointer list-none items-center gap-1 text-[12px] text-fg-subtle hover:text-fg [&::-webkit-details-marker]:hidden"
+                                >
+                                    <ChevronRight
+                                        class="h-3 w-3 transition-transform duration-150 group-open:rotate-90"
+                                        aria-hidden="true"
+                                    />
+                                    Licence notice
+                                </summary>
+                                <p class="mt-1 text-[12px] leading-normal text-fg-muted">
+                                    {{ download.notice }}
+                                </p>
+                            </details>
                         </li>
                     </ul>
-                </div>
+                </section>
 
-                <!-- Application Info -->
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        Application Info
-                    </label>
+                <!-- Action bar: a quiet row at the end of the page; with unsaved
+                     changes it floats at the bottom of the viewport, over a
+                     canvas strip so no content shows underneath it. -->
+                <div
+                    class="z-20"
+                    :class="hasChanges ? 'sticky bottom-0 -mx-1 bg-canvas px-1 pt-2 pb-4' : ''"
+                >
                     <div
-                        class="flex items-center justify-between bg-black/20 p-4 rounded-2xl border border-white/10"
+                        class="flex items-center gap-3 rounded-lg border px-4 py-2.5"
+                        :class="
+                            hasChanges
+                                ? 'animate-rise-in border-accent/40 bg-surface-2 shadow-[var(--shadow-pop)]'
+                                : 'border-line bg-surface'
+                        "
+                        data-testid="settings-action-bar"
                     >
-                        <div>
-                            <p class="text-gray-300 font-medium">
-                                Version: <span class="text-white">{{ appVersion }}</span>
-                            </p>
-                            <p
-                                v-if="updateStatus"
-                                class="text-xs mt-1"
-                                :class="updateAvailable ? 'text-green-400' : 'text-gray-400'"
+                        <span
+                            v-if="hasChanges"
+                            class="h-2 w-2 shrink-0 rounded-full bg-accent"
+                            aria-hidden="true"
+                        />
+                        <p class="min-w-0 flex-1 text-[13px]" aria-live="polite">
+                            <span v-if="hasChanges" class="font-medium text-fg"
+                                >Unsaved changes</span
                             >
-                                {{ updateStatus }}
-                            </p>
-                        </div>
+                            <span v-else class="text-fg-subtle">No unsaved changes</span>
+                        </p>
                         <button
-                            @click="checkForUpdates"
-                            :disabled="isCheckingUpdate"
-                            class="btn-primary px-4 py-2 text-sm"
+                            type="button"
+                            class="btn-secondary"
+                            data-testid="settings-cancel"
+                            @click="cancel"
                         >
-                            {{ isCheckingUpdate ? 'Checking...' : 'Check for Updates' }}
+                            {{ hasChanges ? 'Discard' : 'Cancel' }}
+                        </button>
+                        <button
+                            type="button"
+                            class="btn-primary"
+                            data-testid="settings-save"
+                            :disabled="!hasChanges"
+                            :title="!hasChanges ? 'Nothing to save yet' : undefined"
+                            @click="saveSettings"
+                        >
+                            Save settings
                         </button>
                     </div>
-                </div>
-
-                <!-- Troubleshooting -->
-                <div class="mb-6 group border-t border-white/10 pt-6 mt-6">
-                    <label
-                        class="block text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider"
-                    >
-                        Troubleshooting
-                    </label>
-                    <div class="flex gap-3">
-                        <button
-                            @click="exportLogs"
-                            class="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-2xl border border-gray-600 hover:border-gray-500 transition-all shadow-lg hover:shadow-xl active:scale-95"
-                        >
-                            Export Logs
-                        </button>
-                    </div>
-                    <p class="text-xs text-gray-500 mt-2">
-                        Export application logs for debugging purposes.
-                    </p>
-                </div>
-
-                <!-- Action Buttons -->
-                <div class="flex gap-4 mt-8">
-                    <button
-                        @click="saveSettings"
-                        :disabled="!hasChanges"
-                        class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-emerald-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform hover:-translate-y-0.5 active:translate-y-0"
-                    >
-                        Save Settings
-                    </button>
-                    <button
-                        @click="cancel"
-                        class="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-bold py-4 px-6 rounded-2xl border border-gray-600 hover:border-gray-500 transition-all shadow-lg hover:shadow-xl active:scale-95"
-                    >
-                        Cancel
-                    </button>
                 </div>
             </div>
         </div>
+
+        <UiDialog
+            :open="leaveDialogOpen"
+            title="Discard unsaved changes?"
+            description="Your edits to these settings haven't been saved and will be lost."
+            size="sm"
+            tone="danger"
+            @close="answerLeave(false)"
+        >
+            <p class="hint">To keep them, choose Keep editing and press Save settings.</p>
+            <template #footer>
+                <button
+                    type="button"
+                    class="btn-secondary"
+                    data-testid="leave-keep-editing"
+                    data-autofocus
+                    @click="answerLeave(false)"
+                >
+                    Keep editing
+                </button>
+                <button
+                    type="button"
+                    class="btn-danger"
+                    data-testid="leave-discard"
+                    @click="answerLeave(true)"
+                >
+                    Discard changes
+                </button>
+            </template>
+        </UiDialog>
+
+        <Toast
+            :show="toastVisible"
+            :message="toastMessage"
+            :tone="toastTone"
+            :progress="toastProgress"
+            :action-label="toastActionLabel"
+            @dismiss="hideToast"
+            @action="handleToastAction"
+        />
     </div>
-    <Toast
-        :show="toastVisible"
-        :message="toastMessage"
-        :tone="toastTone"
-        :progress="toastProgress"
-        :action-label="toastActionLabel"
-        @dismiss="hideToast"
-        @action="handleToastAction"
-    />
 </template>
+
+<style scoped>
+/* Unit suffixes sit where the spin buttons would. */
+.no-spinner {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+.no-spinner::-webkit-inner-spin-button,
+.no-spinner::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+</style>

@@ -1,6 +1,32 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
 import { ask } from '@tauri-apps/plugin-dialog';
+import {
+    Check,
+    CheckCheck,
+    ChevronDown,
+    ChevronUp,
+    CirclePlay,
+    Combine,
+    Crosshair,
+    List,
+    ListFilter,
+    Pause,
+    Pencil,
+    Replace,
+    RotateCcw,
+    Scissors,
+    Search,
+    Square,
+    SquarePlay,
+    Trash2,
+    TriangleAlert,
+    Volume2,
+    WholeWord,
+    X,
+} from '@lucide/vue';
+import EmptyState from './ui/EmptyState.vue';
+import { speakerColor } from '../utils/speakerColors';
 import type {
     TranscriptAlternativeSource,
     TranscriptMergeStatus,
@@ -36,8 +62,14 @@ const props = withDefaults(
          * transcript, which drives the cut.
          */
         lockStructure?: boolean;
+        /** Current media playhead in seconds, to highlight the segment being played. */
+        playhead?: number | null;
+        /** Speaker order that decides each speaker's colour (matches the speaker list). */
+        speakerOrder?: string[];
     }>(),
     {
+        playhead: null,
+        speakerOrder: undefined,
         showOnlyReviewSegments: false,
         reviewThreshold: 0.85,
         hideBlacklistFromReview: false,
@@ -87,6 +119,10 @@ const replaceQuery = ref('');
 const wholeWordMatch = ref(false);
 const currentMatchIndex = ref(0);
 const segmentRefs = new Map<number, HTMLDivElement>();
+// The row the user last clicked or focused: highlighted, and its actions stay visible.
+const activeIndex = ref<number | null>(null);
+const showReplace = ref(false);
+const uid = Math.random().toString(36).slice(2, 8);
 
 interface SearchMatch {
     matchIndex: number;
@@ -169,6 +205,10 @@ watch(visibleSegments, (segments) => {
     selectedIndices.value = new Set(
         Array.from(selectedIndices.value).filter((index) => visibleIndices.has(index)),
     );
+
+    if (activeIndex.value !== null && !visibleIndices.has(activeIndex.value)) {
+        activeIndex.value = null;
+    }
 
     if (editingIndex.value !== null && !visibleIndices.has(editingIndex.value)) {
         cancelEdit();
@@ -333,16 +373,23 @@ const requestPlayFrom = (originalIndex: number) => {
     jumpTo(segment.start);
 };
 
-const handleSegmentClick = (originalIndex: number, event: MouseEvent) => {
-    // Plain clicks no longer control playback; use the per-segment buttons.
-    // Shift-click is retained for multi-segment selection.
-    if (!event.shiftKey) return;
-
+const toggleSelection = (originalIndex: number) => {
     if (selectedIndices.value.has(originalIndex)) {
         selectedIndices.value.delete(originalIndex);
     } else {
         selectedIndices.value.add(originalIndex);
     }
+};
+
+const handleSegmentClick = (originalIndex: number, event: MouseEvent) => {
+    // Plain clicks never control playback (use the per-segment buttons); they
+    // make the row the current one. Shift-click toggles multi-segment selection.
+    if (!event.shiftKey) {
+        activeIndex.value = originalIndex;
+        return;
+    }
+
+    toggleSelection(originalIndex);
 };
 
 const startEditing = (originalIndex: number) => {
@@ -562,8 +609,8 @@ const renderSegmentText = (text: string, originalIndex: number): string => {
         parts.push(
             `<mark class="${
                 match.matchIndex === currentMatchIndex.value
-                    ? 'rounded bg-teal-300 px-0.5 text-gray-950'
-                    : 'rounded bg-amber-300/70 px-0.5 text-gray-950'
+                    ? 'rounded-[3px] bg-accent px-0.5 text-accent-fg'
+                    : 'rounded-[3px] bg-warning/20 px-0.5 text-fg'
             }">${escapeHtml(text.slice(match.start, match.end))}</mark>`,
         );
         cursor = match.end;
@@ -580,18 +627,157 @@ const isCurrentSearchSegment = (originalIndex: number): boolean =>
     currentSearchMatch.value?.originalIndex === originalIndex;
 
 const mergeStatusLabel = (status?: TranscriptMergeStatus): string => {
-    if (status === 'missing_google') return 'Missing In Remote';
-    if (status === 'missing_local') return 'Missing In Local';
-    if (status === 'conflict') return 'Review Needed';
+    if (status === 'missing_google') return 'Missing in remote';
+    if (status === 'missing_local') return 'Missing in local';
+    if (status === 'conflict') return 'Review needed';
     return 'Aligned';
 };
 
 const mergeStatusClass = (status?: TranscriptMergeStatus): string => {
-    if (status === 'missing_google') return 'bg-rose-500/15 text-rose-200 border-rose-500/30';
-    if (status === 'missing_local') return 'bg-amber-500/15 text-amber-200 border-amber-500/30';
-    if (status === 'conflict') return 'bg-orange-500/15 text-orange-200 border-orange-500/30';
-    return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
+    if (status === 'missing_google') return 'chip-danger';
+    if (status === 'missing_local' || status === 'conflict') return 'chip-warning';
+    return 'chip-success';
 };
+
+// ---------------------------------------------------------------- Presentation
+
+// Speaker colours follow the speaker list's order so a speaker has the same
+// colour in the list and in the rows; without it, order of first appearance.
+const colourOrder = computed(() => {
+    if (props.speakerOrder?.length) return props.speakerOrder;
+    const seen: string[] = [];
+    for (const segment of props.segments) {
+        if (!seen.includes(segment.speaker)) seen.push(segment.speaker);
+    }
+    return seen;
+});
+
+const colourFor = (speaker: string): string => speakerColor(speaker, colourOrder.value);
+
+// Segment bounds in seconds, parsed once per transcript change rather than on
+// every playhead tick.
+const segmentBounds = computed(() =>
+    props.segments.map((segment) => ({
+        start: parseTime(segment.start),
+        end: parseTime(segment.end),
+    })),
+);
+
+const playingIndex = computed<number | null>(() => {
+    const t = props.playhead;
+    if (t === null || t === undefined || !Number.isFinite(t)) return null;
+    const index = segmentBounds.value.findIndex(({ start, end }) => t >= start && t < end);
+    return index >= 0 ? index : null;
+});
+
+const rowStateClass = (originalIndex: number): string => {
+    // Accent is reserved for the selection; search results use the warning
+    // tint (the current match is also marked by its accent highlight).
+    if (selectedIndices.value.has(originalIndex)) return 'border-l-accent bg-accent/[0.12]';
+    if (isCurrentSearchSegment(originalIndex)) return 'border-l-warning bg-warning/[0.08]';
+    if (isSearchResultSegment(originalIndex)) return 'border-l-warning/40 bg-warning/[0.04]';
+    if (activeIndex.value === originalIndex) return 'border-l-fg-subtle bg-surface-2';
+    if (playingIndex.value === originalIndex) return 'border-l-success/70 bg-success/[0.04]';
+    return 'border-l-transparent hover:bg-surface-2';
+};
+
+const showRowActions = (originalIndex: number): boolean =>
+    activeIndex.value === originalIndex || selectedIndices.value.has(originalIndex);
+
+const searchCounter = computed(() => {
+    if (!searchQuery.value) return '';
+    if (searchMatches.value.length === 0) return 'No matches';
+    return `${currentMatchIndex.value + 1} of ${searchMatches.value.length}`;
+});
+
+const replaceDisabledReason = computed(() => {
+    if (searchMatches.value.length === 0) return 'Search for text to replace first';
+    if (editingIndex.value !== null) return 'Finish editing the open segment first';
+    return '';
+});
+
+const emptyStateDescription = computed(() => {
+    if (props.segments.length === 0) return 'This transcript has no segments yet.';
+    if (props.showOnlyReviewSegments)
+        return 'Nothing needs review with the current filter. Turn off "Show only review items" to see every segment.';
+    return 'Every speaker is hidden. Show a speaker in the speaker list to see their segments.';
+});
+
+// ---------------------------------------------------------------- Keyboard
+
+const onSearchKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        if (event.shiftKey) goToPreviousMatch();
+        else goToNextMatch();
+    } else if (event.key === 'Escape' && searchQuery.value) {
+        event.preventDefault();
+        searchQuery.value = '';
+    }
+};
+
+const focusRow = (visibleIndex: number) => {
+    const row = visibleSegments.value[visibleIndex];
+    if (!row) return;
+    const element = segmentRefs.get(row.originalIndex);
+    element?.focus();
+    if (element && typeof element.scrollIntoView === 'function') {
+        element.scrollIntoView({ block: 'nearest' });
+    }
+};
+
+const onRowFocus = (originalIndex: number, event: FocusEvent) => {
+    if (event.target === event.currentTarget) activeIndex.value = originalIndex;
+};
+
+// Shift-click is for selection: keep it from also moving focus or selecting text.
+const onRowMousedown = (event: MouseEvent) => {
+    if (!event.shiftKey) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, button')) return;
+    event.preventDefault();
+};
+
+const onRowKeydown = (originalIndex: number, visibleIndex: number, event: KeyboardEvent) => {
+    // Only when the row itself has focus, not a field or button inside it.
+    if (event.target !== event.currentTarget) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        focusRow(visibleIndex + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Enter') {
+        event.preventDefault();
+        startEditing(originalIndex);
+        void nextTick(() =>
+            segmentRefs.get(originalIndex)?.querySelector<HTMLTextAreaElement>('textarea')?.focus(),
+        );
+    } else if (event.key === ' ') {
+        event.preventDefault();
+        toggleSelection(originalIndex);
+    } else if (event.key === 'Escape') {
+        if (selectedIndices.value.size > 0) selectedIndices.value.clear();
+        else activeIndex.value = null;
+    }
+};
+
+const onFormKeydown = (event: KeyboardEvent, save: () => void, cancel: () => void) => {
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        const row = (event.currentTarget as HTMLElement).closest<HTMLElement>('.segment');
+        cancel();
+        row?.focus();
+    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        save();
+    }
+};
+
+const splitPercent = computed(() => {
+    if (!splitDraft.value) return 0;
+    const { start, end } = splitBounds.value;
+    if (end <= start) return 0;
+    return Math.min(Math.max(((splitDraft.value.time - start) / (end - start)) * 100, 0), 100);
+});
 
 const getUniqueBlacklistWords = (originalIndex: number): string[] => {
     const words: string[] = [];
@@ -788,204 +974,280 @@ const mergeDown = (originalIndex: number) => {
 </script>
 
 <template>
-    <!-- The scroll viewport grows with the window instead of being pinned to a
-       fixed 600px, which wasted most of the height on a maximised window. -->
-    <div
-        class="editor-container relative max-h-[min(72vh,60rem)] min-h-[18rem] overflow-y-auto rounded-xl border border-white/10 bg-black/20 p-4 backdrop-blur-md"
-    >
-        <!-- Sticky so find/replace stays reachable while scrolling a long
-         transcript. Negative margins let it cover the container padding. -->
+    <!-- The page scrolls, not the editor: one scroll container, with the toolbar
+       sticking to the top of the window while the transcript scrolls past. -->
+    <div class="editor-container @container relative rounded-lg border border-line bg-surface">
+        <!-- Masks the gap above the stuck toolbar so rows don't show through
+             it; at rest it sits in the page gap above the card. -->
         <div
-            class="sticky top-0 z-20 -mx-4 -mt-4 mb-3 border-b border-white/10 bg-gray-900/95 px-4 pb-3 pt-4 backdrop-blur-md"
+            aria-hidden="true"
+            class="pointer-events-none sticky top-0 z-20 -mx-px -mt-[15px] mb-px h-[14px] bg-canvas"
+        ></div>
+        <!-- Sticky toolbar: find (and optional replace) on the left, the
+         language controls from the parent on the right. -->
+        <div
+            class="sticky top-4 z-20 rounded-t-lg border-b border-line bg-surface px-3 py-2.5 shadow-[0_8px_16px_-12px_rgb(0_0_0/0.8)]"
         >
-            <div class="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                <input
-                    v-model="searchQuery"
-                    data-testid="editor-search-input"
-                    type="text"
-                    placeholder="Search transcript"
-                    class="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-all focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50"
-                    @keydown.enter.prevent="goToNextMatch"
-                />
-                <input
-                    v-model="replaceQuery"
-                    data-testid="editor-replace-input"
-                    type="text"
-                    placeholder="Replace with"
-                    class="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-white outline-none transition-all focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50"
-                />
+            <div class="flex flex-wrap items-center gap-2">
+                <div class="relative min-w-[15rem] flex-1">
+                    <Search
+                        class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle"
+                        aria-hidden="true"
+                    />
+                    <input
+                        v-model="searchQuery"
+                        data-testid="editor-search-input"
+                        type="text"
+                        placeholder="Search transcript"
+                        aria-label="Search transcript"
+                        :aria-describedby="`${uid}-search-status`"
+                        class="input input-sm h-7 pr-32 pl-8"
+                        @keydown="onSearchKeydown"
+                    />
+                    <div class="absolute inset-y-0 right-1 flex items-center gap-0.5">
+                        <span
+                            v-if="searchCounter"
+                            class="mr-1 font-mono text-[11px] whitespace-nowrap"
+                            :class="searchMatches.length ? 'text-fg-muted' : 'text-fg-subtle'"
+                            data-testid="editor-search-counter"
+                            >{{ searchCounter }}</span
+                        >
+                        <button
+                            type="button"
+                            data-testid="editor-search-prev"
+                            class="btn-ghost btn-sm btn-icon h-5.5! w-5.5!"
+                            aria-label="Previous match"
+                            title="Previous match (Shift+Enter)"
+                            :disabled="searchMatches.length === 0"
+                            @click="goToPreviousMatch"
+                        >
+                            <ChevronUp aria-hidden="true" />
+                        </button>
+                        <button
+                            type="button"
+                            data-testid="editor-search-next"
+                            class="btn-ghost btn-sm btn-icon h-5.5! w-5.5!"
+                            aria-label="Next match"
+                            title="Next match (Enter)"
+                            :disabled="searchMatches.length === 0"
+                            @click="goToNextMatch"
+                        >
+                            <ChevronDown aria-hidden="true" />
+                        </button>
+                    </div>
+                    <span :id="`${uid}-search-status`" class="sr-only" aria-live="polite">{{
+                        searchStatusLabel
+                    }}</span>
+                </div>
+
                 <label
-                    class="flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-gray-300"
+                    class="relative inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition-colors duration-100 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent/70"
+                    :class="
+                        wholeWordMatch
+                            ? 'border-accent/40 bg-accent/15 text-accent-soft'
+                            : 'border-transparent text-fg-muted hover:bg-surface-hover hover:text-fg'
+                    "
+                    title="Match whole words only"
                 >
                     <input
                         v-model="wholeWordMatch"
                         data-testid="editor-whole-word-toggle"
                         type="checkbox"
-                        class="h-4 w-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500/40"
+                        class="sr-only"
                     />
+                    <WholeWord class="h-3.5 w-3.5" aria-hidden="true" />
                     Whole word
                 </label>
-            </div>
 
-            <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <span class="text-xs text-gray-400">{{ searchStatusLabel }}</span>
-                <div class="flex flex-wrap gap-2">
+                <button
+                    type="button"
+                    data-testid="editor-replace-toggle"
+                    class="btn-ghost btn-sm h-7"
+                    :data-active="showReplace ? 'true' : 'false'"
+                    :aria-expanded="showReplace ? 'true' : 'false'"
+                    :aria-controls="`${uid}-replace-row`"
+                    title="Find and replace"
+                    @click="showReplace = !showReplace"
+                >
+                    <Replace aria-hidden="true" />
+                    Replace
+                </button>
+
+                <slot name="status" />
+
+                <!-- Narrow: its own labelled line below the replace row. Wide:
+                     inline at the end of the search line. -->
+                <div
+                    v-if="$slots.toolbar"
+                    class="order-2 flex w-full flex-wrap items-center gap-2 border-t border-line pt-2 @4xl:order-none @4xl:ml-auto @4xl:w-auto @4xl:border-t-0 @4xl:border-l @4xl:pt-0 @4xl:pl-2"
+                >
+                    <span class="eyebrow mr-1 @4xl:hidden">Language</span>
+                    <slot name="toolbar" />
+                </div>
+
+                <div
+                    v-show="showReplace"
+                    :id="`${uid}-replace-row`"
+                    class="order-1 flex w-full flex-wrap items-center gap-2"
+                >
+                    <div class="relative min-w-[15rem] flex-1">
+                        <Replace
+                            class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle"
+                            aria-hidden="true"
+                        />
+                        <input
+                            v-model="replaceQuery"
+                            data-testid="editor-replace-input"
+                            type="text"
+                            placeholder="Replace with"
+                            aria-label="Replace with"
+                            class="input input-sm h-7 pl-8"
+                            @keydown.enter.prevent="replaceCurrentMatch"
+                        />
+                    </div>
                     <button
-                        data-testid="editor-search-prev"
-                        class="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
-                        :disabled="searchMatches.length === 0"
-                        @click="goToPreviousMatch"
-                    >
-                        Prev
-                    </button>
-                    <button
-                        data-testid="editor-search-next"
-                        class="rounded border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-200 transition-colors hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
-                        :disabled="searchMatches.length === 0"
-                        @click="goToNextMatch"
-                    >
-                        Next
-                    </button>
-                    <button
+                        type="button"
                         data-testid="editor-replace-current"
-                        class="rounded border border-emerald-500/30 bg-emerald-500/15 px-3 py-1.5 text-xs text-emerald-200 transition-colors hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                        class="btn-secondary btn-sm h-7"
                         :disabled="searchMatches.length === 0 || editingIndex !== null"
+                        :title="replaceDisabledReason || 'Replace the highlighted match'"
                         @click="replaceCurrentMatch"
                     >
                         Replace
                     </button>
                     <button
+                        type="button"
                         data-testid="editor-replace-all"
-                        class="rounded border border-blue-500/30 bg-blue-500/15 px-3 py-1.5 text-xs text-blue-200 transition-colors hover:bg-blue-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                        class="btn-secondary btn-sm h-7"
                         :disabled="searchMatches.length === 0 || editingIndex !== null"
+                        :title="
+                            replaceDisabledReason || 'Replace every match in the visible segments'
+                        "
                         @click="replaceAllMatches"
                     >
-                        Replace All
+                        Replace all
                     </button>
+                    <span v-if="editingIndex !== null && searchMatches.length" class="hint">
+                        Finish editing the open segment to replace.
+                    </span>
                 </div>
             </div>
         </div>
 
-        <!-- Multi-selection Toolbar -->
+        <!-- Rows -->
         <div
-            v-if="selectedIndices.size > 0 && !lockStructure"
-            class="sticky top-0 z-50 mb-4 p-2 bg-blue-600/20 backdrop-blur-md border border-blue-500/30 rounded-lg flex items-center justify-between"
+            class="relative px-1.5 pt-3 transition-[padding] duration-150"
+            :class="selectedIndices.size > 0 && !lockStructure ? 'pb-28' : 'pb-1.5'"
         >
-            <span class="text-sm text-blue-200 font-medium px-2"
-                >{{ selectedIndices.size }} selected</span
-            >
-            <div class="flex gap-2">
-                <button
-                    @click="mergeSelected"
-                    class="px-3 py-1.5 bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded text-xs hover:bg-purple-500/30 transition-colors font-medium"
-                >
-                    Merge Selected
-                </button>
-                <button
-                    @click="deleteSelected"
-                    class="px-3 py-1.5 bg-red-500/20 text-red-300 border border-red-500/30 rounded text-xs hover:bg-red-500/30 transition-colors font-medium"
-                >
-                    Delete Selected
-                </button>
-                <button
-                    @click="selectedIndices.clear()"
-                    class="px-3 py-1.5 bg-white/10 text-gray-300 border border-white/10 rounded text-xs hover:bg-white/20 transition-colors"
-                >
-                    Cancel
-                </button>
-            </div>
-        </div>
+            <EmptyState
+                v-if="visibleSegments.length === 0"
+                :icon="ListFilter"
+                title="No segments to show"
+                :description="emptyStateDescription"
+                compact
+                class="m-2"
+                data-testid="editor-empty"
+            />
 
-        <!-- Dense list rows rather than spaced cards: state is carried by a left
-         accent bar and a hairline divider, which removes ~64px of padding and
-         margin per segment without losing the hit target or hover affordance. -->
-        <div
-            v-for="({ segment, originalIndex }, visibleIndex) in visibleSegments"
-            :key="`${originalIndex}-${segment.start}-${segment.end}`"
-            :ref="(element) => setSegmentRef(originalIndex, element as HTMLDivElement | null)"
-            class="segment group relative grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 border-b border-l-2 border-b-white/5 px-3 py-2 transition-colors md:grid-cols-[auto_minmax(0,80ch)_1fr]"
-            :class="[
-                selectedIndices.has(originalIndex)
-                    ? 'border-l-blue-400 bg-blue-500/15'
-                    : isCurrentSearchSegment(originalIndex)
-                      ? 'border-l-teal-400 bg-teal-500/10'
-                      : isSearchResultSegment(originalIndex)
-                        ? 'border-l-amber-400/70 bg-amber-500/[0.07]'
-                        : 'border-l-transparent hover:bg-white/[0.045]',
-                startsSpeakerRun(visibleIndex) && visibleIndex > 0 ? 'mt-1.5' : '',
-            ]"
-            @click="handleSegmentClick(originalIndex, $event)"
-        >
-            <!-- Time gutter: the anchor people scan by. -->
-            <span
-                class="select-none pt-0.5 font-mono text-[11px] leading-5 tabular-nums text-gray-500"
-                :title="`${segment.start} – ${segment.end}`"
-                >{{ segment.start }}</span
+            <!-- Dense rows: state is a left accent bar and a tint. Speaker names
+           only open a new speaker run, in that speaker's colour. -->
+            <div
+                v-for="({ segment, originalIndex }, visibleIndex) in visibleSegments"
+                :key="`${originalIndex}-${segment.start}-${segment.end}`"
+                :ref="(element) => setSegmentRef(originalIndex, element as HTMLDivElement | null)"
+                tabindex="0"
+                :data-active="activeIndex === originalIndex ? 'true' : undefined"
+                :data-playing="playingIndex === originalIndex ? 'true' : undefined"
+                :aria-current="activeIndex === originalIndex ? 'true' : undefined"
+                role="article"
+                :aria-labelledby="`${uid}-t-${originalIndex}`"
+                :aria-describedby="`${uid}-x-${originalIndex}`"
+                class="segment group relative grid scroll-mt-32 scroll-mb-32 grid-cols-[3.25rem_minmax(0,1fr)_auto] gap-x-3 rounded-md @4xl:grid-cols-[3.25rem_minmax(0,1fr)_auto_auto] border-l-2 py-2 pr-1.5 pl-2.5 transition-colors duration-100 focus-visible:-outline-offset-2"
+                :class="[
+                    rowStateClass(originalIndex),
+                    startsSpeakerRun(visibleIndex) && visibleIndex > 0 ? 'mt-2.5' : '',
+                ]"
+                @click="handleSegmentClick(originalIndex, $event)"
+                @mousedown="onRowMousedown"
+                @focus="onRowFocus(originalIndex, $event)"
+                @keydown="onRowKeydown(originalIndex, visibleIndex, $event)"
             >
-
-            <div class="min-w-0 md:col-start-2">
-                <!-- Header line: only rendered when it carries information (a speaker
-           change or a badge), so mid-run rows are a single line of text. -->
-                <div
-                    v-if="
-                        startsSpeakerRun(visibleIndex) ||
-                        hasRowBadges(segment, originalIndex) ||
-                        editingIndex === originalIndex ||
-                        splittingIndex === originalIndex
-                    "
-                    class="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 pr-24 text-sm text-gray-400 md:pr-0"
+                <!-- Time gutter: the anchor people scan by. -->
+                <span
+                    :id="`${uid}-t-${originalIndex}`"
+                    class="col-start-1 row-start-1 flex flex-col items-start gap-1 pt-[3px] font-mono text-[11px] leading-5 select-none"
+                    :class="playingIndex === originalIndex ? 'text-success' : 'text-fg-subtle'"
+                    :title="`${segment.start} – ${segment.end}`"
+                    ><span class="sr-only">{{ segment.speaker }}, </span>{{ segment.start
+                    }}<span
+                        v-if="selectedIndices.has(originalIndex)"
+                        class="inline-flex h-4 w-4 items-center justify-center rounded-sm bg-accent text-accent-fg"
+                        title="Selected"
+                        ><Check class="h-3 w-3" aria-hidden="true" /><span class="sr-only"
+                            >, selected</span
+                        ></span
+                    ></span
                 >
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="text-xs font-semibold uppercase tracking-wide text-blue-300">{{
-                            segment.speaker
-                        }}</span>
+
+                <div class="col-start-2 row-start-1 min-w-0">
+                    <!-- Header line: only when it carries information (a speaker
+             change or a badge), so mid-run rows are a single line of text. -->
+                    <div
+                        v-if="
+                            startsSpeakerRun(visibleIndex) ||
+                            hasRowBadges(segment, originalIndex) ||
+                            editingIndex === originalIndex ||
+                            splittingIndex === originalIndex
+                        "
+                        class="mb-0.5 flex flex-wrap items-center gap-x-2 gap-y-1"
+                    >
+                        <span
+                            class="text-[12px] font-semibold"
+                            :style="{ color: colourFor(segment.speaker) }"
+                            >{{ segment.speaker }}</span
+                        >
                         <span
                             v-if="segment.mergeStatus"
-                            class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide"
                             :class="mergeStatusClass(segment.mergeStatus)"
                         >
                             {{ mergeStatusLabel(segment.mergeStatus) }}
                         </span>
                         <span
                             v-if="segment.similarityScore != null"
-                            class="text-[10px] text-gray-500"
+                            class="chip font-mono"
+                            title="Similarity between the remote and local transcripts"
                         >
                             {{ Math.round(segment.similarityScore * 100) }}%
                         </span>
                         <span
                             v-if="getBlacklistMatches(originalIndex).length > 0"
-                            class="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-100"
+                            class="chip-warning"
                         >
                             {{ getBlacklistMatches(originalIndex).length }} blacklist match{{
                                 getBlacklistMatches(originalIndex).length > 1 ? 'es' : ''
                             }}
                         </span>
-                        <span
-                            v-if="segment.reviewResolved"
-                            class="inline-flex items-center rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-emerald-200"
-                        >
+                        <span v-if="segment.reviewResolved" class="chip-success">
+                            <CheckCheck aria-hidden="true" />
                             Resolved
                         </span>
                     </div>
-                </div>
 
-                <!-- Display Mode body -->
-                <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
-                    <p
-                        class="pr-24 text-sm leading-6 text-gray-200 md:pr-0"
-                        v-html="renderSegmentText(segment.text, originalIndex)"
-                    ></p>
+                    <!-- Display mode -->
+                    <div v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
+                        <p
+                            :id="`${uid}-x-${originalIndex}`"
+                            class="text-[14px] leading-[1.6] text-fg [overflow-wrap:anywhere]"
+                            v-html="renderSegmentText(segment.text, originalIndex)"
+                        ></p>
 
-                    <div
-                        v-if="getBlacklistMatches(originalIndex).length > 0"
-                        class="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3"
-                    >
-                        <div class="flex items-center justify-between gap-3">
-                            <span
-                                class="text-xs font-semibold uppercase tracking-wide text-amber-100"
-                                >Blacklist Warning</span
-                            >
-                            <span class="text-[11px] text-amber-200/80">
+                        <p
+                            v-if="getBlacklistMatches(originalIndex).length > 0"
+                            class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-warning"
+                        >
+                            <TriangleAlert class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                            <span class="font-medium">Blacklist</span>
+                            <span class="font-mono text-[11px] text-fg-subtle">
                                 {{ getBlacklistMatches(originalIndex)[0].start
                                 }}{{
                                     getBlacklistMatches(originalIndex).length > 1
@@ -993,447 +1255,562 @@ const mergeDown = (originalIndex: number) => {
                                         : ''
                                 }}
                             </span>
-                        </div>
-                        <p class="mt-1 text-sm text-amber-100">
-                            Matched words: {{ getUniqueBlacklistWords(originalIndex).join(', ') }}
+                            <span class="text-fg-muted"
+                                >Matched words:
+                                {{ getUniqueBlacklistWords(originalIndex).join(', ') }}</span
+                            >
                         </p>
-                    </div>
 
-                    <div v-if="segment.alternatives?.length" class="mt-3 grid gap-2 md:grid-cols-2">
                         <div
-                            v-for="source in alternativeSources"
-                            :key="source"
-                            class="rounded-lg border p-3"
-                            :class="
-                                segment.activeSource === source
-                                    ? 'border-blue-500/40 bg-blue-500/10'
-                                    : 'border-white/10 bg-black/20'
-                            "
+                            v-if="segment.alternatives?.length"
+                            class="mt-2 grid gap-2 @xl:grid-cols-2"
                         >
-                            <div class="mb-2 flex items-center justify-between gap-2">
-                                <span
-                                    class="text-xs font-semibold uppercase tracking-wide text-gray-300"
-                                    >{{ sourceLabel(source) }}</span
-                                >
-                                <button
-                                    class="rounded border px-2 py-1 text-[11px] transition-colors"
+                            <div
+                                v-for="source in alternativeSources"
+                                :key="source"
+                                class="rounded-md border p-2.5 transition-colors duration-100"
+                                :class="
+                                    segment.activeSource === source
+                                        ? 'border-accent/45 bg-accent/[0.08]'
+                                        : 'border-line bg-surface-2'
+                                "
+                            >
+                                <div class="mb-1.5 flex items-center justify-between gap-2">
+                                    <span class="eyebrow">{{ sourceLabel(source) }}</span>
+                                    <button
+                                        type="button"
+                                        class="btn-sm"
+                                        :class="
+                                            segment.activeSource === source
+                                                ? 'btn-subtle'
+                                                : 'btn-secondary'
+                                        "
+                                        :disabled="!hasAlternativeText(segment, source)"
+                                        :title="
+                                            hasAlternativeText(segment, source)
+                                                ? `Use the ${sourceLabel(source).toLowerCase()} wording`
+                                                : 'This transcript has no sentence here'
+                                        "
+                                        @click.stop="selectAlternative(originalIndex, source)"
+                                    >
+                                        {{ segment.activeSource === source ? 'Selected' : 'Use' }}
+                                    </button>
+                                </div>
+                                <p
+                                    class="text-[13px] leading-relaxed"
                                     :class="
                                         hasAlternativeText(segment, source)
-                                            ? segment.activeSource === source
-                                                ? 'border-blue-500/40 bg-blue-500/15 text-blue-200'
-                                                : 'border-white/10 bg-white/5 text-gray-200 hover:bg-white/10'
-                                            : 'border-white/5 bg-white/5 text-gray-500 cursor-not-allowed'
+                                            ? 'text-fg-muted'
+                                            : 'text-fg-subtle italic'
                                     "
-                                    :disabled="!hasAlternativeText(segment, source)"
-                                    @click.stop="selectAlternative(originalIndex, source)"
                                 >
-                                    {{ segment.activeSource === source ? 'Selected' : 'Use' }}
-                                </button>
+                                    {{
+                                        hasAlternativeText(segment, source)
+                                            ? getAlternativeText(segment, source)
+                                            : 'No matching sentence detected.'
+                                    }}
+                                </p>
                             </div>
-                            <p
-                                class="text-sm leading-relaxed"
-                                :class="
-                                    hasAlternativeText(segment, source)
-                                        ? 'text-gray-200'
-                                        : 'text-gray-500 italic'
-                                "
-                            >
-                                {{
-                                    hasAlternativeText(segment, source)
-                                        ? getAlternativeText(segment, source)
-                                        : 'No matching sentence detected.'
-                                }}
-                            </p>
                         </div>
                     </div>
-                </div>
 
-                <!-- Edit Mode -->
-                <div
-                    v-else-if="editingIndex === originalIndex && tempSegment"
-                    class="space-y-4 bg-black/40 p-4 rounded-lg border border-white/10"
-                >
-                    <div v-if="!lockStructure" class="flex gap-4">
-                        <div class="flex flex-col gap-1.5">
-                            <label class="text-xs font-medium text-gray-400">Start</label>
-                            <input
-                                v-model="tempSegment.start"
-                                class="w-24 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
-                                placeholder="MM:SS"
-                            />
+                    <!-- Edit mode -->
+                    <div
+                        v-else-if="editingIndex === originalIndex && tempSegment"
+                        class="mt-1.5 animate-pop-in space-y-3 rounded-md border border-line-strong bg-surface-2 p-3"
+                        @keydown="onFormKeydown($event, saveEdit, cancelEdit)"
+                    >
+                        <div
+                            v-if="!lockStructure"
+                            class="grid grid-cols-[6.5rem_6.5rem_minmax(0,1fr)] gap-3"
+                        >
+                            <div>
+                                <label :for="`${uid}-start-${originalIndex}`" class="field-label"
+                                    >Start</label
+                                >
+                                <input
+                                    :id="`${uid}-start-${originalIndex}`"
+                                    v-model="tempSegment.start"
+                                    class="input input-sm font-mono"
+                                    placeholder="MM:SS"
+                                />
+                            </div>
+                            <div>
+                                <label :for="`${uid}-end-${originalIndex}`" class="field-label"
+                                    >End</label
+                                >
+                                <input
+                                    :id="`${uid}-end-${originalIndex}`"
+                                    v-model="tempSegment.end"
+                                    class="input input-sm font-mono"
+                                    placeholder="MM:SS"
+                                />
+                            </div>
+                            <div class="min-w-0">
+                                <label :for="`${uid}-speaker-${originalIndex}`" class="field-label"
+                                    >Speaker</label
+                                >
+                                <select
+                                    v-if="!addingNewSpeaker"
+                                    :id="`${uid}-speaker-${originalIndex}`"
+                                    :value="tempSegment.speaker"
+                                    data-testid="edit-speaker-select"
+                                    class="input input-sm"
+                                    @change="
+                                        onSpeakerSelect(($event.target as HTMLSelectElement).value)
+                                    "
+                                >
+                                    <option v-if="!tempSegment.speaker" value="" disabled>
+                                        Select speaker
+                                    </option>
+                                    <option
+                                        v-for="name in existingSpeakers"
+                                        :key="name"
+                                        :value="name"
+                                    >
+                                        {{ name }}
+                                    </option>
+                                    <option :value="NEW_SPEAKER_OPTION">Add new speaker…</option>
+                                </select>
+                                <div v-else class="flex gap-1.5">
+                                    <input
+                                        :id="`${uid}-speaker-${originalIndex}`"
+                                        :ref="setNewSpeakerInput"
+                                        v-model="tempSegment.speaker"
+                                        data-testid="edit-speaker-input"
+                                        class="input input-sm"
+                                        placeholder="New speaker name"
+                                    />
+                                    <button
+                                        type="button"
+                                        class="btn-ghost btn-sm btn-icon shrink-0"
+                                        aria-label="Choose an existing speaker instead"
+                                        title="Choose an existing speaker instead"
+                                        @click="cancelNewSpeaker"
+                                    >
+                                        <List aria-hidden="true" />
+                                    </button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="flex flex-col gap-1.5">
-                            <label class="text-xs font-medium text-gray-400">End</label>
-                            <input
-                                v-model="tempSegment.end"
-                                class="w-24 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
-                                placeholder="MM:SS"
-                            />
-                        </div>
-                        <div class="flex flex-col gap-1.5 flex-1">
-                            <label class="text-xs font-medium text-gray-400">Speaker</label>
-                            <select
-                                v-if="!addingNewSpeaker"
-                                :value="tempSegment.speaker"
-                                @change="
-                                    onSpeakerSelect(($event.target as HTMLSelectElement).value)
-                                "
-                                data-testid="edit-speaker-select"
-                                class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
+                        <div>
+                            <label :for="`${uid}-text-${originalIndex}`" class="field-label"
+                                >Text</label
                             >
-                                <option v-if="!tempSegment.speaker" value="" disabled>
+                            <textarea
+                                :id="`${uid}-text-${originalIndex}`"
+                                v-model="tempSegment.text"
+                                rows="3"
+                                class="input text-[14px]! leading-[1.6]!"
+                            ></textarea>
+                        </div>
+                        <div class="flex items-center justify-end gap-2">
+                            <span class="hint mr-auto hidden @lg:inline">
+                                <kbd class="kbd">⌘</kbd> <kbd class="kbd">↵</kbd> save ·
+                                <kbd class="kbd">Esc</kbd> cancel
+                            </span>
+                            <button
+                                type="button"
+                                data-testid="edit-cancel"
+                                class="btn-secondary btn-sm"
+                                @click="cancelEdit"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="edit-save"
+                                class="btn-primary btn-sm"
+                                @click="saveEdit"
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Split mode -->
+                    <div
+                        v-else-if="splittingIndex === originalIndex && splitDraft"
+                        class="mt-1.5 animate-pop-in space-y-3 rounded-md border border-line-strong bg-surface-2 p-3"
+                        @keydown="onFormKeydown($event, confirmSplit, cancelSplit)"
+                    >
+                        <div>
+                            <p class="section-title">Split segment</p>
+                            <p class="hint mt-0.5">
+                                Drag to the switch point, type it, or play the segment and capture
+                                the playhead.
+                            </p>
+                        </div>
+
+                        <!-- One slider; its thumb carries the time readout. -->
+                        <div class="relative pt-7">
+                            <span
+                                data-testid="split-time-display"
+                                class="pointer-events-none absolute top-0 -translate-x-1/2 rounded-sm bg-accent px-1.5 py-0.5 font-mono text-[11px] leading-4 text-accent-fg shadow-sm"
+                                :style="{
+                                    left: `calc(${splitPercent}% + ${8 - splitPercent * 0.16}px)`,
+                                }"
+                                >{{ formatTime(splitDraft.time) }}</span
+                            >
+                            <input
+                                v-model.number="splitDraft.time"
+                                type="range"
+                                :min="splitBounds.start"
+                                :max="splitBounds.end"
+                                step="0.05"
+                                class="block w-full"
+                                aria-label="Split point"
+                                data-testid="split-time-slider"
+                                @input="onSplitTimeChange"
+                            />
+                            <div
+                                class="mt-1 flex justify-between font-mono text-[11px] text-fg-subtle"
+                            >
+                                <span>{{ segment.start }}</span>
+                                <span>{{ segment.end }}</span>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap items-end gap-2">
+                            <div>
+                                <label :for="`${uid}-split-${originalIndex}`" class="field-label"
+                                    >Split at (seconds)</label
+                                >
+                                <input
+                                    :id="`${uid}-split-${originalIndex}`"
+                                    v-model.number="splitDraft.time"
+                                    type="number"
+                                    :min="splitBounds.start"
+                                    :max="splitBounds.end"
+                                    step="0.05"
+                                    class="input input-sm w-28 font-mono"
+                                    data-testid="split-time-input"
+                                    @input="onSplitTimeChange"
+                                />
+                            </div>
+                            <button
+                                v-if="getPlayhead"
+                                type="button"
+                                class="btn-secondary btn-sm"
+                                data-testid="split-use-playhead"
+                                title="Split where the audio or video player currently is"
+                                @click.stop="useCurrentPlayhead"
+                            >
+                                <Crosshair aria-hidden="true" />
+                                Use playhead
+                            </button>
+                        </div>
+
+                        <div class="grid gap-3 @xl:grid-cols-2">
+                            <div>
+                                <label :for="`${uid}-first-${originalIndex}`" class="field-label"
+                                    >First part</label
+                                >
+                                <textarea
+                                    :id="`${uid}-first-${originalIndex}`"
+                                    v-model="splitDraft.firstText"
+                                    rows="3"
+                                    class="input"
+                                ></textarea>
+                            </div>
+                            <div>
+                                <label :for="`${uid}-second-${originalIndex}`" class="field-label"
+                                    >Second part</label
+                                >
+                                <textarea
+                                    :id="`${uid}-second-${originalIndex}`"
+                                    v-model="splitDraft.secondText"
+                                    rows="3"
+                                    class="input"
+                                ></textarea>
+                            </div>
+                        </div>
+
+                        <div class="max-w-xs">
+                            <label
+                                :for="`${uid}-second-speaker-${originalIndex}`"
+                                class="field-label"
+                                >Speaker for the second part</label
+                            >
+                            <select
+                                v-if="!addingNewSplitSpeaker"
+                                :id="`${uid}-second-speaker-${originalIndex}`"
+                                :value="splitDraft.secondSpeaker"
+                                data-testid="split-second-speaker"
+                                class="input input-sm"
+                                @change="
+                                    onSplitSpeakerSelect(($event.target as HTMLSelectElement).value)
+                                "
+                            >
+                                <option v-if="!splitDraft.secondSpeaker" value="" disabled>
                                     Select speaker
                                 </option>
                                 <option v-for="name in existingSpeakers" :key="name" :value="name">
                                     {{ name }}
                                 </option>
-                                <option :value="NEW_SPEAKER_OPTION">+ Add new speaker…</option>
+                                <option :value="NEW_SPEAKER_OPTION">Add new speaker…</option>
                             </select>
-                            <div v-else class="flex gap-2">
+                            <div v-else class="flex gap-1.5">
                                 <input
-                                    :ref="setNewSpeakerInput"
-                                    v-model="tempSegment.speaker"
-                                    data-testid="edit-speaker-input"
-                                    class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
+                                    :id="`${uid}-second-speaker-${originalIndex}`"
+                                    :ref="setNewSplitSpeakerInput"
+                                    v-model="splitDraft.secondSpeaker"
                                     placeholder="New speaker name"
+                                    data-testid="split-second-speaker-input"
+                                    class="input input-sm"
                                 />
                                 <button
                                     type="button"
-                                    @click="cancelNewSpeaker"
+                                    class="btn-ghost btn-sm btn-icon shrink-0"
+                                    aria-label="Choose an existing speaker instead"
                                     title="Choose an existing speaker instead"
-                                    class="shrink-0 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-gray-300 hover:bg-white/10 transition-colors"
+                                    @click="cancelNewSplitSpeaker"
                                 >
-                                    List
+                                    <List aria-hidden="true" />
                                 </button>
                             </div>
                         </div>
-                    </div>
-                    <div class="flex flex-col gap-1.5">
-                        <label class="text-xs font-medium text-gray-400">Content</label>
-                        <textarea
-                            v-model="tempSegment.text"
-                            rows="3"
-                            class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white resize-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 outline-none transition-all"
-                        ></textarea>
-                    </div>
-                    <div class="flex justify-end gap-3 pt-2">
-                        <button
-                            @click="cancelEdit"
-                            class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-300 hover:bg-white/10 transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            @click="saveEdit"
-                            class="px-4 py-1.5 bg-emerald-500/20 border border-emerald-500/30 rounded-lg text-sm text-emerald-300 hover:bg-emerald-500/30 transition-colors font-medium"
-                        >
-                            Save Changes
-                        </button>
-                    </div>
-                </div>
 
-                <!-- Split Mode -->
-                <div
-                    v-else-if="splittingIndex === originalIndex && splitDraft"
-                    class="space-y-4 bg-black/40 p-4 rounded-lg border border-teal-500/20"
-                >
-                    <div class="flex items-center justify-between gap-3">
-                        <h4 class="text-xs font-semibold uppercase tracking-wide text-teal-200">
-                            Split segment
-                        </h4>
-                        <span
-                            class="font-mono text-xs text-teal-300"
-                            data-testid="split-time-display"
-                            >{{ formatTime(splitDraft.time) }}</span
-                        >
-                    </div>
-                    <p class="text-xs text-gray-500">
-                        Choose the exact switch point. Preview the segment with the play buttons
-                        above, then capture the playhead or drag the slider.
-                    </p>
-
-                    <div class="flex items-center gap-3">
-                        <span class="font-mono text-[11px] text-gray-500">{{ segment.start }}</span>
-                        <input
-                            v-model.number="splitDraft.time"
-                            type="range"
-                            :min="splitBounds.start"
-                            :max="splitBounds.end"
-                            step="0.05"
-                            class="flex-1 accent-teal-400"
-                            data-testid="split-time-slider"
-                            @input="onSplitTimeChange"
-                        />
-                        <span class="font-mono text-[11px] text-gray-500">{{ segment.end }}</span>
-                    </div>
-
-                    <div class="flex flex-wrap items-end gap-3">
-                        <div class="flex flex-col gap-1.5">
-                            <label class="text-xs font-medium text-gray-400"
-                                >Switch point (seconds)</label
-                            >
-                            <input
-                                v-model.number="splitDraft.time"
-                                type="number"
-                                :min="splitBounds.start"
-                                :max="splitBounds.end"
-                                step="0.05"
-                                class="w-32 bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
-                                data-testid="split-time-input"
-                                @input="onSplitTimeChange"
-                            />
-                        </div>
-                        <button
-                            v-if="getPlayhead"
-                            type="button"
-                            class="px-3 py-1.5 bg-teal-500/15 border border-teal-500/30 rounded-lg text-xs text-teal-200 hover:bg-teal-500/25 transition-colors"
-                            data-testid="split-use-playhead"
-                            @click.stop="useCurrentPlayhead"
-                        >
-                            Use current playback position
-                        </button>
-                    </div>
-
-                    <div class="grid gap-3 md:grid-cols-2">
-                        <div class="flex flex-col gap-1.5">
-                            <label class="text-xs font-medium text-gray-400">First part</label>
-                            <textarea
-                                v-model="splitDraft.firstText"
-                                rows="3"
-                                class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white resize-none focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
-                            ></textarea>
-                        </div>
-                        <div class="flex flex-col gap-1.5">
-                            <label class="text-xs font-medium text-gray-400">Second part</label>
-                            <textarea
-                                v-model="splitDraft.secondText"
-                                rows="3"
-                                class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white resize-none focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
-                            ></textarea>
-                        </div>
-                    </div>
-
-                    <div class="flex flex-col gap-1.5">
-                        <label class="text-xs font-medium text-gray-400"
-                            >Speaker for second part</label
-                        >
-                        <select
-                            v-if="!addingNewSplitSpeaker"
-                            :value="splitDraft.secondSpeaker"
-                            @change="
-                                onSplitSpeakerSelect(($event.target as HTMLSelectElement).value)
-                            "
-                            data-testid="split-second-speaker"
-                            class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
-                        >
-                            <option v-if="!splitDraft.secondSpeaker" value="" disabled>
-                                Select speaker
-                            </option>
-                            <option v-for="name in existingSpeakers" :key="name" :value="name">
-                                {{ name }}
-                            </option>
-                            <option :value="NEW_SPEAKER_OPTION">+ Add new speaker…</option>
-                        </select>
-                        <div v-else class="flex gap-2">
-                            <input
-                                :ref="setNewSplitSpeakerInput"
-                                v-model="splitDraft.secondSpeaker"
-                                placeholder="New speaker name"
-                                data-testid="split-second-speaker-input"
-                                class="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white focus:border-teal-500/50 focus:ring-1 focus:ring-teal-500/50 outline-none transition-all"
-                            />
+                        <div class="flex items-center justify-end gap-2">
+                            <span v-if="!canConfirmSplit" class="hint mr-auto">
+                                Pick a point strictly between {{ segment.start }} and
+                                {{ segment.end }}.
+                            </span>
                             <button
                                 type="button"
-                                @click="cancelNewSplitSpeaker"
-                                title="Choose an existing speaker instead"
-                                class="shrink-0 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-xs text-gray-300 hover:bg-white/10 transition-colors"
+                                data-testid="split-cancel"
+                                class="btn-secondary btn-sm"
+                                @click="cancelSplit"
                             >
-                                List
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                :disabled="!canConfirmSplit"
+                                data-testid="confirm-split"
+                                class="btn-primary btn-sm"
+                                @click="confirmSplit"
+                            >
+                                <Scissors aria-hidden="true" />
+                                Split
                             </button>
                         </div>
                     </div>
-
-                    <div class="flex justify-end gap-3 pt-2">
-                        <button
-                            @click="cancelSplit"
-                            class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-300 hover:bg-white/10 transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            :disabled="!canConfirmSplit"
-                            data-testid="confirm-split"
-                            class="px-4 py-1.5 bg-teal-500/20 border border-teal-500/30 rounded-lg text-sm text-teal-300 hover:bg-teal-500/30 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-                            @click="confirmSplit"
-                        >
-                            Add Split
-                        </button>
-                    </div>
                 </div>
-            </div>
 
-            <!-- One row toolbar: playback stays visible (it is the main way people
-           review), the editing actions appear on hover so the list stays quiet
-           while scrolling.
-           On wide screens it occupies its own grid column beside the prose, so
-           the transcript keeps a readable measure, the toolbar sits next to the
-           text it acts on, and nothing ever overlaps the words. Below `md` it
-           falls back to an overlay in the row's corner. -->
-            <div
-                class="absolute right-2 top-1.5 flex items-center gap-1 rounded-lg transition-colors group-hover:bg-black/60 group-hover:px-1.5 group-hover:py-1 group-hover:shadow-lg group-hover:ring-1 group-hover:ring-white/10 group-hover:backdrop-blur-md md:static md:col-start-3 md:row-start-1 md:h-6 md:justify-self-start md:group-hover:bg-transparent md:group-hover:p-0 md:group-hover:shadow-none md:group-hover:ring-0"
-            >
-                <button
-                    v-if="audioAvailable"
-                    type="button"
-                    :data-testid="`segment-preview-${originalIndex}`"
-                    class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
-                    :class="
-                        previewIndex === originalIndex
-                            ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-300'
-                            : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                    "
-                    :title="
-                        previewIndex === originalIndex
-                            ? 'Stop audio preview'
-                            : 'Play original audio for this segment'
-                    "
-                    @click.stop="requestPreview(originalIndex)"
-                >
-                    <svg
-                        v-if="previewIndex === originalIndex"
-                        class="h-3 w-3"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
+                <!-- Playback: always visible, it is the main way people review. -->
+                <div class="col-start-3 row-start-1 flex items-start gap-0.5 @4xl:col-start-4">
+                    <button
+                        v-if="audioAvailable"
+                        type="button"
+                        :data-testid="`segment-preview-${originalIndex}`"
+                        class="btn-ghost btn-sm btn-icon"
+                        :aria-pressed="previewIndex === originalIndex ? 'true' : 'false'"
+                        :aria-label="
+                            previewIndex === originalIndex
+                                ? 'Stop audio preview'
+                                : 'Play original audio for this segment'
+                        "
+                        :title="
+                            previewIndex === originalIndex
+                                ? 'Stop audio preview'
+                                : 'Play original audio for this segment'
+                        "
+                        @click.stop="requestPreview(originalIndex)"
                     >
-                        <rect x="6" y="5" width="4" height="14" rx="1" />
-                        <rect x="14" y="5" width="4" height="14" rx="1" />
-                    </svg>
-                    <svg v-else class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M8 5v14l11-7z" />
-                    </svg>
-                </button>
-                <button
-                    v-if="videoAvailable"
-                    type="button"
-                    :data-testid="`segment-play-video-${originalIndex}`"
-                    class="flex h-6 w-6 items-center justify-center rounded-md border transition-colors"
-                    :class="
-                        videoPreviewIndex === originalIndex
-                            ? 'border-blue-500/40 bg-blue-500/20 text-blue-300'
-                            : 'border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
-                    "
-                    :title="
-                        videoPreviewIndex === originalIndex
-                            ? 'Stop video preview'
-                            : 'Play this video segment'
-                    "
-                    @click.stop="requestVideoPreview(originalIndex)"
-                >
-                    <svg
-                        v-if="videoPreviewIndex === originalIndex"
-                        class="h-3 w-3"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.8"
+                        <Pause v-if="previewIndex === originalIndex" aria-hidden="true" />
+                        <Volume2 v-else aria-hidden="true" />
+                    </button>
+                    <button
+                        v-if="videoAvailable"
+                        type="button"
+                        :data-testid="`segment-play-video-${originalIndex}`"
+                        class="btn-ghost btn-sm btn-icon"
+                        :aria-pressed="videoPreviewIndex === originalIndex ? 'true' : 'false'"
+                        :aria-label="
+                            videoPreviewIndex === originalIndex
+                                ? 'Stop video preview'
+                                : 'Play this video segment'
+                        "
+                        :title="
+                            videoPreviewIndex === originalIndex
+                                ? 'Stop video preview'
+                                : 'Play this video segment'
+                        "
+                        @click.stop="requestVideoPreview(originalIndex)"
                     >
-                        <rect x="4" y="5" width="16" height="14" rx="2" />
-                        <rect
-                            x="9"
-                            y="9"
-                            width="6"
-                            height="6"
-                            rx="1"
-                            fill="currentColor"
-                            stroke="none"
-                        />
-                    </svg>
-                    <svg
-                        v-else
-                        class="h-3 w-3"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.8"
+                        <Square v-if="videoPreviewIndex === originalIndex" aria-hidden="true" />
+                        <SquarePlay v-else aria-hidden="true" />
+                    </button>
+                    <button
+                        v-if="videoAvailable"
+                        type="button"
+                        :data-testid="`segment-play-from-${originalIndex}`"
+                        class="btn-ghost btn-sm btn-icon"
+                        aria-label="Play video from here"
+                        title="Play video from here"
+                        @click.stop="requestPlayFrom(originalIndex)"
                     >
-                        <rect x="4" y="5" width="16" height="14" rx="2" />
-                        <path d="M10 9.2l5 2.8-5 2.8z" fill="currentColor" stroke="none" />
-                    </svg>
-                </button>
-                <button
-                    v-if="videoAvailable"
-                    type="button"
-                    :data-testid="`segment-play-from-${originalIndex}`"
-                    class="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white"
-                    title="Play video from here"
-                    @click.stop="requestPlayFrom(originalIndex)"
-                >
-                    <svg
-                        class="h-3 w-3"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="1.8"
-                    >
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v9" />
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 8l4 4 4-4" />
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 19h16" />
-                    </svg>
-                </button>
+                        <CirclePlay aria-hidden="true" />
+                    </button>
+                </div>
 
-                <template v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex">
-                    <span class="mx-0.5 hidden h-4 w-px bg-white/15 group-hover:block"></span>
+                <!-- Editing actions. Wide editors: their own column before the
+             playback buttons, faded in on hover / focus and for the current or
+             selected row, with the width always reserved so nothing covers the
+             text. Narrow editors: a line under the current row's text. -->
+                <div
+                    v-if="editingIndex !== originalIndex && splittingIndex !== originalIndex"
+                    role="toolbar"
+                    :aria-label="`Actions for segment at ${segment.start}`"
+                    class="col-start-2 row-start-2 -ml-1.5 items-center gap-0.5 pt-1 transition-opacity duration-150 @4xl:col-start-3 @4xl:row-start-1 @4xl:ml-0 @4xl:flex @4xl:items-start @4xl:pt-0"
+                    :class="[
+                        activeIndex === originalIndex
+                            ? 'flex animate-fade-in @4xl:animate-none'
+                            : 'hidden',
+                        showRowActions(originalIndex)
+                            ? ''
+                            : '@4xl:pointer-events-none @4xl:opacity-0 @4xl:group-focus-within:pointer-events-auto @4xl:group-focus-within:opacity-100 @4xl:group-hover:pointer-events-auto @4xl:group-hover:opacity-100',
+                    ]"
+                    @click.stop
+                >
                     <button
                         v-if="segmentNeedsReview(segment, originalIndex) || segment.reviewResolved"
+                        type="button"
                         :data-testid="`segment-mark-done-${originalIndex}`"
-                        @click.stop="toggleReviewResolved(originalIndex)"
-                        class="hidden rounded border px-2 py-1 text-xs transition-colors group-hover:block"
-                        :class="
-                            segment.reviewResolved
-                                ? 'bg-white/5 text-gray-300 border-white/10 hover:bg-white/10'
-                                : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/30'
-                        "
+                        class="btn-ghost btn-sm btn-icon"
+                        :class="segment.reviewResolved ? '' : 'text-success!'"
+                        :aria-label="segment.reviewResolved ? 'Reopen for review' : 'Mark done'"
                         :title="
                             segment.reviewResolved
                                 ? 'Return this segment to the review list'
                                 : 'Mark this segment as reviewed and hide it from the review list'
                         "
+                        @click.stop="toggleReviewResolved(originalIndex)"
                     >
-                        {{ segment.reviewResolved ? 'Reopen' : 'Mark Done' }}
+                        <RotateCcw v-if="segment.reviewResolved" aria-hidden="true" />
+                        <CheckCheck v-else aria-hidden="true" />
                     </button>
                     <button
+                        type="button"
+                        :data-testid="`segment-edit-${originalIndex}`"
+                        class="btn-ghost btn-sm btn-icon"
+                        aria-label="Edit"
+                        title="Edit (Enter)"
                         @click.stop="startEditing(originalIndex)"
-                        class="hidden rounded border border-blue-500/30 bg-blue-500/20 px-2 py-1 text-xs text-blue-300 transition-colors hover:bg-blue-500/30 group-hover:block"
                     >
-                        Edit
+                        <Pencil aria-hidden="true" />
                     </button>
                     <template v-if="!lockStructure">
                         <button
+                            type="button"
                             :data-testid="`segment-split-${originalIndex}`"
-                            @click.stop="startSplitting(originalIndex)"
-                            class="hidden rounded border border-teal-500/30 bg-teal-500/20 px-2 py-1 text-xs text-teal-300 transition-colors hover:bg-teal-500/30 group-hover:block"
+                            class="btn-ghost btn-sm btn-icon"
+                            aria-label="Split"
                             title="Split this segment at a chosen point"
+                            @click.stop="startSplitting(originalIndex)"
                         >
-                            Split
+                            <Scissors aria-hidden="true" />
                         </button>
                         <button
                             v-if="originalIndex < segments.length - 1"
-                            @click.stop="mergeDown(originalIndex)"
-                            class="hidden rounded border border-purple-500/30 bg-purple-500/20 px-2 py-1 text-xs text-purple-300 transition-colors hover:bg-purple-500/30 group-hover:block"
+                            type="button"
+                            :data-testid="`segment-merge-${originalIndex}`"
+                            class="btn-ghost btn-sm btn-icon"
+                            aria-label="Merge with next"
                             title="Merge with next"
+                            @click.stop="mergeDown(originalIndex)"
                         >
-                            Merge ↓
+                            <Combine aria-hidden="true" />
                         </button>
+                        <span aria-hidden="true" class="mx-0.5 h-4 w-px bg-line-strong"></span>
                         <button
+                            type="button"
                             :data-testid="`segment-delete-${originalIndex}`"
+                            class="btn-ghost btn-sm btn-icon hover:bg-danger/15! hover:text-danger!"
+                            aria-label="Delete"
+                            title="Delete this segment"
                             @click.stop="deleteSegment(originalIndex)"
-                            class="hidden rounded border border-red-500/30 bg-red-500/20 px-2 py-1 text-xs text-red-300 transition-colors hover:bg-red-500/30 group-hover:block"
                         >
-                            Del
+                            <Trash2 aria-hidden="true" />
                         </button>
                     </template>
-                </template>
+                    <span
+                        aria-hidden="true"
+                        class="mx-1 mt-[5px] hidden h-4 w-px bg-line-strong @4xl:block"
+                    ></span>
+                </div>
+            </div>
+
+            <!-- Selection bar: floats at the bottom of the window while the
+           transcript is on screen, so it never covers the search bar. -->
+            <!-- The anchor sits after the last row and the bar hangs below it,
+                 into the bottom padding reserved while a selection exists, so at
+                 the end of the list it never covers the last row or the footer. -->
+            <div class="pointer-events-none sticky bottom-[8rem] z-30 h-0">
+                <div class="absolute inset-x-0 top-3 flex justify-center">
+                    <Transition name="pop">
+                        <div
+                            v-if="selectedIndices.size > 0 && !lockStructure"
+                            data-testid="selection-bar"
+                            role="toolbar"
+                            aria-label="Selected segments"
+                            class="popover pointer-events-auto flex items-center gap-1.5 py-1.5 pr-1.5 pl-3.5"
+                        >
+                            <span class="text-[13px] font-medium whitespace-nowrap text-fg"
+                                >{{ selectedIndices.size }} selected</span
+                            >
+                            <span class="hint mr-1 hidden whitespace-nowrap @2xl:inline"
+                                >Shift-click rows to add or remove</span
+                            >
+                            <button
+                                type="button"
+                                data-testid="selection-merge"
+                                class="btn-subtle btn-sm"
+                                :disabled="selectedIndices.size < 2"
+                                :title="
+                                    selectedIndices.size < 2
+                                        ? 'Select at least two segments to merge'
+                                        : 'Merge everything from the first to the last selected segment'
+                                "
+                                @click="mergeSelected"
+                            >
+                                <Combine aria-hidden="true" />
+                                Merge
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="selection-delete"
+                                class="btn-danger btn-sm"
+                                @click="deleteSelected"
+                            >
+                                <Trash2 aria-hidden="true" />
+                                Delete
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="selection-clear"
+                                class="btn-ghost btn-sm btn-icon"
+                                aria-label="Clear selection"
+                                title="Clear selection (Esc)"
+                                @click="selectedIndices.clear()"
+                            >
+                                <X aria-hidden="true" />
+                            </button>
+                        </div>
+                    </Transition>
+                </div>
             </div>
         </div>
+
+        <p
+            v-if="visibleSegments.length > 0"
+            class="hint flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line px-3 py-2"
+        >
+            <span>Click a row to focus it</span>
+            <span><kbd class="kbd">↑</kbd> <kbd class="kbd">↓</kbd> move</span>
+            <span><kbd class="kbd">↵</kbd> edit</span>
+            <span><kbd class="kbd">Space</kbd> or Shift-click select</span>
+        </p>
     </div>
 </template>

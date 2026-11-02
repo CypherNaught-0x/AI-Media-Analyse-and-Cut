@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+// A single toast in the bottom-right corner. Plain success messages dismiss
+// themselves after a few seconds (hovering pauses that). Info toasts stay:
+// callers use them for in-flight work ("Installing update..."), sometimes with
+// progress=null. Errors, progress and toasts with an action stay too.
+import { computed, inject, onBeforeUnmount, ref, watch } from 'vue';
+import { routeLocationKey } from 'vue-router';
+import { CircleAlert, CircleCheck, Info, X } from '@lucide/vue';
 
 type ToastTone = 'info' | 'success' | 'error';
+
+const AUTO_DISMISS_MS = 5000;
 
 const props = withDefaults(
     defineProps<{
@@ -26,105 +34,110 @@ const emit = defineEmits<{
 const toneStyles = computed(() => {
     switch (props.tone) {
         case 'success':
-            return {
-                ring: 'border-emerald-400/30',
-                icon: 'bg-emerald-500/15 text-emerald-300',
-                bar: 'bg-emerald-400',
-            };
+            return { icon: CircleCheck, iconClass: 'text-success', bar: 'bg-success' };
         case 'error':
-            return {
-                ring: 'border-red-400/30',
-                icon: 'bg-red-500/15 text-red-300',
-                bar: 'bg-red-400',
-            };
+            return { icon: CircleAlert, iconClass: 'text-danger', bar: 'bg-danger' };
         default:
-            return {
-                ring: 'border-blue-400/30',
-                icon: 'bg-blue-500/15 text-blue-300',
-                bar: 'bg-blue-400',
-            };
+            return { icon: Info, iconClass: 'text-info', bar: 'bg-accent' };
     }
 });
+
+const autoDismisses = computed(
+    () => props.show && props.tone === 'success' && props.progress === null && !props.actionLabel,
+);
+
+// Home has the activity bar along the bottom; elsewhere sit in the corner.
+// inject with a default so Toast still works when mounted without a router.
+const route = inject(routeLocationKey, null);
+const offsetClass = computed(() => (route?.path === '/' ? 'bottom-14' : 'bottom-5'));
+
+let timer: ReturnType<typeof setTimeout> | null = null;
+const hovered = ref(false);
+
+function clearTimer() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+}
+
+function schedule() {
+    clearTimer();
+    if (!autoDismisses.value || hovered.value) return;
+    timer = setTimeout(() => {
+        timer = null;
+        emit('dismiss');
+    }, AUTO_DISMISS_MS);
+}
+
+// Restart the countdown whenever the toast's content changes.
+watch(() => [autoDismisses.value, props.message, props.tone] as const, schedule, {
+    immediate: true,
+});
+
+function onEnter() {
+    hovered.value = true;
+    clearTimer();
+}
+
+function onLeave() {
+    hovered.value = false;
+    schedule();
+}
+
+onBeforeUnmount(clearTimer);
 </script>
 
 <template>
-    <transition name="toast-slide">
+    <Transition name="slide-up">
         <div
             v-if="show"
-            class="fixed top-6 right-6 z-[200] w-80 max-w-[calc(100vw-3rem)]"
+            class="fixed right-5 z-[210] w-[340px] max-w-[calc(100vw-2.5rem)]"
+            :class="offsetClass"
             role="status"
             aria-live="polite"
+            data-testid="toast"
+            @mouseenter="onEnter"
+            @mouseleave="onLeave"
         >
-            <div
-                class="rounded-2xl border bg-gray-950/95 shadow-2xl shadow-black/40 backdrop-blur-md p-4"
-                :class="toneStyles.ring"
-            >
-                <div class="flex items-start gap-3">
-                    <div
-                        class="mt-0.5 h-8 w-8 rounded-full flex items-center justify-center"
-                        :class="toneStyles.icon"
-                    >
-                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M13 16h-1v-4h-1m1-4h.01M12 8a4 4 0 00-4 4v1a4 4 0 004 4h0a4 4 0 004-4v-1a4 4 0 00-4-4z"
+            <div class="popover flex items-start gap-3 p-3.5 pr-2.5">
+                <component
+                    :is="toneStyles.icon"
+                    class="mt-px h-[18px] w-[18px] shrink-0"
+                    :class="toneStyles.iconClass"
+                    aria-hidden="true"
+                />
+                <div class="min-w-0 flex-1">
+                    <p class="text-[13px] leading-snug text-fg">{{ message }}</p>
+                    <div v-if="progress !== null" class="mt-2.5 flex items-center gap-2.5">
+                        <div class="h-1 flex-1 overflow-hidden rounded-full bg-surface-3">
+                            <div
+                                data-testid="toast-progress"
+                                class="h-full rounded-full transition-[width] duration-300 ease-out"
+                                :class="toneStyles.bar"
+                                :style="{ width: `${progress}%` }"
                             />
-                        </svg>
-                    </div>
-                    <div class="flex-1">
-                        <p class="text-sm text-gray-100 leading-snug">{{ message }}</p>
-                        <div v-if="progress !== null" class="mt-3">
-                            <div class="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
-                                <div
-                                    class="h-full transition-all duration-300"
-                                    :class="toneStyles.bar"
-                                    :style="{ width: `${progress}%` }"
-                                />
-                            </div>
-                            <p class="mt-1 text-xs text-gray-400">{{ Math.round(progress) }}%</p>
                         </div>
-                        <div v-if="actionLabel" class="mt-3">
-                            <button
-                                class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded-lg bg-white/10 text-gray-100 hover:bg-white/20 transition focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
-                                @click="emit('action')"
-                            >
-                                {{ actionLabel }}
-                            </button>
-                        </div>
+                        <span class="w-8 text-right font-mono text-[11px] text-fg-subtle">
+                            {{ Math.round(progress) }}%
+                        </span>
                     </div>
                     <button
-                        class="h-7 w-7 rounded-lg text-gray-400 hover:text-gray-200 hover:bg-white/10 transition focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
-                        @click="emit('dismiss')"
-                        aria-label="Dismiss"
+                        v-if="actionLabel"
+                        type="button"
+                        class="btn-primary btn-sm mt-3"
+                        @click="emit('action')"
                     >
-                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M6 18L18 6M6 6l12 12"
-                            />
-                        </svg>
+                        {{ actionLabel }}
                     </button>
                 </div>
+                <button
+                    type="button"
+                    class="btn-ghost btn-sm btn-icon -mt-0.5 shrink-0"
+                    aria-label="Dismiss"
+                    @click="emit('dismiss')"
+                >
+                    <X aria-hidden="true" />
+                </button>
             </div>
         </div>
-    </transition>
+    </Transition>
 </template>
-
-<style scoped>
-.toast-slide-enter-active,
-.toast-slide-leave-active {
-    transition:
-        opacity 0.25s ease,
-        transform 0.25s ease;
-}
-
-.toast-slide-enter-from,
-.toast-slide-leave-to {
-    opacity: 0;
-    transform: translateY(-8px);
-}
-</style>

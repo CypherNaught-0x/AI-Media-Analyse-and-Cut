@@ -1,5 +1,10 @@
 <script setup lang="ts">
+// Modal for analysis failures: what went wrong, the AI's raw reply when there
+// is one, and ways to report it (export logs, copy the details).
+import { computed, ref } from 'vue';
 import { save } from '@tauri-apps/plugin-dialog';
+import { Check, Copy, Download, TriangleAlert } from '@lucide/vue';
+import UiDialog from './ui/UiDialog.vue';
 import { useSettings } from '../composables/useSettings';
 import { commands } from '../bindings';
 import { errorMessage } from '../utils/appError';
@@ -19,6 +24,25 @@ const emit = defineEmits<{
     dismiss: [];
     'update:status': [message: string];
 }>();
+
+/** Only failures that came with an AI reply are "AI response" errors. */
+const isAiError = computed(() => !!props.rawResponse || !!props.parseError);
+const title = computed(() => (isAiError.value ? 'AI response error' : 'Something went wrong'));
+
+const rawCopied = ref(false);
+let rawCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function copyRawResponse() {
+    try {
+        await navigator.clipboard.writeText(props.rawResponse);
+        rawCopied.value = true;
+        if (rawCopiedTimer) clearTimeout(rawCopiedTimer);
+        rawCopiedTimer = setTimeout(() => (rawCopied.value = false), 1500);
+        emit('update:status', 'Raw AI response copied to clipboard.');
+    } catch (e) {
+        console.error('Failed to copy:', e);
+    }
+}
 
 async function copyErrorDetails() {
     const details = `Error: ${props.message}
@@ -65,153 +89,67 @@ async function exportLogs() {
 </script>
 
 <template>
-    <transition name="fade">
-        <div
-            v-if="show"
-            class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
-        >
-            <div
-                class="w-full max-w-3xl max-h-[80vh] bg-gray-900 rounded-2xl border border-red-500/30 shadow-2xl shadow-red-500/10 flex flex-col overflow-hidden"
+    <UiDialog
+        :open="show"
+        :title="title"
+        :description="message"
+        size="lg"
+        tone="danger"
+        @close="emit('dismiss')"
+    >
+        <template #icon>
+            <span
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-danger/15 text-danger"
             >
-                <!-- Header -->
-                <div
-                    class="flex items-center justify-between p-6 border-b border-white/10 bg-red-500/10"
+                <TriangleAlert class="h-4 w-4" aria-hidden="true" />
+            </span>
+        </template>
+
+        <div class="space-y-4">
+            <div v-if="parseError">
+                <p class="field-label">Parse error</p>
+                <code
+                    class="well block px-3 py-2 font-mono text-[12px] break-words whitespace-pre-wrap text-danger"
+                    >{{ parseError }}</code
                 >
-                    <div class="flex items-center gap-3">
-                        <div
-                            class="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center"
-                        >
-                            <svg
-                                class="w-6 h-6 text-red-400"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                                />
-                            </svg>
-                        </div>
-                        <div>
-                            <h2 class="text-xl font-bold text-red-400">AI Response Error</h2>
-                            <p class="text-sm text-gray-400">{{ message }}</p>
-                        </div>
-                    </div>
+            </div>
+
+            <div v-if="rawResponse">
+                <div class="mb-1.5 flex items-center justify-between gap-2">
+                    <p class="field-label mb-0">Raw AI response</p>
                     <button
-                        @click="emit('dismiss')"
-                        class="p-2 hover:bg-white/10 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
+                        type="button"
+                        class="btn-ghost btn-sm"
+                        data-testid="copy-raw-response"
+                        @click="copyRawResponse"
                     >
-                        <svg
-                            class="w-5 h-5 text-gray-400"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                        >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                stroke-width="2"
-                                d="M6 18L18 6M6 6l12 12"
-                            />
-                        </svg>
+                        <Check v-if="rawCopied" aria-hidden="true" />
+                        <Copy v-else aria-hidden="true" />
+                        {{ rawCopied ? 'Copied' : 'Copy' }}
                     </button>
                 </div>
-
-                <!-- Content -->
-                <div class="flex-1 overflow-y-auto p-6 space-y-4">
-                    <!-- Parse Error -->
-                    <div v-if="parseError" class="bg-black/30 rounded-xl p-4 border border-white/5">
-                        <h3
-                            class="text-sm font-semibold text-gray-300 mb-2 uppercase tracking-wider"
-                        >
-                            Parse Error
-                        </h3>
-                        <code class="text-sm text-red-300 font-mono">{{ parseError }}</code>
-                    </div>
-
-                    <!-- Raw Response -->
-                    <div class="bg-black/30 rounded-xl p-4 border border-white/5">
-                        <h3
-                            class="text-sm font-semibold text-gray-300 mb-2 uppercase tracking-wider"
-                        >
-                            Raw AI Response
-                        </h3>
-                        <pre
-                            class="text-xs text-gray-400 font-mono whitespace-pre-wrap break-words max-h-[40vh] overflow-y-auto bg-black/50 rounded-lg p-4"
-                            >{{ rawResponse }}</pre>
-                    </div>
-                </div>
-
-                <!-- Footer -->
-                <div
-                    class="p-6 border-t border-white/10 bg-black/30 flex items-center justify-between gap-4"
-                >
-                    <p class="text-xs text-gray-500">
-                        Export logs and copy this information when reporting issues.
-                    </p>
-                    <div class="flex gap-3">
-                        <button
-                            @click="emit('dismiss')"
-                            class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
-                        >
-                            Dismiss
-                        </button>
-                        <button
-                            @click="exportLogs"
-                            class="px-6 py-2 bg-white/10 hover:bg-white/20 text-gray-300 font-medium rounded-xl transition-all border border-white/10 flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-blue-500/50 focus-visible:outline-none"
-                        >
-                            <svg
-                                class="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M7 10l5 5m0 0l5-5m-5 5V3"
-                                />
-                            </svg>
-                            Export Logs
-                        </button>
-                        <button
-                            @click="copyErrorDetails"
-                            class="px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl transition-all flex items-center gap-2 focus-visible:ring-2 focus-visible:ring-red-500/50 focus-visible:outline-none"
-                        >
-                            <svg
-                                class="w-4 h-4"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"
-                                />
-                            </svg>
-                            Copy All
-                        </button>
-                    </div>
-                </div>
+                <pre
+                    class="well max-h-[40vh] overflow-auto p-3 font-mono text-[11.5px] leading-relaxed break-words whitespace-pre-wrap text-fg-muted"
+                    >{{ rawResponse }}</pre>
             </div>
+
+            <p class="hint">Export the logs and copy these details when you report the issue.</p>
         </div>
-    </transition>
+
+        <template #footer>
+            <div class="mr-auto flex gap-2">
+                <button type="button" class="btn-secondary" @click="exportLogs">
+                    <Download aria-hidden="true" />
+                    Export logs
+                </button>
+                <button type="button" class="btn-secondary" @click="copyErrorDetails">
+                    <Copy aria-hidden="true" />
+                    Copy all
+                </button>
+            </div>
+            <button type="button" class="btn-primary" data-autofocus @click="emit('dismiss')">
+                Dismiss
+            </button>
+        </template>
+    </UiDialog>
 </template>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-    transition: opacity 0.3s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-    opacity: 0;
-}
-</style>

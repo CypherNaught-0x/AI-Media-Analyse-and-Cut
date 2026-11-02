@@ -1,5 +1,17 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+    AudioLines,
+    Check,
+    ChevronDown,
+    Eye,
+    EyeOff,
+    Film,
+    Info,
+    Languages,
+    Loader2,
+    TriangleAlert,
+} from '@lucide/vue';
 import { mediaUrl } from '../utils/mediaUrl';
 import Editor from './Editor.vue';
 import SubtitleExport from './SubtitleExport.vue';
@@ -7,10 +19,10 @@ import type { TranscriptSegment } from '../types';
 import { parseTime } from '../composables/useTimeFormat';
 import { detectTranscriptBlacklistMatches } from '../utils/transcriptBlacklist';
 import { SUPPORTED_TRANSCRIPT_LANGUAGES } from '../utils/transcriptLanguages';
-import UserIcon from '../assets/icons/user.svg?component';
-import TranslateIcon from '../assets/icons/translate.svg?component';
-import CheckIcon from '../assets/icons/check.svg?component';
-import ChevronDownIcon from '../assets/icons/chevron-down.svg?component';
+import { speakerColor } from '../utils/speakerColors';
+import PageHeader from './ui/PageHeader.vue';
+import SectionCard from './ui/SectionCard.vue';
+import UiSwitch from './ui/UiSwitch.vue';
 
 const props = defineProps<{
     inputPath: string;
@@ -50,6 +62,12 @@ const showOnlyReviewSegments = ref(false);
 const reviewThresholdPercent = ref(85);
 const hideBlacklistFromReviewFilter = ref(false);
 const speakerVisibility = ref<Record<string, boolean>>({});
+// Last reported media position (either player), for the editor's playing-row highlight.
+const playhead = ref<number | null>(null);
+const languageMenuRoot = ref<HTMLElement | null>(null);
+const languageTrigger = ref<HTMLButtonElement | null>(null);
+const languageMenu = ref<HTMLElement | null>(null);
+const uid = Math.random().toString(36).slice(2, 8);
 
 const syncSpeakerVisibility = (speakers: string[]) => {
     const nextVisibility: Record<string, boolean> = {};
@@ -89,6 +107,18 @@ const toggleSpeakerVisibility = (speaker: string, event: MouseEvent) => {
         [speaker]: !isSpeakerVisible(speaker),
     };
 };
+
+const showAllSpeakers = () => {
+    speakerVisibility.value = Object.fromEntries(props.uniqueSpeakers.map((name) => [name, true]));
+};
+
+const speakerSegmentCounts = computed(() => {
+    const counts: Record<string, number> = {};
+    for (const segment of props.displaySegments) {
+        counts[segment.speaker] = (counts[segment.speaker] ?? 0) + 1;
+    }
+    return counts;
+});
 
 const speakerVisibleSegments = computed(() =>
     props.displaySegments
@@ -178,10 +208,77 @@ const reviewSegmentCount = computed(
 function selectLanguage(langName: string) {
     emit('update:targetLanguage', langName);
     showLanguageDropdown.value = false;
+    languageTrigger.value?.focus();
     if (props.translations[langName]) {
         emit('update:currentLanguage', langName);
     }
 }
+
+function languageOptions(): HTMLButtonElement[] {
+    return Array.from(
+        languageMenu.value?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [],
+    );
+}
+
+async function toggleLanguageDropdown() {
+    showLanguageDropdown.value = !showLanguageDropdown.value;
+    if (!showLanguageDropdown.value) return;
+    await nextTick();
+    const options = languageOptions();
+    (options.find((o) => o.getAttribute('aria-selected') === 'true') ?? options[0])?.focus();
+}
+
+function closeLanguageDropdown(refocus = false) {
+    if (!showLanguageDropdown.value) return;
+    showLanguageDropdown.value = false;
+    if (refocus) languageTrigger.value?.focus();
+}
+
+function onLanguageMenuKeydown(event: KeyboardEvent) {
+    const options = languageOptions();
+    const index = options.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number | null = null;
+    if (event.key === 'ArrowDown') next = Math.min(index + 1, options.length - 1);
+    else if (event.key === 'ArrowUp') next = Math.max(index - 1, 0);
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = options.length - 1;
+    else if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') event.preventDefault();
+        closeLanguageDropdown(event.key === 'Escape');
+        return;
+    }
+    if (next === null) return;
+    event.preventDefault();
+    options[next]?.focus();
+}
+
+function onDocumentPointerDown(event: MouseEvent) {
+    if (!showLanguageDropdown.value) return;
+    const target = event.target;
+    if (target instanceof Node && languageMenuRoot.value?.contains(target)) return;
+    closeLanguageDropdown();
+}
+
+onMounted(() => document.addEventListener('mousedown', onDocumentPointerDown));
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentPointerDown));
+
+// Why the primary actions are unavailable, shown next to them and as tooltips.
+const exportDisabledReason = computed(() => {
+    if (!props.hasMediaFile)
+        return 'The source media file is missing. Select it again on the Source step to export.';
+    if (props.originalSegments.length === 0) return 'The transcript has no segments to export.';
+    if (props.isProcessing) return 'Another job is running. Export is available when it finishes.';
+    return '';
+});
+
+const translateDisabledReason = computed(() => {
+    if (props.isTranslating) return 'Translating…';
+    if (props.isProcessing) return 'Another job is running';
+    if (!props.targetLanguage) return 'Pick a language to translate to first';
+    if (props.translations[props.targetLanguage])
+        return `Already translated to ${props.targetLanguage}. Pick it in the view menu.`;
+    return '';
+});
 
 const hasExtractedAudio = computed(() => !!props.extractedAudioPath);
 
@@ -240,6 +337,7 @@ function previewSegment(payload: { start: string; end: string; index: number }) 
 }
 
 function onAudioTimeUpdate() {
+    if (audioRef.value) playhead.value = audioRef.value.currentTime;
     if (previewEndTime === null || !audioRef.value) return;
     if (audioRef.value.currentTime >= previewEndTime) {
         audioRef.value.pause();
@@ -290,6 +388,7 @@ function jumpTo(time: number) {
 
 function onTimeUpdate() {
     if (!videoRef.value) return;
+    playhead.value = videoRef.value.currentTime;
 
     // Bounded segment preview: stop once the segment end is reached.
     if (videoPreviewEndTime !== null) {
@@ -331,384 +430,434 @@ function onTimeUpdate() {
 </script>
 
 <template>
-    <div class="backdrop-blur-md bg-white/5 border border-white/10 p-8 rounded-3xl shadow-2xl mb-8">
-        <div
-            v-if="hasMediaFile"
-            class="mb-8 bg-black rounded-xl overflow-hidden border border-white/10 shadow-2xl"
+    <div class="@container mx-auto w-full max-w-[1400px] px-8 pt-8 pb-10">
+        <PageHeader
+            title="Transcript"
+            description="Review and correct the transcript, then export the cut video or subtitles."
         >
-            <video
-                ref="videoRef"
-                :src="mediaUrl(inputPath)"
-                class="w-full max-h-[500px] mx-auto"
-                controls
-                @timeupdate="onTimeUpdate"
-                @play="markVideoActive"
-                @pause="clearVideoPreviewState"
-                @ended="clearVideoPreviewState"
-            ></video>
-        </div>
-        <div
-            v-else
-            class="mb-8 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200"
-        >
-            Media preview unavailable because the saved file path no longer exists. Select the
-            source file again to re-enable playback and export actions.
-        </div>
-
-        <div
-            v-if="hasExtractedAudio"
-            class="mb-8 rounded-xl border border-white/10 bg-black/20 p-4"
-        >
-            <div
-                class="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-400"
-            >
-                <svg
-                    class="h-4 w-4 text-emerald-400"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.8"
-                >
-                    <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M4 12h2l2-6 4 16 3-10 2 4h3"
-                    />
-                </svg>
-                <span>Audio</span>
-            </div>
-            <!--
-        `extractedAudioPath` is the seekable AAC/m4a preview (see
-        prepare_preview_audio), on the transcript's original timeline. We use it
-        rather than the source file because the webview (WKWebView on macOS)
-        often can't decode the source's audio track, and it can't reliably seek
-        the Opus/Ogg analysis audio (bogus duration + mis-seeking).
-      -->
-            <audio
-                ref="audioRef"
-                :src="mediaUrl(extractedAudioPath!)"
-                data-testid="extracted-audio"
-                class="w-full"
-                controls
-                preload="metadata"
-                @timeupdate="onAudioTimeUpdate"
-                @play="markAudioActive"
-                @pause="clearPreviewState"
-                @ended="clearPreviewState"
-            ></audio>
-            <p class="mt-2 text-xs text-gray-500">
-                Use the play buttons next to each segment to preview the audio at that timestamp.
-            </p>
-        </div>
-
-        <div class="flex flex-wrap justify-between items-center gap-x-3 gap-y-2 mb-6">
-            <div class="flex items-center gap-4">
-                <h2 class="text-2xl font-bold text-white">Transcript</h2>
-                <span
-                    class="px-3 py-1 rounded-full bg-white/10 text-gray-300 text-xs font-bold border border-white/10"
-                >
-                    {{ visibleSegmentCount
-                    }}{{ hasSpeakerVisibilityFilter ? ` of ${displaySegments.length}` : '' }}
-                    Segments
-                </span>
-            </div>
-            <div class="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
-                <div
-                    class="flex items-center gap-2 bg-black/20 rounded-lg p-1 border border-white/10"
-                >
-                    <select
-                        :value="currentLanguage"
-                        @change="
-                            $emit(
-                                'update:currentLanguage',
-                                ($event.target as HTMLSelectElement).value,
-                            )
-                        "
-                        class="bg-transparent text-xs text-gray-300 outline-none border-none py-1 pl-2 pr-2 cursor-pointer [&>option]:bg-gray-900"
+            <template #actions>
+                <div class="flex flex-col items-start gap-1.5 @5xl:items-end">
+                    <div class="flex flex-wrap items-start gap-2">
+                        <SubtitleExport
+                            :segments="displaySegments"
+                            :cutSegments="originalSegments"
+                            :inputPath="inputPath"
+                            :language="currentLanguage"
+                            :disabled="!hasMediaFile"
+                        />
+                        <button
+                            type="button"
+                            data-testid="export-video"
+                            class="btn-primary"
+                            :disabled="
+                                originalSegments.length === 0 || isProcessing || !hasMediaFile
+                            "
+                            :title="
+                                exportDisabledReason ||
+                                'Export the video with the current cuts applied'
+                            "
+                            @click="$emit('export-video')"
+                        >
+                            <Film aria-hidden="true" />
+                            Export video
+                        </button>
+                    </div>
+                    <!-- Directly under the actions it explains. -->
+                    <p
+                        v-if="exportDisabledReason"
+                        data-testid="export-disabled-reason"
+                        class="flex max-w-[34rem] items-start gap-1.5 text-[12px] leading-snug text-warning @5xl:text-right"
                     >
-                        <option value="Original">Original</option>
-                        <option v-for="(_, lang) in translations" :key="lang" :value="lang">
-                            {{ lang }}
-                        </option>
-                    </select>
+                        <TriangleAlert class="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        {{ exportDisabledReason }}
+                    </p>
+                </div>
+            </template>
+        </PageHeader>
+
+        <div class="grid gap-5 @5xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)] @5xl:items-start">
+            <!-- Inspector: media, speakers and review state. Sticky beside the
+           transcript on wide windows, stacked above it on narrow ones. -->
+            <aside
+                class="-m-0.5 flex min-w-0 flex-col gap-3 p-0.5 @5xl:sticky @5xl:top-4 @5xl:max-h-[calc(100vh-6rem)] @5xl:overflow-y-auto"
+                aria-label="Media and speakers"
+            >
+                <div
+                    v-if="hasMediaFile"
+                    class="overflow-hidden rounded-lg border border-line bg-black"
+                >
+                    <video
+                        ref="videoRef"
+                        :src="mediaUrl(inputPath)"
+                        class="mx-auto block max-h-[45vh] w-full [color-scheme:dark]"
+                        controls
+                        @timeupdate="onTimeUpdate"
+                        @play="markVideoActive"
+                        @pause="clearVideoPreviewState"
+                        @ended="clearVideoPreviewState"
+                    ></video>
+                </div>
+                <div
+                    v-else
+                    data-testid="missing-media-notice"
+                    class="flex gap-2.5 rounded-lg border border-warning/25 bg-warning/[0.07] p-3"
+                >
+                    <TriangleAlert
+                        class="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                        aria-hidden="true"
+                    />
+                    <div>
+                        <p class="section-title">Media preview unavailable</p>
+                        <p class="hint mt-0.5">
+                            The saved file path no longer exists. Select the source file again to
+                            re-enable playback and export actions.
+                        </p>
+                    </div>
                 </div>
 
-                <div class="relative">
-                    <div class="flex items-center gap-2">
+                <div v-if="hasExtractedAudio" class="panel px-3 pt-2.5 pb-3">
+                    <p class="eyebrow mb-2 flex items-center gap-1.5">
+                        <AudioLines class="h-3.5 w-3.5" aria-hidden="true" />
+                        Audio
+                    </p>
+                    <!--
+            `extractedAudioPath` is the seekable AAC/m4a preview (see
+            prepare_preview_audio), on the transcript's original timeline. We use it
+            rather than the source file because the webview (WKWebView on macOS)
+            often can't decode the source's audio track, and it can't reliably seek
+            the Opus/Ogg analysis audio (bogus duration + mis-seeking).
+          -->
+                    <audio
+                        ref="audioRef"
+                        :src="mediaUrl(extractedAudioPath!)"
+                        data-testid="extracted-audio"
+                        class="block h-9 w-full [color-scheme:dark]"
+                        controls
+                        preload="metadata"
+                        @timeupdate="onAudioTimeUpdate"
+                        @play="markAudioActive"
+                        @pause="clearPreviewState"
+                        @ended="clearPreviewState"
+                    ></audio>
+                    <p class="hint mt-1.5">
+                        The speaker button on each segment previews the audio at that timestamp.
+                    </p>
+                </div>
+
+                <SectionCard
+                    v-if="uniqueSpeakers.length > 0"
+                    title="Speakers"
+                    description="Edit a name to rename. Hide with the eye; Shift-click to solo."
+                >
+                    <template v-if="hasSpeakerVisibilityFilter" #actions>
                         <button
-                            @click="showLanguageDropdown = !showLanguageDropdown"
-                            class="flex items-center gap-2 w-40 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none hover:bg-white/10 transition-colors"
+                            type="button"
+                            data-testid="speaker-show-all"
+                            class="btn-ghost btn-sm"
+                            @click="showAllSpeakers"
                         >
-                            <span class="truncate flex-1 text-left">{{
-                                targetLanguage || 'Select Language'
-                            }}</span>
-                            <ChevronDownIcon class="h-3 w-3 text-gray-500" />
+                            Show all
                         </button>
+                    </template>
+                    <ul class="space-y-1.5">
+                        <li
+                            v-for="speaker in uniqueSpeakers"
+                            :key="speaker"
+                            class="flex items-center gap-2"
+                        >
+                            <span
+                                aria-hidden="true"
+                                class="h-2.5 w-2.5 shrink-0 rounded-full transition-opacity duration-150"
+                                :class="isSpeakerVisible(speaker) ? '' : 'opacity-30'"
+                                :style="{ background: speakerColor(speaker, uniqueSpeakers) }"
+                            ></span>
+                            <input
+                                :value="speaker"
+                                :aria-label="`Rename ${speaker}`"
+                                class="input input-sm min-w-0 flex-1"
+                                :class="
+                                    isSpeakerVisible(speaker) ? '' : 'text-fg-subtle line-through'
+                                "
+                                @change="
+                                    $emit('rename-speaker', {
+                                        oldName: speaker,
+                                        newName: ($event.target as HTMLInputElement).value,
+                                        inputElement: $event.target as HTMLInputElement,
+                                    })
+                                "
+                            />
+                            <span
+                                class="w-7 shrink-0 text-right font-mono text-[11px] text-fg-subtle"
+                                :title="`${speakerSegmentCounts[speaker] ?? 0} segments`"
+                                >{{ speakerSegmentCounts[speaker] ?? 0 }}</span
+                            >
+                            <button
+                                :data-testid="`speaker-visibility-toggle-${speaker}`"
+                                type="button"
+                                class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors duration-100 hover:bg-surface-hover"
+                                :class="
+                                    isSpeakerVisible(speaker)
+                                        ? 'text-fg-muted hover:text-fg'
+                                        : 'text-fg-faint hover:text-fg-muted'
+                                "
+                                :aria-pressed="isSpeakerVisible(speaker) ? 'true' : 'false'"
+                                :aria-label="`Show ${speaker}`"
+                                :title="
+                                    (isSpeakerVisible(speaker)
+                                        ? `Hide ${speaker}`
+                                        : `Show ${speaker}`) + ' (Shift-click to solo)'
+                                "
+                                @click="toggleSpeakerVisibility(speaker, $event)"
+                            >
+                                <Eye
+                                    v-if="isSpeakerVisible(speaker)"
+                                    class="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                                <EyeOff v-else class="h-4 w-4" aria-hidden="true" />
+                            </button>
+                        </li>
+                    </ul>
+                </SectionCard>
+
+                <SectionCard
+                    v-if="hasReviewMetadata"
+                    title="Review"
+                    :description="`Segments missing a counterpart, below ${reviewThresholdPercent}% similarity, or matching the blacklist.`"
+                >
+                    <template #actions>
+                        <span class="chip-warning" data-testid="review-count"
+                            >{{ reviewSegmentCount }} to review</span
+                        >
+                    </template>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between gap-3">
+                            <span :id="`${uid}-only-review`" class="text-[13px] text-fg-muted"
+                                >Show only review items</span
+                            >
+                            <UiSwitch
+                                v-model="showOnlyReviewSegments"
+                                data-testid="review-filter-toggle"
+                                size="sm"
+                                :aria-labelledby="`${uid}-only-review`"
+                            />
+                        </div>
+                        <div class="flex items-center justify-between gap-3">
+                            <span :id="`${uid}-hide-blacklist`" class="text-[13px] text-fg-muted"
+                                >Hide blacklist-only matches</span
+                            >
+                            <UiSwitch
+                                v-model="hideBlacklistFromReviewFilter"
+                                data-testid="review-filter-hide-blacklist-toggle"
+                                size="sm"
+                                :aria-labelledby="`${uid}-hide-blacklist`"
+                            />
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between">
+                                <label :for="`${uid}-threshold`" class="field-label mb-0!"
+                                    >Review below similarity</label
+                                >
+                                <span class="font-mono text-[12px] text-fg-muted"
+                                    >{{ reviewThresholdPercent }}%</span
+                                >
+                            </div>
+                            <input
+                                :id="`${uid}-threshold`"
+                                v-model.number="reviewThresholdPercent"
+                                data-testid="review-filter-threshold"
+                                type="range"
+                                min="0"
+                                max="100"
+                                step="1"
+                                class="mt-2 block w-full"
+                            />
+                        </div>
+                    </div>
+                </SectionCard>
+
+                <SectionCard
+                    v-if="hasBlacklistWarnings"
+                    data-testid="blacklist-warnings"
+                    title="Blacklist warnings"
+                    :description="`${visibleBlacklistWarnings.matches.length} word-level matches across ${blacklistSegmentCount} segments using the ${visibleBlacklistWarnings.languageLabel ?? visibleBlacklistWarnings.languageCode} list.`"
+                >
+                    <div class="flex flex-wrap gap-1.5">
+                        <span
+                            v-for="word in previewBlacklistWords"
+                            :key="word"
+                            class="chip-warning"
+                        >
+                            {{ word }}
+                        </span>
+                        <span v-if="remainingBlacklistWordCount > 0" class="chip">
+                            +{{ remainingBlacklistWordCount }} more
+                        </span>
+                    </div>
+                </SectionCard>
+            </aside>
+
+            <section class="min-w-0" aria-label="Transcript editor">
+                <p
+                    v-if="currentLanguage !== 'Original'"
+                    data-testid="translation-edit-hint"
+                    class="mb-5 flex items-start gap-2 rounded-lg border border-info/25 bg-info/[0.08] px-3 py-2 text-[12px] leading-relaxed text-fg-muted"
+                >
+                    <Info class="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
+                    <span>
+                        Viewing the {{ currentLanguage }} translation: you can edit the wording
+                        here. Switch to Original to cut, split, merge or retime segments.
+                    </span>
+                </p>
+
+                <Editor
+                    :segments="displaySegments"
+                    :lockStructure="currentLanguage !== 'Original'"
+                    :speakerVisibility="speakerVisibility"
+                    :showOnlyReviewSegments="showOnlyReviewSegments"
+                    :reviewThreshold="reviewThresholdPercent / 100"
+                    :hideBlacklistFromReview="hideBlacklistFromReviewFilter"
+                    :blacklistMatchesBySegment="blacklistWarnings.matchesBySegment"
+                    :audioAvailable="hasExtractedAudio"
+                    :previewIndex="previewIndex"
+                    :videoAvailable="hasMediaFile"
+                    :videoPreviewIndex="videoPreviewIndex"
+                    :getPlayhead="getPlayhead"
+                    :playhead="playhead"
+                    :speakerOrder="uniqueSpeakers"
+                    @jump-to="jumpTo"
+                    @preview="previewSegment"
+                    @preview-video="previewVideoSegment"
+                    @update:segments="$emit('update:segments', $event)"
+                >
+                    <template #status>
+                        <span
+                            class="chip h-6 px-2.5 text-[12px] whitespace-nowrap"
+                            data-testid="segment-count"
+                            >{{ visibleSegmentCount
+                            }}{{
+                                hasSpeakerVisibilityFilter ? ` of ${displaySegments.length}` : ''
+                            }}
+                            {{ displaySegments.length === 1 ? 'segment' : 'segments' }}</span
+                        >
+                    </template>
+                    <template #toolbar>
+                        <label :for="`${uid}-view-language`" class="sr-only"
+                            >Viewing language</label
+                        >
+                        <select
+                            :id="`${uid}-view-language`"
+                            :value="currentLanguage"
+                            data-testid="view-language-select"
+                            class="input input-sm h-7 w-auto min-w-[7.5rem]"
+                            title="Which version of the transcript you see and edit"
+                            @change="
+                                $emit(
+                                    'update:currentLanguage',
+                                    ($event.target as HTMLSelectElement).value,
+                                )
+                            "
+                        >
+                            <option value="Original">Original</option>
+                            <option v-for="(_, lang) in translations" :key="lang" :value="lang">
+                                {{ lang }}
+                            </option>
+                        </select>
+
+                        <div ref="languageMenuRoot" class="relative">
+                            <button
+                                ref="languageTrigger"
+                                type="button"
+                                data-testid="target-language-trigger"
+                                class="btn-secondary btn-sm h-7 w-40 justify-between"
+                                aria-haspopup="listbox"
+                                :aria-expanded="showLanguageDropdown ? 'true' : 'false'"
+                                title="Language to translate into"
+                                @click="toggleLanguageDropdown"
+                                @keydown.down.prevent="
+                                    !showLanguageDropdown && toggleLanguageDropdown()
+                                "
+                            >
+                                <span class="flex min-w-0 items-center gap-1.5">
+                                    <Languages
+                                        class="h-3.5 w-3.5 shrink-0 text-fg-subtle"
+                                        aria-hidden="true"
+                                    />
+                                    <span
+                                        class="truncate"
+                                        :class="targetLanguage ? '' : 'text-fg-subtle'"
+                                        >{{ targetLanguage || 'Translate to…' }}</span
+                                    >
+                                </span>
+                                <ChevronDown
+                                    class="h-3.5 w-3.5 shrink-0 text-fg-subtle transition-transform duration-150"
+                                    :class="showLanguageDropdown ? 'rotate-180' : ''"
+                                    aria-hidden="true"
+                                />
+                            </button>
+
+                            <Transition name="pop">
+                                <div
+                                    v-if="showLanguageDropdown"
+                                    ref="languageMenu"
+                                    role="listbox"
+                                    aria-label="Translate to"
+                                    class="popover absolute top-full right-0 z-50 mt-1 max-h-72 w-56 origin-top-right overflow-y-auto p-1"
+                                    @keydown="onLanguageMenuKeydown"
+                                >
+                                    <button
+                                        v-for="lang in SUPPORTED_TRANSCRIPT_LANGUAGES"
+                                        :key="lang.code"
+                                        type="button"
+                                        role="option"
+                                        :aria-selected="
+                                            targetLanguage === lang.name ? 'true' : 'false'
+                                        "
+                                        class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] outline-none transition-colors duration-100 hover:bg-surface-hover hover:text-fg focus-visible:bg-surface-3 focus-visible:text-fg"
+                                        :class="
+                                            targetLanguage === lang.name
+                                                ? 'bg-accent/12 text-fg'
+                                                : 'text-fg-muted'
+                                        "
+                                        @click="selectLanguage(lang.name)"
+                                    >
+                                        <span
+                                            :class="`fi fi-${lang.country}`"
+                                            class="rounded-[2px]"
+                                        ></span>
+                                        <span class="flex-1">{{ lang.name }}</span>
+                                        <span
+                                            v-if="translations[lang.name]"
+                                            class="flex items-center gap-1 text-[11px] text-success"
+                                        >
+                                            <Check class="h-3.5 w-3.5" aria-hidden="true" />
+                                            <span class="sr-only">translated</span>
+                                        </span>
+                                    </button>
+                                </div>
+                            </Transition>
+                        </div>
 
                         <button
-                            @click="$emit('translate')"
+                            type="button"
+                            data-testid="translate-button"
+                            class="btn-subtle btn-sm h-7"
                             :disabled="
                                 isTranslating ||
                                 isProcessing ||
                                 !targetLanguage ||
                                 !!translations[targetLanguage]
                             "
-                            class="p-1.5 bg-blue-600/20 hover:bg-blue-600/40 text-blue-400 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-blue-500/20"
-                            title="Translate"
+                            :title="translateDisabledReason || 'Translate'"
+                            @click="$emit('translate')"
                         >
-                            <TranslateIcon
-                                class="h-4 w-4"
-                                :class="{ 'animate-pulse': isTranslating }"
-                            />
+                            <Loader2 v-if="isTranslating" class="animate-spin" aria-hidden="true" />
+                            <Languages v-else aria-hidden="true" />
+                            {{ isTranslating ? 'Translating…' : 'Translate' }}
                         </button>
-                    </div>
-
-                    <div
-                        v-if="showLanguageDropdown"
-                        class="absolute top-full left-0 mt-1 w-48 max-h-64 overflow-y-auto bg-gray-900 border border-white/10 rounded-lg shadow-xl z-50 py-1"
-                    >
-                        <button
-                            v-for="lang in SUPPORTED_TRANSCRIPT_LANGUAGES"
-                            :key="lang.code"
-                            @click="selectLanguage(lang.name)"
-                            class="w-full px-3 py-2 text-left text-xs text-gray-300 hover:bg-white/10 flex items-center justify-between group"
-                        >
-                            <span class="flex items-center gap-2">
-                                <span :class="`fi fi-${lang.country}`" class="rounded-sm"></span>
-                                <span>{{ lang.name }}</span>
-                            </span>
-                            <CheckIcon
-                                v-if="translations[lang.name]"
-                                class="h-3 w-3 text-emerald-400"
-                            />
-                        </button>
-                    </div>
-
-                    <div
-                        v-if="showLanguageDropdown"
-                        @click="showLanguageDropdown = false"
-                        class="fixed inset-0 z-40 bg-transparent"
-                    ></div>
-                </div>
-
-                <div class="w-px h-6 bg-white/10 mx-1"></div>
-
-                <button
-                    @click="$emit('export-video')"
-                    :disabled="originalSegments.length === 0 || isProcessing || !hasMediaFile"
-                    class="px-4 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 text-xs font-bold rounded-lg border border-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Export the video with the current cuts applied"
-                >
-                    Export Video
-                </button>
-
-                <SubtitleExport
-                    :segments="displaySegments"
-                    :cutSegments="originalSegments"
-                    :inputPath="inputPath"
-                    :language="currentLanguage"
-                    :disabled="!hasMediaFile"
-                />
-            </div>
+                    </template>
+                </Editor>
+            </section>
         </div>
-
-        <div
-            v-if="hasBlacklistWarnings"
-            data-testid="blacklist-warnings"
-            class="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4"
-        >
-            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                    <h3 class="text-sm font-semibold text-amber-100">Blacklist Warnings</h3>
-                    <p class="text-xs text-amber-200/80">
-                        {{ visibleBlacklistWarnings.matches.length }} word-level matches across
-                        {{ blacklistSegmentCount }} segments using the
-                        {{
-                            visibleBlacklistWarnings.languageLabel ??
-                            visibleBlacklistWarnings.languageCode
-                        }}
-                        list.
-                    </p>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                    <span
-                        v-for="word in previewBlacklistWords"
-                        :key="word"
-                        class="rounded-full border border-amber-400/20 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-100"
-                    >
-                        {{ word }}
-                    </span>
-                    <span
-                        v-if="remainingBlacklistWordCount > 0"
-                        class="rounded-full border border-amber-400/20 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-amber-100"
-                    >
-                        +{{ remainingBlacklistWordCount }} more
-                    </span>
-                </div>
-            </div>
-        </div>
-
-        <div v-if="hasReviewMetadata" class="mb-4 rounded-xl border border-white/5 bg-black/20 p-4">
-            <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                    <h3 class="text-sm font-semibold text-gray-300">Review Filter</h3>
-                    <p class="text-xs text-gray-500">
-                        {{ reviewSegmentCount }} segments need attention because they are missing a
-                        counterpart, below {{ reviewThresholdPercent }}% similarity, or match the
-                        blacklist.
-                    </p>
-                </div>
-                <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
-                    <label class="flex items-center gap-2 text-xs text-gray-300">
-                        <input
-                            v-model="showOnlyReviewSegments"
-                            data-testid="review-filter-toggle"
-                            type="checkbox"
-                            class="h-4 w-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500/40"
-                        />
-                        Show only review items
-                    </label>
-                    <label class="flex items-center gap-2 text-xs text-gray-300">
-                        <input
-                            v-model="hideBlacklistFromReviewFilter"
-                            data-testid="review-filter-hide-blacklist-toggle"
-                            type="checkbox"
-                            class="h-4 w-4 rounded border-white/10 bg-black/40 text-blue-500 focus:ring-blue-500/40"
-                        />
-                        Hide blacklist-only matches
-                    </label>
-                    <label class="flex items-center gap-3 text-xs text-gray-300">
-                        <span>Review below</span>
-                        <input
-                            v-model.number="reviewThresholdPercent"
-                            data-testid="review-filter-threshold"
-                            type="range"
-                            min="0"
-                            max="100"
-                            step="1"
-                            class="w-32 accent-blue-500"
-                        />
-                        <span class="w-10 text-right font-mono text-gray-400"
-                            >{{ reviewThresholdPercent }}%</span
-                        >
-                    </label>
-                </div>
-            </div>
-        </div>
-
-        <div
-            v-if="uniqueSpeakers.length > 0"
-            class="mb-6 p-4 bg-black/20 rounded-xl border border-white/5"
-        >
-            <div class="mb-3 flex items-center justify-between gap-3">
-                <div>
-                    <h3 class="text-sm font-semibold uppercase tracking-wider text-gray-300">
-                        Speakers
-                    </h3>
-                    <p class="text-xs text-gray-500">
-                        Toggle a speaker to hide or show their transcript segments. Shift-click to
-                        solo.
-                    </p>
-                </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                <div v-for="speaker in uniqueSpeakers" :key="speaker" class="relative group">
-                    <div
-                        class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"
-                    >
-                        <UserIcon class="h-4 w-4 text-gray-500" />
-                    </div>
-                    <input
-                        :value="speaker"
-                        @change="
-                            $emit('rename-speaker', {
-                                oldName: speaker,
-                                newName: ($event.target as HTMLInputElement).value,
-                                inputElement: $event.target as HTMLInputElement,
-                            })
-                        "
-                        class="w-full rounded-lg border border-white/10 bg-white/5 py-2 pl-9 pr-10 text-sm text-gray-300 transition-all outline-none focus:border-blue-500/50 focus:bg-black/30"
-                        :class="isSpeakerVisible(speaker) ? '' : 'opacity-60'"
-                    />
-                    <button
-                        :data-testid="`speaker-visibility-toggle-${speaker}`"
-                        type="button"
-                        class="absolute inset-y-0 right-0 z-10 flex items-center pr-3 text-gray-500 transition-colors hover:text-blue-300"
-                        :class="isSpeakerVisible(speaker) ? 'text-blue-300' : 'text-gray-600'"
-                        :title="isSpeakerVisible(speaker) ? `Hide ${speaker}` : `Show ${speaker}`"
-                        @click="toggleSpeakerVisibility(speaker, $event)"
-                    >
-                        <svg
-                            v-if="isSpeakerVisible(speaker)"
-                            class="h-4 w-4"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.8"
-                        >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"
-                            />
-                            <circle cx="12" cy="12" r="3" />
-                        </svg>
-                        <svg
-                            v-else
-                            class="h-4 w-4"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.8"
-                        >
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M3 3l18 18" />
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                d="M10.6 10.7A3 3 0 0 0 13.3 13.4"
-                            />
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                d="M9.9 5.2A11.3 11.3 0 0 1 12 5c6.5 0 10 7 10 7a18.2 18.2 0 0 1-4 4.8"
-                            />
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                d="M6 6.4C3.5 8.1 2 12 2 12s3.5 7 10 7c1 0 1.9-.1 2.7-.3"
-                            />
-                        </svg>
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <p
-            v-if="currentLanguage !== 'Original'"
-            data-testid="translation-edit-hint"
-            class="mb-3 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-xs text-blue-200"
-        >
-            Viewing the {{ currentLanguage }} translation: you can edit the wording here. Switch to
-            Original to cut, split, merge or retime segments.
-        </p>
-
-        <Editor
-            :segments="displaySegments"
-            :lockStructure="currentLanguage !== 'Original'"
-            :speakerVisibility="speakerVisibility"
-            :showOnlyReviewSegments="showOnlyReviewSegments"
-            :reviewThreshold="reviewThresholdPercent / 100"
-            :hideBlacklistFromReview="hideBlacklistFromReviewFilter"
-            :blacklistMatchesBySegment="blacklistWarnings.matchesBySegment"
-            :audioAvailable="hasExtractedAudio"
-            :previewIndex="previewIndex"
-            :videoAvailable="hasMediaFile"
-            :videoPreviewIndex="videoPreviewIndex"
-            :getPlayhead="getPlayhead"
-            @jump-to="jumpTo"
-            @preview="previewSegment"
-            @preview-video="previewVideoSegment"
-            @update:segments="$emit('update:segments', $event)"
-        />
     </div>
 </template>

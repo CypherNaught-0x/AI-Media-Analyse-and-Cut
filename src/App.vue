@@ -4,6 +4,7 @@ import { check } from '@tauri-apps/plugin-updater';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 import Toast from './components/Toast.vue';
+import AppRail from './components/shell/AppRail.vue';
 import { migrateLegacyApiKey } from './composables/useSettings';
 
 const toastVisible = ref(false);
@@ -14,6 +15,7 @@ const toastActionLabel = ref('');
 const downloadedBytes = ref(0);
 const totalBytes = ref(0);
 let pendingRelaunch = false;
+const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent);
 
 function showToast(message: string, tone: 'info' | 'success' | 'error' = 'info') {
     toastMessage.value = message;
@@ -107,13 +109,25 @@ onMounted(async () => {
 </script>
 
 <template>
-    <!-- Home owns the running analysis/export state; keep it alive while the
-       user visits Settings so an in-flight run and its result aren't lost. -->
-    <router-view v-slot="{ Component }">
-        <keep-alive include="Home">
-            <component :is="Component" />
-        </keep-alive>
-    </router-view>
+    <div class="flex h-screen overflow-hidden bg-canvas text-fg">
+        <AppRail />
+        <!-- Home owns the running analysis/export state; keep it alive while the
+           user visits Settings so an in-flight run and its result aren't lost. -->
+        <main id="app-main" class="relative min-w-0 flex-1 overflow-y-auto">
+            <div
+                v-if="isMac"
+                data-tauri-drag-region
+                class="pointer-events-auto absolute inset-x-0 top-0 z-40 h-7"
+            />
+            <router-view v-slot="{ Component }">
+                <transition name="page" mode="out-in">
+                    <keep-alive include="Home">
+                        <component :is="Component" />
+                    </keep-alive>
+                </transition>
+            </router-view>
+        </main>
+    </div>
     <Toast
         :show="toastVisible"
         :message="toastMessage"
@@ -124,19 +138,3 @@ onMounted(async () => {
         @action="handleToastAction"
     />
 </template>
-
-<style>
-/* Global transitions */
-.fade-enter-active,
-.fade-leave-active {
-    transition:
-        opacity 0.5s ease,
-        transform 0.5s ease;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-    opacity: 0;
-    transform: translateY(20px);
-}
-</style>

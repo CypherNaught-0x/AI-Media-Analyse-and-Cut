@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import SubtitleExport from '../SubtitleExport.vue';
@@ -50,7 +50,7 @@ describe('SubtitleExport', () => {
         });
 
         // Validation panel should be hidden initially
-        expect(wrapper.find('.mt-2').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(false);
 
         // Click validate button
         // Find the Validate button specifically
@@ -61,8 +61,8 @@ describe('SubtitleExport', () => {
 
         // Panel should be visible
         await nextTick();
-        expect(wrapper.find('.mt-2').exists()).toBe(true);
-        expect(wrapper.text()).toContain('Validation Results');
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(true);
+        expect(wrapper.text()).toContain('Validation results');
     });
 
     it('should display validation errors when present', async () => {
@@ -79,7 +79,7 @@ describe('SubtitleExport', () => {
         await nextTick();
 
         // Should show validation info
-        expect(wrapper.text()).toContain('Validation Results');
+        expect(wrapper.text()).toContain('Validation results');
     });
 
     it('should show success message when no validation errors', async () => {
@@ -99,7 +99,7 @@ describe('SubtitleExport', () => {
         await validateBtn?.trigger('click');
         await nextTick();
 
-        expect(wrapper.text()).toContain('Validation Results');
+        expect(wrapper.text()).toContain('Validation results');
         expect(wrapper.text()).toContain('All subtitles meet comfortable display requirements');
     });
 
@@ -120,8 +120,9 @@ describe('SubtitleExport', () => {
         await validateBtn?.trigger('click');
         await nextTick();
 
-        // Button should have warning classes
-        expect(validateBtn?.classes()).toContain('bg-yellow-500/20');
+        // Button reflects the warning severity
+        expect(validateBtn?.attributes('data-severity')).toBe('warning');
+        expect(validateBtn?.classes()).toContain('text-warning!');
     });
 
     it('should show error style on validate button when errors exist', async () => {
@@ -141,8 +142,9 @@ describe('SubtitleExport', () => {
         await validateBtn?.trigger('click');
         await nextTick();
 
-        // Button should have error classes
-        expect(validateBtn?.classes()).toContain('bg-red-500/20');
+        // Button reflects the error severity
+        expect(validateBtn?.attributes('data-severity')).toBe('error');
+        expect(validateBtn?.classes()).toContain('text-danger!');
     });
 
     it('should call processSubtitlesForDisplay when exporting', async () => {
@@ -238,7 +240,7 @@ describe('SubtitleExport', () => {
             },
         });
 
-        await wrapper.find('[data-testid="subtitle-timeline"]').setValue('cut');
+        await wrapper.get('[data-testid="subtitle-timeline-cut"]').trigger('click');
         const srtButton = wrapper.findAll('button').find((b) => b.text() === 'SRT');
         await srtButton?.trigger('click');
 
@@ -292,15 +294,15 @@ describe('SubtitleExport', () => {
         await validateBtn?.trigger('click');
         await nextTick();
 
-        expect(wrapper.find('.mt-2').exists()).toBe(true);
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(true);
 
         // Find and click close button
-        const closeBtn = wrapper.find('button.text-gray-500');
+        const closeBtn = wrapper.get('[data-testid="subtitle-validation-close"]');
         await closeBtn.trigger('click');
         await nextTick();
 
         // Panel should be hidden
-        expect(wrapper.find('.mt-2').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(false);
     });
 
     it('should pass language prop correctly', () => {
@@ -323,6 +325,67 @@ describe('SubtitleExport', () => {
             },
         });
 
-        expect(wrapper.find('.mt-2').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(false);
+    });
+    it('shows export errors in the danger tone and clears them on the next action', async () => {
+        vi.mocked(invoke).mockRejectedValueOnce(new Error('disk full'));
+        const wrapper = mount(SubtitleExport, {
+            props: { segments: mockSegments, inputPath: '/test/video.mp4' },
+        });
+
+        const srtButton = wrapper.findAll('button').find((b) => b.text() === 'SRT');
+        await srtButton!.trigger('click');
+        await flushPromises();
+
+        const status = wrapper.get('[data-testid="subtitle-export-status"]');
+        expect(status.text()).toContain('Error: disk full');
+        expect(status.classes()).toContain('text-danger');
+        // The always-mounted live region announces the same message.
+        expect(wrapper.get('[role="status"]').text()).toBe('Error: disk full');
+
+        const validateBtn = wrapper.findAll('button').find((b) => b.text() === 'Validate');
+        await validateBtn!.trigger('click');
+        expect(wrapper.find('[data-testid="subtitle-export-status"]').exists()).toBe(false);
+        expect(wrapper.get('[role="status"]').text()).toBe('');
+    });
+
+    it('shows a success status after exporting', async () => {
+        const wrapper = mount(SubtitleExport, {
+            props: { segments: mockSegments, inputPath: '/test/video.mp4' },
+        });
+
+        const vttButton = wrapper.findAll('button').find((b) => b.text() === 'VTT');
+        await vttButton!.trigger('click');
+        await flushPromises();
+
+        const status = wrapper.get('[data-testid="subtitle-export-status"]');
+        expect(status.text()).toBe('Exported VTT');
+        expect(status.classes()).toContain('text-success');
+    });
+
+    it('labels the save-as buttons for assistive tech', () => {
+        const wrapper = mount(SubtitleExport, {
+            props: { segments: mockSegments, inputPath: '/test/video.mp4' },
+        });
+
+        expect(wrapper.find('button[aria-label="Save SRT as…"]').exists()).toBe(true);
+        expect(wrapper.find('button[aria-label="Save VTT as…"]').exists()).toBe(true);
+        expect(wrapper.find('button[aria-label="Save TXT as…"]').exists()).toBe(true);
+    });
+
+    it('closes the validation panel with Escape', async () => {
+        const wrapper = mount(SubtitleExport, {
+            props: { segments: mockSegments, inputPath: '/test/video.mp4' },
+            attachTo: document.body,
+        });
+
+        const validateBtn = wrapper.findAll('button').find((b) => b.text() === 'Validate');
+        await validateBtn!.trigger('click');
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(true);
+
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        await nextTick();
+        expect(wrapper.find('[data-testid="subtitle-validation-panel"]').exists()).toBe(false);
+        wrapper.unmount();
     });
 });

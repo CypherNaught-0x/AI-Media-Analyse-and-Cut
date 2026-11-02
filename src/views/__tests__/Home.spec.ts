@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import Home from '../Home.vue';
+import { useWorkspaceNav } from '../../composables/useWorkspaceNav';
 import { createRouter, createWebHistory } from 'vue-router';
 import type { EditSessionV1 } from '../../types';
 import { ref } from 'vue';
@@ -55,14 +56,20 @@ vi.mock('../../composables/useSettings', () => ({
 // Mock Editor component to avoid testing it again
 vi.mock('../../components/Editor.vue', () => ({
     default: {
-        template: '<div class="mock-editor"></div>',
+        // Renders the status slot, where the panel shows the segment count.
+        template: '<div class="mock-editor"><slot name="status" /></div>',
         props: ['segments', 'getPlayhead'],
     },
 }));
 
 // Mock components
 vi.mock('../../components/FileSelector.vue', () => ({
-    default: { template: '<div class="mock-file-selector"></div>' },
+    // Renders the missing-media state it's handed, like the real card does.
+    default: {
+        props: ['modelValue', 'missing'],
+        template:
+            '<div class="mock-file-selector"><span v-if="missing">Media file missing</span></div>',
+    },
 }));
 vi.mock('../../components/AnalysisSettings.vue', () => ({
     default: { template: '<div class="mock-analysis-settings"></div>' },
@@ -222,18 +229,14 @@ describe('Home.vue', () => {
 
         await flushPromises();
 
-        expect(
-            wrapper.get('[data-testid="workspace-tab-source"]').attributes('aria-selected'),
-        ).toBe('true');
-        expect(
-            wrapper.get('[data-testid="workspace-tab-transcript"]').attributes('disabled'),
-        ).toBeDefined();
-        expect(
-            wrapper.get('[data-testid="workspace-tab-clips"]').attributes('disabled'),
-        ).toBeDefined();
-        expect(
-            wrapper.get('[data-testid="workspace-tab-podcast"]').attributes('disabled'),
-        ).toBeDefined();
+        const { state, steps } = useWorkspaceNav();
+        expect(state.activeStep).toBe('source');
+        expect(steps.value.filter((step) => step.disabled).map((step) => step.id)).toEqual([
+            'transcript',
+            'clips',
+            'podcast',
+        ]);
+        wrapper.unmount();
     });
 
     it('activates the transcript tab once a transcript becomes available', async () => {
@@ -247,12 +250,10 @@ describe('Home.vue', () => {
 
         await flushPromises();
 
-        expect(
-            wrapper.get('[data-testid="workspace-tab-transcript"]').attributes('disabled'),
-        ).toBeUndefined();
-        expect(
-            wrapper.get('[data-testid="workspace-tab-transcript"]').attributes('aria-selected'),
-        ).toBe('true');
+        const { state, steps } = useWorkspaceNav();
+        expect(steps.value.find((step) => step.id === 'transcript')?.disabled).toBe(false);
+        expect(state.activeStep).toBe('transcript');
+        wrapper.unmount();
     });
 
     it('restores an autosaved session on mount', async () => {
@@ -267,7 +268,7 @@ describe('Home.vue', () => {
         await flushPromises();
 
         expect(wrapper.text()).toContain('Transcript');
-        expect(wrapper.text()).toContain('1 Segments');
+        expect(wrapper.text()).toContain('1 segment');
         expect(wrapper.text()).not.toContain('Media file missing');
         expect(wrapper.find('.mock-viral-clips-generator').exists()).toBe(true);
         expect(wrapper.find('.mock-podcast-generator').exists()).toBe(true);
@@ -332,13 +333,13 @@ describe('Home.vue', () => {
         await flushPromises();
         const loadButton = wrapper
             .findAll('button')
-            .find((button) => button.text() === 'Load Session');
+            .find((button) => button.text() === 'Load session');
         expect(loadButton).toBeDefined();
         await loadButton!.trigger('click');
         await flushPromises();
 
         expect(wrapper.text()).toContain('Transcript');
-        expect(wrapper.text()).toContain('1 Segments');
+        expect(wrapper.text()).toContain('1 segment');
     });
 
     it('restores the clips and faces saved with a recording when it is opened', async () => {
@@ -410,7 +411,7 @@ describe('Home.vue', () => {
         await new Promise((resolve) => setTimeout(resolve, 900));
         await flushPromises();
 
-        expect(wrapper.text()).toContain('1 Segments');
+        expect(wrapper.text()).toContain('1 segment');
         const emptySidecarWrites = vi.mocked(invoke).mock.calls.filter(([cmd, args]) => {
             if (cmd !== 'write_text_file') return false;
             const { path, content } = args as { path: string; content: string };
@@ -435,5 +436,39 @@ describe('Home.vue', () => {
         await flushPromises();
 
         expect(wrapper.text()).toContain('Media file missing');
+    });
+
+    it('offers a way to the transcript when it is up to date with the options', async () => {
+        localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession()));
+        const wrapper = mount(Home, { global: { plugins: [router] } });
+        await flushPromises();
+
+        const { state } = useWorkspaceNav();
+        state.activeStep = 'source';
+        await flushPromises();
+
+        expect(wrapper.find('[data-testid="analyze-button"]').exists()).toBe(false);
+        await wrapper.get('[data-testid="open-transcript"]').trigger('click');
+        expect(state.activeStep).toBe('transcript');
+        wrapper.unmount();
+    });
+
+    it('scrolls the workspace to the top when the step changes', async () => {
+        localStorage.setItem('home-edit-session-v1', JSON.stringify(buildSession()));
+        const main = document.createElement('main');
+        main.id = 'app-main';
+        main.scrollTo = vi.fn() as unknown as typeof main.scrollTo;
+        document.body.appendChild(main);
+
+        const wrapper = mount(Home, { global: { plugins: [router] } });
+        await flushPromises();
+        vi.mocked(main.scrollTo).mockClear();
+
+        useWorkspaceNav().state.activeStep = 'clips';
+        await flushPromises();
+
+        expect(main.scrollTo).toHaveBeenCalledWith({ top: 0 });
+        wrapper.unmount();
+        main.remove();
     });
 });

@@ -192,8 +192,11 @@ describe('ViralClipsGenerator', () => {
         expect(auto.attributes('aria-checked')).toBe('true');
         // Auto at punchy shows the whip.
         expect(
-            wrapper.get('[data-testid="clips-transition-whip"]').attributes('aria-checked'),
+            wrapper.get('[data-testid="clips-transition-whip"]').attributes('aria-pressed'),
         ).toBe('true');
+        expect(
+            wrapper.get('[data-testid="clips-transition-flash"]').attributes('aria-pressed'),
+        ).toBe('false');
 
         // From auto, a click picks just that one.
         await wrapper.get('[data-testid="clips-transition-flash"]').trigger('click');
@@ -449,7 +452,10 @@ describe('ViralClipsGenerator', () => {
         expect(lastState(wrapper).faceSearch?.faces[0].applied).toBe(0);
 
         await wrapper.setProps({ state: lastState(wrapper) });
-        await wrapper.get('[data-testid="clips-face-enabled-0"]').setValue(false);
+        const follow = wrapper.get('[data-testid="clips-face-enabled-0"]');
+        expect(follow.attributes('aria-checked')).toBe('true');
+        // Follow is a switch: clicking it turns the face off.
+        await follow.trigger('click');
         // The same override changes; the face doesn't get a second one.
         expect(lastState(wrapper).faces).toEqual([
             {
@@ -521,6 +527,195 @@ describe('ViralClipsGenerator', () => {
         await wrapper.get(`[data-testid="clip-preview-${clip.id}"]`).trigger('click');
         expect(frame.style.width).toBe('');
         expect(video.controls).toBe(true);
+    });
+
+    it('trims a clip end by one word, both ways', async () => {
+        const clips = fromCandidates([candidate]);
+        const wrapper = mountWith({ clips });
+        await wrapper.get(`[data-testid="clip-end-earlier-${clips[0].id}"]`).trigger('click');
+        expect(lastState(wrapper).clips[0].ranges[0].end).toBeLessThan(13);
+        await wrapper.setProps({ state: lastState(wrapper) });
+        await wrapper.get(`[data-testid="clip-end-later-${clips[0].id}"]`).trigger('click');
+        expect(lastState(wrapper).clips[0].ranges[0].end).toBe(13);
+    });
+
+    it('includes or leaves out all clips at once', async () => {
+        const [a, b] = fromCandidates([candidate, { ...candidate, title: 'Second' }]);
+        const wrapper = mountWith({ clips: [a, { ...b, selected: false }] });
+        const button = wrapper.get('[data-testid="clips-select-all"]');
+        expect(button.text()).toBe('Select all');
+        await button.trigger('click');
+        expect(lastState(wrapper).clips.map((clip) => clip.selected)).toEqual([true, true]);
+
+        await wrapper.setProps({ state: lastState(wrapper) });
+        expect(wrapper.get('[data-testid="clips-select-all"]').text()).toBe('Select none');
+        await wrapper.get('[data-testid="clips-select-all"]').trigger('click');
+        expect(lastState(wrapper).clips.map((clip) => clip.selected)).toEqual([false, false]);
+        // Nothing to export now, and the button says why.
+        await wrapper.setProps({ state: lastState(wrapper) });
+        const exportButton = wrapper.get('[data-testid="clips-export-selected"]');
+        expect(exportButton.attributes('disabled')).toBeDefined();
+        expect(exportButton.attributes('title')).toBe('Include at least one clip to export.');
+    });
+
+    it('explains what will appear before any clips exist', () => {
+        const wrapper = mountWith();
+        expect(wrapper.get('[data-testid="clips-empty"]').text()).toContain('No clips yet');
+        expect(wrapper.find('[data-testid="clip-cards"]').exists()).toBe(false);
+        expect(wrapper.find('[data-testid="clips-export-selected"]').exists()).toBe(false);
+    });
+
+    it('flags a minimum longer than the maximum', async () => {
+        const wrapper = mountWith({ minDuration: 70, maxDuration: 60 });
+        expect(wrapper.get('#clips-min').attributes('aria-invalid')).toBe('true');
+        expect(wrapper.text()).toContain('Min seconds is longer than max seconds.');
+        await wrapper.setProps({
+            state: { ...createDefaultViralClipsWorkspaceState(), minDuration: 20, maxDuration: 60 },
+        });
+        expect(wrapper.get('#clips-min').attributes('aria-invalid')).toBeUndefined();
+    });
+
+    it('shows the 9:16 options only while vertical is on', async () => {
+        const wrapper = mount(ViralClipsGenerator, {
+            attachTo: document.body,
+            props: {
+                segments,
+                inputPath: '/tmp/source.mp4',
+                hasMediaFile: true,
+                state: createDefaultViralClipsWorkspaceState(),
+                cancelGeneration: 0,
+                busy: false,
+            },
+        });
+        const transitions = wrapper.get('[data-testid="clips-transitions"]');
+        expect(transitions.isVisible()).toBe(false);
+        await wrapper.get('[data-testid="clips-toggle-vertical"]').trigger('click');
+        expect(lastState(wrapper).vertical).toBe(true);
+        await wrapper.setProps({ state: lastState(wrapper) });
+        expect(wrapper.get('[data-testid="clips-transitions"]').isVisible()).toBe(true);
+        wrapper.unmount();
+    });
+
+    it('says on Find clips that clips are being found, with a spinner', async () => {
+        let resolve: (clips: ClipCandidate[]) => void = () => {};
+        vi.mocked(invoke).mockImplementation((command) => {
+            if (command === 'begin_run') return Promise.resolve(123);
+            if (command === 'select_clips')
+                return new Promise((done) => {
+                    resolve = done as typeof resolve;
+                });
+            return Promise.resolve(null);
+        });
+        const wrapper = mountWith();
+        const button = wrapper.get('[data-testid="clips-generate"]');
+        await button.trigger('click');
+        await flushPromises();
+        expect(button.text()).toBe('Finding clips…');
+        expect(button.find('.animate-spin').exists()).toBe(true);
+        expect(button.attributes('aria-busy')).toBe('true');
+
+        resolve([candidate]);
+        await flushPromises();
+        expect(button.find('.animate-spin').exists()).toBe(false);
+    });
+
+    it("keeps Find clips' label while another job here runs, and says why it waits", async () => {
+        const [clip] = fromCandidates([candidate]);
+        vi.mocked(invoke).mockImplementation((command) => {
+            if (command === 'begin_run') return Promise.resolve(123);
+            if (command === 'export_clips') return new Promise(() => {});
+            return Promise.resolve(null);
+        });
+        const wrapper = mountWith({ clips: [clip], intensity: 'off' });
+        await wrapper.get('[data-testid="clips-export-selected"]').trigger('click');
+        await flushPromises();
+        const button = wrapper.get('[data-testid="clips-generate"]');
+        expect(button.attributes('disabled')).toBeDefined();
+        expect(button.text()).toBe('Find clips again');
+        expect(button.find('.animate-spin').exists()).toBe(false);
+        expect(wrapper.text()).toContain('Exporting… Wait for it to finish.');
+    });
+
+    it('explains the missing media file instead of showing the player', () => {
+        const wrapper = mount(ViralClipsGenerator, {
+            props: {
+                segments,
+                inputPath: '/tmp/source.mp4',
+                hasMediaFile: false,
+                state: {
+                    ...createDefaultViralClipsWorkspaceState(),
+                    clips: fromCandidates([candidate]),
+                },
+                cancelGeneration: 0,
+                busy: false,
+            },
+        });
+        expect(wrapper.get('[data-testid="clips-stage"]').text()).toContain('Media file not found');
+        expect(wrapper.find('[data-testid="clips-player"]').exists()).toBe(false);
+    });
+
+    it('shows the playing clip on the stage and stops it from there', async () => {
+        const [clip] = fromCandidates([candidate]);
+        const wrapper = mountWith({ clips: [clip], intensity: 'off' });
+        const video = wrapper.get('[data-testid="clips-player"]').element as HTMLVideoElement;
+        video.play = () => Promise.resolve();
+        video.pause = () => {};
+
+        const button = wrapper.get(`[data-testid="clip-preview-${clip.id}"]`);
+        expect(button.text()).toBe('Preview');
+        await button.trigger('click');
+        await flushPromises();
+        expect(button.text()).toBe('Stop');
+        expect(button.attributes('aria-pressed')).toBe('true');
+        const stage = wrapper.get('[data-testid="clips-stage"]');
+        expect(stage.text()).toContain('Playing');
+        expect(stage.text()).toContain('The reveal');
+
+        await wrapper.get('[data-testid="clips-stage-stop"]').trigger('click');
+        expect(button.text()).toBe('Preview');
+        expect(button.attributes('aria-pressed')).toBe('false');
+        expect(wrapper.find('[data-testid="clips-stage-stop"]').exists()).toBe(false);
+    });
+
+    it('offers Show more only for a reason that is cut off, and expands it', async () => {
+        const proto = HTMLElement.prototype;
+        const scroll = Object.getOwnPropertyDescriptor(proto, 'scrollHeight');
+        const client = Object.getOwnPropertyDescriptor(proto, 'clientHeight');
+        // Clamped reasons of the "long" clip overflow their two lines.
+        Object.defineProperty(proto, 'scrollHeight', {
+            configurable: true,
+            get(this: HTMLElement) {
+                return this.textContent?.includes('long') ? 80 : 36;
+            },
+        });
+        Object.defineProperty(proto, 'clientHeight', { configurable: true, get: () => 36 });
+        try {
+            const [short, long] = fromCandidates([
+                candidate,
+                { ...candidate, title: 'Second', reason: 'A long reason' },
+            ]);
+            const wrapper = mountWith({ clips: [short, long] });
+            await flushPromises();
+            expect(wrapper.find(`[data-testid="clip-reason-toggle-${short.id}"]`).exists()).toBe(
+                false,
+            );
+            const toggle = wrapper.get(`[data-testid="clip-reason-toggle-${long.id}"]`);
+            const reason = wrapper.get(`[data-testid="clip-reason-${long.id}"]`);
+            expect(toggle.attributes('aria-expanded')).toBe('false');
+            expect(reason.classes()).toContain('line-clamp-2');
+
+            await toggle.trigger('click');
+            expect(toggle.attributes('aria-expanded')).toBe('true');
+            expect(toggle.text()).toBe('Show less');
+            expect(reason.classes()).not.toContain('line-clamp-2');
+
+            await toggle.trigger('click');
+            expect(toggle.attributes('aria-expanded')).toBe('false');
+            expect(reason.classes()).toContain('line-clamp-2');
+        } finally {
+            if (scroll) Object.defineProperty(proto, 'scrollHeight', scroll);
+            if (client) Object.defineProperty(proto, 'clientHeight', client);
+        }
     });
 
     it('does not start while another job is running', async () => {
