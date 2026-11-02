@@ -6,7 +6,7 @@ use crate::run_control::{RunControl, RUN_CANCELLED_MESSAGE};
 use crate::time_utils::parse_timestamp_to_seconds_raw;
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
-use log::debug;
+use log::{debug, warn};
 use std::path::Path;
 
 /// Describes one ffmpeg run for cancellation and error reporting.
@@ -95,7 +95,7 @@ pub fn run_ffmpeg(
         Ok(_) => "ffmpeg finished without creating the output".to_string(),
         Err(error) => format!("Failed to wait for ffmpeg: {error}"),
     });
-    Err(match task.output {
+    let error = match task.output {
         Some(output) => format!(
             "Failed to {} for '{}' -> '{}': {}",
             task.operation,
@@ -109,7 +109,10 @@ pub fn run_ffmpeg(
             task.input.display(),
             detail
         ),
-    })
+    };
+    // The app shows the error once; keep it for the log zip as well.
+    warn!("{error}");
+    Err(error)
 }
 
 /// Progress through a media file of `total_seconds`, from an ffmpeg `time=`

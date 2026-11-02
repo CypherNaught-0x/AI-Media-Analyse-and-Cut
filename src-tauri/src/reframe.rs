@@ -368,8 +368,32 @@ fn camera_filter(
 /// How far before the earliest stretch the input is seeked (seconds).
 pub(crate) const SEEK_MARGIN: f64 = 1.0;
 
+/// The source inputs for `ranges` (source seconds, in playback order):
+/// each input's seek, and the input each range reads. Ranges that play in
+/// source order share an input; one that jumps back (a looped clip's body
+/// after its opener) starts a new one. With a single input, ffmpeg decodes
+/// the jumped-back stretch first and holds every frame of it until its
+/// turn: a 64 s looped short took 37 GB and brought the machine down.
+pub(crate) fn source_inputs(ranges: &[(f64, f64)]) -> (Vec<f64>, Vec<usize>) {
+    let mut seeks: Vec<f64> = Vec::new();
+    let mut input_of = Vec::with_capacity(ranges.len());
+    let mut previous_end = f64::INFINITY;
+    for &(start, end) in ranges {
+        // A millisecond of slack: abutting ranges may overlap by rounding.
+        if seeks.is_empty() || start < previous_end - 1e-3 {
+            seeks.push((start - SEEK_MARGIN).max(0.0));
+        }
+        input_of.push(seeks.len() - 1);
+        previous_end = end;
+    }
+    (seeks, input_of)
+}
+
 /// Integrated loudness of the delivered audio (LUFS).
 const LOUDNESS: f64 = -14.0;
+
+/// Peak ceiling of the delivered audio (dBFS).
+const TRUE_PEAK: f64 = -1.5;
 
 /// Audio fades at hard cuts (seconds): enough to avoid clicks, too short to
 /// hear.
@@ -403,16 +427,116 @@ fn fit_filter(name: &str, output: (u32, u32), zoom: f64) -> String {
     )
 }
 
-/// The `-filter_complex` graph for `render` (trims relative to the input
-/// seek) and the `sendcmd` scripts it reads, by file name.
-/// `caption_y`: top of the caption band if captions are laid over (input 1).
+/// The audio of `ranges` cut and joined like the video (see `render_graph`),
+/// on `[aj]`, before any loudness change. `sources` as for `render_graph`.
+fn audio_graph(ranges: &[VerticalRange], sources: &(Vec<f64>, Vec<usize>)) -> String {
+    let (seeks, input_of) = sources;
+    let transitions: Vec<Transition> = (0..ranges.len())
+        .map(|index| effective_transition(ranges, index))
+        .collect();
+    let mut graph = String::new();
+    for (i, range) in ranges.iter().enumerate() {
+        let input = input_of[i];
+        let (start, end) = (range.start - seeks[input], range.end - seeks[input]);
+        // Short fades where a hard cut (or a morph, which is one for the
+        // audio) meets this stretch, and at the clip's ends (platforms loop
+        // shorts), against clicks.
+        let cut = |t: &Transition| t.seconds() == 0.0;
+        let mut fades = String::new();
+        if i == 0 || cut(&transitions[i]) {
+            let _ = write!(fades, ",afade=t=in:d={CUT_FADE}");
+        }
+        if i + 1 == ranges.len() || cut(&transitions[i + 1]) {
+            let _ = write!(
+                fades,
+                ",afade=t=out:st={:.6}:d={CUT_FADE}",
+                (range.end - range.start - CUT_FADE).max(0.0)
+            );
+        }
+        let _ = write!(
+            graph,
+            "[{input}:a]atrim=start={start:.6}:end={end:.6},asetpts=PTS-STARTPTS{fades}[a{i}];"
+        );
+    }
+    if ranges.len() == 1 {
+        graph.push_str("[a0]anull[aj];");
+    }
+    let mut current = "a0".to_string();
+    for (i, transition) in transitions.iter().enumerate().skip(1) {
+        let joined = if i + 1 == ranges.len() {
+            "aj".to_string()
+        } else {
+            format!("ja{i}")
+        };
+        let seconds = transition.seconds();
+        if seconds == 0.0 {
+            let _ = write!(graph, "[{current}][a{i}]concat=n=2:v=0:a=1[{joined}];");
+        } else {
+            let _ = write!(graph, "[{current}][a{i}]acrossfade=d={seconds}[{joined}];");
+        }
+        current = joined;
+    }
+    graph
+}
+
+/// The integrated loudness (LUFS) of the audio `render` delivers, in a
+/// quick audio-only pass. `None` if there is nothing to measure (silence).
+fn measure_loudness(
+    render: &VerticalRender<'_>,
+    sources: &(Vec<f64>, Vec<usize>),
+    run: Option<(u64, &RunControl)>,
+) -> Result<Option<f64>, String> {
+    let mut graph = audio_graph(render.ranges, sources);
+    graph.push_str("[aj]loudnorm=print_format=json[a]");
+    let mut command = FfmpegCommand::new();
+    for seek in &sources.0 {
+        command
+            .args(["-ss", &format!("{seek:.6}")])
+            .input(render.input.to_string_lossy());
+    }
+    command
+        .args(["-filter_complex", &graph, "-map", "[a]", "-f", "null"])
+        .output("-");
+    let mut loudness = None;
+    run_ffmpeg(
+        command,
+        FfmpegTask {
+            operation: "measure the clip's loudness",
+            input: render.input,
+            output: None,
+            run,
+        },
+        |event| {
+            // From loudnorm's report: `"input_i" : "-23.51",`
+            if let FfmpegEvent::Log(_, line) = event {
+                if let Some((_, value)) = line.split_once("\"input_i\"") {
+                    loudness = value
+                        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '"' | ','))
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|lufs| lufs.is_finite() && *lufs > -70.0);
+                }
+            }
+        },
+    )?;
+    Ok(loudness)
+}
+
+/// The `-filter_complex` graph for `render` and the `sendcmd` scripts it
+/// reads, by file name. `sources`: the source inputs' seeks and the input
+/// each stretch reads (see `source_inputs`); trims are relative to that
+/// input's seek. `captions`: the overlay input and the top of the caption
+/// band, if captions are laid over.
 /// `morph_inputs[i]`: the input holding the morph frames into stretch `i`.
+/// `audio_gain`: the gain to the target loudness (dB), if there is audio.
 fn render_graph(
     render: &VerticalRender<'_>,
-    seek: f64,
-    caption_y: Option<u32>,
+    sources: &(Vec<f64>, Vec<usize>),
+    captions: Option<(usize, u32)>,
     morph_inputs: &[Option<usize>],
+    audio_gain: Option<f64>,
 ) -> (String, Vec<(String, String)>) {
+    let (seeks, input_of) = sources;
     let mut graph = String::new();
     let mut scripts = Vec::new();
     let (out_w, out_h) = render.output_size;
@@ -430,6 +554,8 @@ fn render_graph(
         _ => 0.0,
     };
     for (i, range) in ranges.iter().enumerate() {
+        let input = input_of[i];
+        let seek = seeks[input];
         let head = morph_half(i);
         let tail = morph_half(i + 1);
         // Half a frame early: the trim then takes exactly the frames that
@@ -441,9 +567,7 @@ fn render_graph(
             range.end - tail - seek - half_frame,
         );
         let duration = range.end - range.start - head - tail;
-        let audio_duration = range.end - range.start;
-        let (audio_start, audio_end) = (range.start - seek, range.end - seek);
-        let trim = format!("[0:v]trim=start={start:.6}:end={end:.6},setpts=PTS-STARTPTS");
+        let trim = format!("[{input}:v]trim=start={start:.6}:end={end:.6},setpts=PTS-STARTPTS");
         // Same frame rate, time base and format for every stretch, as xfade
         // requires.
         let finish = format!(
@@ -481,28 +605,7 @@ fn render_graph(
                 let _ = write!(graph, "{trim},{fit},{finish}");
             }
         }
-        if render.has_audio {
-            // Short fades where a hard cut (or a morph, which is one for the
-            // audio) meets this stretch, and at the clip's ends (platforms
-            // loop shorts), against clicks.
-            let cut = |t: &Transition| t.seconds() == 0.0;
-            let mut fades = String::new();
-            if i == 0 || cut(&transitions[i]) {
-                let _ = write!(fades, ",afade=t=in:d={CUT_FADE}");
-            }
-            if i + 1 == ranges.len() || cut(&transitions[i + 1]) {
-                let _ = write!(
-                    fades,
-                    ",afade=t=out:st={:.6}:d={CUT_FADE}",
-                    (audio_duration - CUT_FADE).max(0.0)
-                );
-            }
-            let _ = write!(
-                graph,
-                "[0:a]atrim=start={audio_start:.6}:end={audio_end:.6},asetpts=PTS-STARTPTS{fades}[a{i}];"
-            );
-        }
-        if let Some(input) = morph_inputs.get(i).copied().flatten() {
+        if let Some(morph_input) = morph_inputs.get(i).copied().flatten() {
             // Exactly the interpolated frames: the list repeats the last one.
             let count = range.morph.as_ref().map_or(0, Vec::len);
             // Whole-shot morphs are of the whole picture: framed like the
@@ -513,7 +616,7 @@ fn render_graph(
             };
             let _ = write!(
                 graph,
-                "[{input}:v]fps={fps},trim=end_frame={count},{framed},setsar=1,\
+                "[{morph_input}:v]fps={fps},trim=end_frame={count},{framed},setsar=1,\
                  settb=AVTB,format=yuv420p[m{i}];",
                 fps = render.fps
             );
@@ -521,10 +624,9 @@ fn render_graph(
     }
 
     // Join the stretches in order: runs of cuts with concat, transitions
-    // with xfade (video) and acrossfade (audio).
-    let video_out = if caption_y.is_some() { "vc" } else { "v" };
+    // with xfade.
+    let video_out = if captions.is_some() { "vc" } else { "v" };
     let mut current = "v0".to_string();
-    let mut current_audio = "a0".to_string();
     // Output length so far (the audio's: morphs don't change it).
     let mut length = ranges[0].end - ranges[0].start;
     for i in 1..ranges.len() {
@@ -534,11 +636,6 @@ fn render_graph(
             video_out.to_string()
         } else {
             format!("j{i}")
-        };
-        let joined_audio = if last {
-            "aj".to_string()
-        } else {
-            format!("ja{i}")
         };
         let seconds = transitions[i].seconds();
         let offset = (length - seconds).max(0.0);
@@ -585,43 +682,31 @@ fn render_graph(
                 );
             }
         }
-        if render.has_audio {
-            if seconds == 0.0 {
-                let _ = write!(
-                    graph,
-                    "[{current_audio}][a{i}]concat=n=2:v=0:a=1[{joined_audio}];"
-                );
-            } else {
-                let _ = write!(
-                    graph,
-                    "[{current_audio}][a{i}]acrossfade=d={seconds}[{joined_audio}];"
-                );
-            }
-        }
         length = offset + duration;
         current = joined;
-        current_audio = joined_audio;
     }
     if ranges.len() == 1 {
         let _ = write!(graph, "[v0]null[{video_out}];");
-        if render.has_audio {
-            let _ = write!(graph, "[a0]anull[aj];");
-        }
     }
-    if render.has_audio {
+    if let Some(gain) = audio_gain {
         // Shorts platforms normalise to about -14 LUFS; deliver at that
         // level so the clip isn't turned down (or sounds quiet next to
-        // others). loudnorm works at 192 kHz internally.
+        // others). A measured, fixed gain rather than `loudnorm`: its 3 s
+        // lookahead lets ffmpeg decode far ahead of the encoder, and every
+        // frame waiting holds its upscaled source (15 GB on a 64 s clip).
+        graph.push_str(&audio_graph(ranges, sources));
         let _ = write!(
             graph,
-            "[aj]loudnorm=I={LOUDNESS}:TP=-1.5:LRA=11,aresample=48000[a];"
+            "[aj]volume={gain:.2}dB,alimiter=limit={limit:.4}:level=disabled:latency=1,\
+             aresample=48000[a];",
+            limit = 10f64.powf(TRUE_PEAK / 20.0)
         );
     }
-    if let Some(y) = caption_y {
+    if let Some((input, y)) = captions {
         // The caption stream ends on a blank frame; keep the video going.
         let _ = write!(
             graph,
-            "[vc][1:v]overlay=x=0:y={y}:eof_action=pass:format=auto,setsar=1[v];"
+            "[vc][{input}:v]overlay=x=0:y={y}:eof_action=pass:format=auto,setsar=1[v];"
         );
     }
     // No trailing separator.
@@ -639,16 +724,12 @@ pub(crate) fn render_vertical(
     if render.ranges.is_empty() || render.ranges.iter().any(|r| r.end <= r.start) {
         return Err("A vertical clip needs non-empty source ranges".to_string());
     }
-    // A second early: right at a piece's start, the input seek can hand
-    // over audio that starts late (half a second on the PODIUM recording),
-    // which shortens that piece's audio and shifts everything after it.
-    let seek = (render
-        .ranges
-        .iter()
-        .map(|range| range.start)
-        .fold(f64::INFINITY, f64::min)
-        - SEEK_MARGIN)
-        .max(0.0);
+    // Seeked a second early: right at a piece's start, the input seek can
+    // hand over audio that starts late (half a second on the PODIUM
+    // recording), which shortens that piece's audio and shifts everything
+    // after it.
+    let pieces: Vec<(f64, f64)> = render.ranges.iter().map(|r| (r.start, r.end)).collect();
+    let sources = source_inputs(&pieces);
     // sendcmd and the caption list read files; keep their paths free of
     // characters that need escaping (e.g. ':' in Windows paths) by running
     // in their directory.
@@ -686,22 +767,38 @@ pub(crate) fn render_vertical(
             .map_err(|e| format!("Failed to write the morph list: {e}"))?;
         morph_lists.push((i, name));
     }
-    let first_morph_input = 1 + usize::from(overlay.is_some());
+    let caption_input = sources.0.len();
+    let first_morph_input = caption_input + usize::from(overlay.is_some());
     let mut morph_inputs = vec![None; render.ranges.len()];
     for (n, (i, _)) in morph_lists.iter().enumerate() {
         morph_inputs[*i] = Some(first_morph_input + n);
     }
 
-    let (graph, scripts) = render_graph(render, seek, overlay.as_ref().map(|o| o.y), &morph_inputs);
+    let audio_gain = if render.has_audio {
+        let loudness = measure_loudness(render, &sources, run)?;
+        Some(loudness.map_or(0.0, |lufs| LOUDNESS - lufs))
+    } else {
+        None
+    };
+    let (graph, scripts) = render_graph(
+        render,
+        &sources,
+        overlay.as_ref().map(|o| (caption_input, o.y)),
+        &morph_inputs,
+        audio_gain,
+    );
     for (name, script) in &scripts {
         std::fs::write(dir.path().join(name), script)
             .map_err(|e| format!("Failed to write the crop script: {e}"))?;
     }
 
     let mut command = FfmpegCommand::new();
-    command
-        .args(["-y", "-ss", &format!("{seek:.6}")])
-        .input(render.input.to_string_lossy());
+    command.arg("-y");
+    for seek in &sources.0 {
+        command
+            .args(["-ss", &format!("{seek:.6}")])
+            .input(render.input.to_string_lossy());
+    }
     if let Some(overlay) = &overlay {
         command
             .args(["-f", "concat", "-safe", "0"])
@@ -856,6 +953,24 @@ mod tests {
 
     const SOURCE: (u32, u32) = (1280, 720);
     const PORTRAIT: f64 = 9.0 / 16.0;
+
+    #[test]
+    fn ranges_in_source_order_share_an_input() {
+        // Abutting (even overlapping by rounding) and gapped ranges.
+        let ranges = [(10.0, 12.0), (11.9995, 15.0), (20.0, 22.0)];
+        assert_eq!(source_inputs(&ranges), (vec![9.0], vec![0, 0, 0]));
+    }
+
+    #[test]
+    fn a_range_that_jumps_back_reads_its_own_input() {
+        // A looped clip: the opener, then the body from earlier on.
+        let ranges = [(1193.68, 1198.08), (1198.24, 1225.7), (1154.88, 1193.68)];
+        let (seeks, input_of) = source_inputs(&ranges);
+        assert_eq!(input_of, [0, 0, 1]);
+        assert!((seeks[0] - 1192.68).abs() < 1e-9 && (seeks[1] - 1153.88).abs() < 1e-9);
+        // Never before the start of the source.
+        assert_eq!(source_inputs(&[(5.0, 6.0), (0.5, 1.0)]).0, [4.0, 0.0]);
+    }
 
     #[test]
     fn crops_are_interpolated_clamped_and_even() {
