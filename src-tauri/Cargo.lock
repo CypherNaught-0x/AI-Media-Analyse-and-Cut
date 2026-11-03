@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "ai-media-cutter"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "ab_glyph",
  "anyhow",
