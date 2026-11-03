@@ -45,7 +45,9 @@ tauri-plugin-log = "2.10.1"
 log = "0.4.29"
 zip = "9.2.2"
 fastrand = "2.3"
-parakeet-rs = { version = "0.3.4", features = ["sortformer"] }
+# Exact: 0.3.8 removed DiarizationConfig::callhome() in a patch release, and the
+# release script regenerates the lockfile, so a lockfile-only pin doesn't hold.
+parakeet-rs = { version = "=0.3.4", features = ["sortformer"] }
 # Caption rendering for vertical shorts.
 ab_glyph = "0.2"
 png = "0.17"
