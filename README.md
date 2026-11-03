@@ -9,6 +9,9 @@
 ## Key Features
 
 *   **AI Transcription**: Automatically transcribe audio and video files with high accuracy.
+*   **Nemotron 3.5 Transcribe (recommended)**: NVIDIA's 30B speech-LLM, on your machine or in the cloud via OpenRouter: punctuated transcripts in ~40 languages with word timings, speaker labels and glossary-aware spelling. See [Nemotron 3.5 Transcribe](#nemotron-35-transcribe).
+*   **Quick setup wizard**: On first start the app checks what your machine can run (memory, GPU, disk) and walks you through the speech engine, AI provider, EU-only routing and language. Run it again from Settings.
+*   **OpenRouter with EU-only routing**: One key for cloud speech-to-text and the AI features; optionally keep every request in Europe (`eu.openrouter.ai`). See [Cloud speech-to-text](#cloud-speech-to-text-openrouter).
 *   **Verbatim Transcription (CrisperWhisper)**: Local, English/German-only engine that writes down every filler, stutter and vocal event with ~30 ms word timings — so "um"s can be cut out of the video, not just the text. See [Transcription Backends](#transcription-backends).
 *   **Composable Pipelines**: Pick a pipeline (local, remote, or hybrid) and a local engine independently — every hybrid works with either engine. See [Transcription Backends](#transcription-backends).
 *   **Text-Based Editing**: Edit videos by simply deleting text from the transcript. The video is automatically cut to match your text edits.
@@ -141,8 +144,15 @@ green on a machine that has never set one up.
 
 ## How to Use
 
-1.  **Configure API** *(not needed for the Local Only pipeline)*:
+1.  **Quick setup**: on first start the setup wizard recommends a speech engine for your
+    machine and sets up an AI provider. Skip it and configure things in Settings instead, or
+    run it again from Settings → Transcription defaults → **Run setup wizard**.
+
+    **Configure API** *(not needed for on-device engines with the Speech Engine Only pipeline)*:
     *   Click the "Configure" button or go to Settings.
+    *   Pick a provider: **OpenRouter** (one key for cloud speech-to-text and the AI features,
+        with optional EU-only routing), **Google Gemini**, or any **Custom** OpenAI-compatible
+        endpoint.
     *   Enter your **Google Gemini API Key** (recommended, free tier available) or OpenAI API Key.
         It is stored in the system keychain (macOS Keychain, Windows Credential Manager, or the
         Secret Service on Linux), not in the app's settings; keys saved by earlier versions are
@@ -201,19 +211,21 @@ pipeline** runs, and **which local engine** it runs on.
 | Pipeline | Runs | Needs | Notes |
 | --- | --- | --- | --- |
 | **LLM Only** | Remote | API key | Sends the audio to your API model. Uses context, glossary and speaker count. |
-| **Local Only** | Local | — | Runs entirely on this machine. Nothing leaves the device. |
-| **Hybrid Cleanup** | Both | API key | Keeps the local engine's timings, then an LLM pass tidies wording and punctuation. |
-| **Hybrid Merge** | Both | API key | Transcribes locally and remotely, then merges both onto the local timings. |
+| **Speech Engine Only** | Engine | — | Runs just the speech engine. With an on-device engine nothing leaves the machine. (Formerly *Local Only*.) |
+| **Hybrid Cleanup** | Both | API key | Keeps the engine's timings, then an LLM pass tidies wording and punctuation. |
+| **Hybrid Merge** | Both | API key | The engine and the LLM both transcribe; merged onto the engine's timings. |
 
-### Local engine
+### Speech engine
 
 Used by every pipeline except **LLM Only** — including both hybrids.
 
 | Engine | Needs | Notes |
 | --- | --- | --- |
+| **Nemotron 3.5** (recommended) | GPU with ~16 GB+ (Apple Silicon: 24 GB+ memory) | NVIDIA's speech-LLM: most accurate, ~40 languages, speakers, follows the glossary. One-time download of 15-37 GB. |
 | **Parakeet** | — | Parakeet TDT + Sortformer diarization, word timestamps. Models auto-download. |
 | **CrisperWhisper** | Python 3.10+ | Verbatim transcription with ~30 ms word timings. **English and German only**, non-commercial licence. |
 | **Apple Speech** | macOS 26+ | macOS's own on-device model: very fast, ~45 locales, word timings. Not verbatim (drops fillers). |
+| **Cloud** | OpenRouter key | Speech-to-text API via OpenRouter (Nemotron, Voxtral, Whisper, …). Optional EU-only routing. The only engine that uploads audio. |
 
 The two axes are genuinely independent: the hybrid stages consume an opaque local transcript and
 never know which engine produced it, so *Hybrid Merge + CrisperWhisper* is as valid a
@@ -222,6 +234,77 @@ the cached local transcript instead of re-transcribing.
 
 > Settings saved by earlier versions (which folded the engine into the pipeline as `parakeet` or
 > `crisper`, and where the hybrids implied Parakeet) are migrated automatically on load.
+
+### Nemotron 3.5 Transcribe
+
+[Nemotron 3.5 Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B)
+is a speech-LLM: a speech encoder feeds a 30B mixture-of-experts language model (about 4B
+parameters active per token) that writes the transcript with punctuation. The encoder's CTC
+head times every word and its speaker branch tells up to eight speakers apart. Because it reads
+an instruction with the audio, the project **glossary** is passed in as "Context terms", which
+steers how names and jargon are spelled. **Remove Filler Words** switches the instruction from
+verbatim (fillers kept, so they can be cut) to readable.
+
+It doesn't run on ONNX. It runs on NVIDIA's [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp)
+(llama.cpp underneath). Press **Download** in Settings → Speech engines → Nemotron, or at the
+end of the setup wizard. The app downloads the v0.3.0 release archive for your platform (Metal
+on Apple Silicon, CUDA with an NVIDIA GPU, CPU otherwise) and the GGUF files from
+[AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF](https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF).
+Every file is pinned by version or commit and verified by SHA-256, and interrupted downloads
+resume. Nothing large downloads until you ask.
+
+**Which build.** The app picks the decoder precision from your memory:
+
+| Machine | Build | Download |
+| --- | --- | --- |
+| Apple Silicon, 32 GB+ / NVIDIA GPU with 22 GB+ | IQ4_NL | 21.3 GB |
+| Apple Silicon, 24-31 GB | Q2_0_L (memory is tight) | 17.2 GB |
+| NVIDIA GPU with 16-21 GB | Q2_0_L or Q2_0_M (small-GPU settings) | 15.2-17.2 GB |
+| No usable GPU, 26 GB+ RAM | IQ4_NL (or Q2) on the CPU, slow | 15.2-21.3 GB |
+
+On Apple Silicon the GPU may use only part of the memory (`nemo-speech doctor` reports
+28.1 GiB of 36 GB on an M3 Pro), so the app sizes the build for three quarters of it. Q8_0, Q5_0_XL and IQ4_NL_L can be chosen in Settings.
+According to the model card, every build from Q2_0_L up stays within 0.2 WER points of BF16 on
+English, German, French and Spanish.
+
+**Speed and accuracy** (M3 Pro, 36 GB, IQ4_NL on Metal): 10 minutes of a German four-person
+panel took 270 s (2.2x real time; an hour is about 27 minutes), with every speaker kept and no
+dropped passages; the 74 s English test clip matched the gold transcript word for word (fillers
+aside). That makes it slower than CrisperWhisper and far slower than Apple Speech, in exchange
+for the best transcript. The model is memory-mapped, so a first run after a restart also reads
+the ~21 GB from disk.
+
+The instruction always asks for speaker tags, even when speakers are not labelled: with the model
+card's plain "verbatim" prompt, the model transcribed only one of two hosts and stopped early.
+
+Recordings longer than 50 minutes are transcribed in chunks split at silences. Their speakers
+are then labelled by Sortformer, because speaker numbers restart in each chunk.
+
+> **Licensing**: the weights are released under the [OpenMDW License 1.1](https://huggingface.co/AtomicChat/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-GGUF/blob/main/LICENSE)
+> (permissive); NeMo-Speech.cpp is Apache-2.0.
+
+### Cloud speech-to-text (OpenRouter)
+
+The **Cloud** engine sends the audio to OpenRouter's
+[`/audio/transcriptions`](https://openrouter.ai/docs/api/api-reference/stt/create-transcription)
+endpoint. It defaults to `nvidia/nemotron-3.5-transcribe` (about $0.12 per hour of audio) and
+lists every speech-to-text model OpenRouter serves, with prices. Audio is uploaded as 16 kHz
+MP3 in about 10-minute chunks split at silences, three at a time. The glossary is sent as
+`keyterms`. Speakers are labelled by Sortformer on your machine, so labels stay consistent
+across chunks whichever provider handles the request.
+
+The OpenRouter key has its own keychain entry. It is shared with the AI model when the AI
+provider is OpenRouter, so a Gemini user can still transcribe through OpenRouter.
+
+**EU only.** Turn on *Keep requests in the EU* to use
+[`eu.openrouter.ai`](https://openrouter.ai/docs/guides/features/in-region-routing). Requests are
+then decrypted and processed in Europe only, and fail rather than leave it. The setting applies
+to cloud speech-to-text and, with the OpenRouter provider, to the AI model. Model lists come
+from the EU endpoint. Notes:
+
+*   Nemotron 3.5 Transcribe is **not** served in the EU region (as of November 2026). The EU
+    default is Mistral's `voxtral-small-transcribe-3-0`.
+*   OpenRouter offers in-region routing for Business and Enterprise accounts.
 
 ### CrisperWhisper
 

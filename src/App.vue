@@ -5,7 +5,9 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 import Toast from './components/Toast.vue';
 import AppRail from './components/shell/AppRail.vue';
+import SetupWizard from './components/SetupWizard.vue';
 import { migrateLegacyApiKey } from './composables/useSettings';
+import { useSetupWizard } from './composables/useSetupWizard';
 
 const toastVisible = ref(false);
 const toastMessage = ref('');
@@ -35,10 +37,14 @@ async function handleToastAction() {
     }
 }
 
+const setupWizard = useSetupWizard();
+
 onMounted(async () => {
     // Moves an API key from an older version's localStorage into the keychain
     // and loads whether one is stored.
     void migrateLegacyApiKey();
+    // First start (or a wizard version not seen yet): offer the quick setup.
+    setupWizard.openIfNeeded();
 
     try {
         const update = await check();
@@ -128,6 +134,7 @@ onMounted(async () => {
             </router-view>
         </main>
     </div>
+    <SetupWizard />
     <Toast
         :show="toastVisible"
         :message="toastMessage"

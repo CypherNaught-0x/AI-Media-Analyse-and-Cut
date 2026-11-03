@@ -62,6 +62,31 @@ export const commands = {
 	appleSpeechStatus: () => __TAURI_INVOKE<AppleSpeechStatus>("apple_speech_status"),
 	/**  Download the on-device model for `locale` (a macOS system asset). */
 	installAppleSpeechLocale: (locale: string) => __TAURI_INVOKE<AppleSpeechStatus>("install_apple_speech_locale", { locale }),
+	/**  What is installed, and what this machine should use. */
+	nemotronStatus: () => __TAURI_INVOKE<NemotronStatus>("nemotron_status"),
+	/**
+	 *  Download the runtime and the `variant` model files (resuming any earlier,
+	 *  interrupted download). Progress arrives as `nemotron-install-progress`.
+	 */
+	installNemotron: (variant: NemotronVariant) => __TAURI_INVOKE<NemotronStatus>("install_nemotron", { variant }),
+	/**  Stop a running download; what was downloaded so far is kept and resumed. */
+	cancelNemotronInstall: () => __TAURI_INVOKE<void>("cancel_nemotron_install"),
+	/**  Delete a downloaded decoder (the shared encoder and runtime stay). */
+	removeNemotronModel: (variant: NemotronVariant) => __TAURI_INVOKE<NemotronStatus>("remove_nemotron_model", { variant }),
+	/**  Transcribe with Nemotron 3.5 Transcribe and return editor-ready segments. */
+	transcribeWithNemotron: (runId: number, audioPath: string, options: NemotronOptions) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_nemotron", { runId, audioPath, options }),
+	/**  Transcribe through OpenRouter and return editor-ready segments. */
+	transcribeWithCloudAsr: (runId: number, audioPath: string, options: CloudAsrOptions) => __TAURI_INVOKE<TranscriptSegment_Serialize[]>("transcribe_with_cloud_asr", { runId, audioPath, options }),
+	/**
+	 *  Speech-to-text models served at `base_url` (OpenRouter; no key needed). On
+	 *  `eu.openrouter.ai` this is the EU-only subset.
+	 */
+	listTranscriptionModels: (baseUrl: string) => __TAURI_INVOKE<TranscriptionModel[]>("list_transcription_models", { baseUrl }),
+	/**  Memory, GPUs and free disk space of this machine. */
+	detectDevice: () => __TAURI_INVOKE<DeviceInfo>("detect_device"),
+	setOpenrouterApiKey: (key: string) => __TAURI_INVOKE<null>("set_openrouter_api_key", { key }),
+	clearOpenrouterApiKey: () => __TAURI_INVOKE<null>("clear_openrouter_api_key"),
+	hasOpenrouterApiKey: () => __TAURI_INVOKE<boolean>("has_openrouter_api_key"),
 	cutVideo: (runId: number, inputPath: string, segments: Segment[], outputPath: string, quality: ExportQuality) => __TAURI_INVOKE<null>("cut_video", { runId, inputPath, segments, outputPath, quality }),
 	exportClips: (runId: number, inputPath: string, segments: ClipSegment[], outputDir: string, fastMode: boolean, quality: ExportQuality) => __TAURI_INVOKE<null>("export_clips", { runId, inputPath, segments, outputDir, fastMode, quality }),
 	/**
@@ -223,6 +248,20 @@ export type ClipSignals = {
 	wordsPerSecond: number,
 };
 
+export type CloudAsrOptions = {
+	/**  `https://openrouter.ai/api` or `https://eu.openrouter.ai/api`. */
+	baseUrl?: string,
+	/**  e.g. `nvidia/nemotron-3.5-transcribe`. */
+	model?: string,
+	/**  ISO 639-1 code; empty lets the model detect it. */
+	language?: string,
+	/**  Names and terms to spell right, sent as `keyterms`. */
+	glossary?: string,
+	/**  Label speakers with Sortformer. */
+	diarize?: boolean,
+	sortformerModelPath?: string,
+};
+
 export type CrisperEnvironmentStatus = {
 	/**  Interpreter that was probed, if one could be found at all. */
 	pythonPath: string,
@@ -299,6 +338,21 @@ export type DetectedFace = {
 	applied: number | null,
 };
 
+export type DeviceInfo = {
+	/**  `macos`, `windows`, `linux`. */
+	os: string,
+	/**  `aarch64`, `x86_64`. */
+	arch: string,
+	cpu: string,
+	cpuCores: number,
+	totalMemoryGb: number,
+	/**  Apple Silicon shares one memory pool between CPU and GPU. */
+	appleSilicon: boolean,
+	gpus: GpuInfo[],
+	/**  Free space on the disk that holds the app's models. */
+	freeDiskGb: number | null,
+};
+
 /**  A clip to edit. */
 export type EditClip = {
 	title: string,
@@ -364,6 +418,25 @@ export type FaceSpeaker =
 /**  Someone who doesn't speak (a listener). */
 { kind: "nobody" };
 
+/**  How well Nemotron runs on a machine. */
+export type FitRating = 
+/**  On the GPU with the recommended precision. */
+"good" | 
+/**  On the GPU, but only a smaller precision fits and memory is tight. */
+"tight" | 
+/**  On the CPU: works, but much slower than real time on long files. */
+"slow" | 
+/**  Not enough memory, or no runtime for this platform. */
+"unsupported";
+
+export type GpuInfo = {
+	name: string,
+	/**  `nvidia`, `apple`, ... */
+	vendor: string,
+	/**  Dedicated memory; `None` for unified memory (Apple Silicon). */
+	memoryGb: number | null,
+};
+
 /**  How hard to tighten, as in the plan's intensity presets. */
 export type Intensity = "off" | "chill" | "punchy" | "hyper";
 
@@ -381,6 +454,59 @@ export type ModelList = {
 	/**  False when the endpoint has no model-listing route (404). */
 	supported: boolean,
 	models: string[],
+};
+
+export type NemotronFit = {
+	rating: FitRating,
+	variant: NemotronVariant | null,
+	device: RunDevice,
+	message: string,
+};
+
+/**  `verbatim` keeps fillers and repetitions (to cut them); `readable` drops them. */
+export type NemotronMode = "verbatim" | "readable";
+
+export type NemotronOptions = {
+	/**  `None` uses the recommended build, or any installed one. */
+	variant?: NemotronVariant | null,
+	/**  ISO 639-1 code; empty lets the model detect the language. */
+	language?: string,
+	mode?: NemotronMode,
+	/**  The project glossary: names and terms to spell right. */
+	glossary?: string,
+	/**  Label speakers (the model's speaker branch, Sortformer as fallback). */
+	diarize?: boolean,
+	sortformerModelPath?: string,
+};
+
+export type NemotronStatus = {
+	/**  NeMo-Speech.cpp publishes a build for this platform. */
+	platformSupported: boolean,
+	runtimeInstalled: boolean,
+	/**  Bytes still to download for the runtime (0 once installed). */
+	runtimeDownloadBytes: number,
+	encoderInstalled: boolean,
+	variants: NemotronVariantInfo[],
+	recommendation: NemotronFit,
+	device: DeviceInfo,
+	/**  A download is running. */
+	installing: boolean,
+};
+
+/**
+ *  Decoder precisions. Every one from Q2_0_L up stays within ±0.2 WER points
+ *  of BF16 on English, German, French and Spanish (model card); Q2_0_M adds
+ *  ~1.5 points of Chinese character error.
+ */
+export type NemotronVariant = "Q8_0" | "Q5_0_XL" | "IQ4_NL_L" | "IQ4_NL" | "Q2_0_L" | "Q2_0_M";
+
+export type NemotronVariantInfo = {
+	variant: NemotronVariant,
+	label: string,
+	/**  Decoder plus the shared encoder. */
+	downloadBytes: number,
+	requiredMemoryGb: number,
+	installed: boolean,
 };
 
 export type PodcastSegment = PodcastSegment_Serialize | PodcastSegment_Deserialize;
@@ -443,6 +569,9 @@ export type ProcessedAudio = {
 	silence_intervals: SilenceInterval[],
 	offsets: SegmentOffset[],
 };
+
+/**  Where inference runs. */
+export type RunDevice = "metal" | "cuda" | "cpu";
 
 export type Segment = {
 	start: string,
@@ -568,6 +697,13 @@ export type TranscriptWord_Serialize = {
 	end: string,
 	text: string,
 	speaker?: string | null,
+};
+
+export type TranscriptionModel = {
+	id: string,
+	name: string,
+	/**  US dollars per minute of audio, when the endpoint reports it. */
+	usdPerMinute: number | null,
 };
 
 /**  How a stretch joins the one before it. */

@@ -1,4 +1,4 @@
-//! The LLM API key, kept in the OS credential store (macOS Keychain, Windows
+//! The API keys (the LLM provider's and OpenRouter's), kept in the OS credential store (macOS Keychain, Windows
 //! Credential Manager, Linux Secret Service) instead of the webview's
 //! localStorage. The backend reads it when it makes a request, so the key
 //! never travels over IPC after it has been saved.
@@ -8,6 +8,10 @@ use std::sync::{Mutex, OnceLock};
 
 const SERVICE: &str = "itemis.ai-media-cutter";
 const API_KEY_ACCOUNT: &str = "llm-api-key";
+/// OpenRouter serves both speech-to-text and LLM requests, so its key is kept
+/// apart from the LLM provider's key: a Gemini user can still transcribe
+/// through OpenRouter.
+const OPENROUTER_KEY_ACCOUNT: &str = "openrouter-api-key";
 
 /// Where secrets are stored; the OS store in the app, memory in tests.
 pub(crate) trait SecretStore: Send + Sync {
@@ -16,18 +20,20 @@ pub(crate) trait SecretStore: Send + Sync {
     fn delete(&self) -> Result<(), String>;
 }
 
-struct KeyringStore;
+struct KeyringStore {
+    account: &'static str,
+}
 
 impl KeyringStore {
-    fn entry() -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, API_KEY_ACCOUNT)
+    fn entry(&self) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(SERVICE, self.account)
             .map_err(|error| format!("The system credential store is unavailable: {error}"))
     }
 }
 
 impl SecretStore for KeyringStore {
     fn get(&self) -> Result<Option<String>, String> {
-        match Self::entry()?.get_password() {
+        match self.entry()?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(format!(
@@ -37,13 +43,13 @@ impl SecretStore for KeyringStore {
     }
 
     fn set(&self, value: &str) -> Result<(), String> {
-        Self::entry()?
+        self.entry()?
             .set_password(value)
             .map_err(|error| format!("Failed to save the API key to the keychain: {error}"))
     }
 
     fn delete(&self) -> Result<(), String> {
-        match Self::entry()?.delete_credential() {
+        match self.entry()?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(format!(
                 "Failed to remove the API key from the keychain: {error}"
@@ -58,13 +64,20 @@ pub(crate) struct ApiKey {
     store: Box<dyn SecretStore>,
     /// `None` until loaded; then the stored key, if any.
     cached: Mutex<Option<Option<String>>>,
+    /// Shown when a request needs the key and none is stored.
+    missing_message: &'static str,
 }
 
 impl ApiKey {
     pub(crate) fn new(store: Box<dyn SecretStore>) -> Self {
+        Self::new_named(store, "No API key is configured. Add one in Settings.")
+    }
+
+    pub(crate) fn new_named(store: Box<dyn SecretStore>, missing_message: &'static str) -> Self {
         Self {
             store,
             cached: Mutex::new(None),
+            missing_message,
         }
     }
 
@@ -81,7 +94,7 @@ impl ApiKey {
     /// The key for a request, or an error telling the user to add one.
     pub(crate) fn require(&self) -> Result<String, AppError> {
         self.load()?
-            .ok_or_else(|| AppError::failed("No API key is configured. Add one in Settings."))
+            .ok_or_else(|| AppError::failed(self.missing_message))
     }
 
     pub(crate) fn is_set(&self) -> Result<bool, AppError> {
@@ -105,10 +118,70 @@ impl ApiKey {
     }
 }
 
-/// The app's API key, backed by the OS credential store.
+/// The LLM provider's API key, backed by the OS credential store.
 pub(crate) fn api_key() -> &'static ApiKey {
     static API_KEY: OnceLock<ApiKey> = OnceLock::new();
-    API_KEY.get_or_init(|| ApiKey::new(Box::new(KeyringStore)))
+    API_KEY.get_or_init(|| {
+        ApiKey::new(Box::new(KeyringStore {
+            account: API_KEY_ACCOUNT,
+        }))
+    })
+}
+
+/// The OpenRouter API key, backed by the OS credential store.
+pub(crate) fn openrouter_api_key() -> &'static ApiKey {
+    static API_KEY: OnceLock<ApiKey> = OnceLock::new();
+    API_KEY.get_or_init(|| {
+        ApiKey::new_named(
+            Box::new(KeyringStore {
+                account: OPENROUTER_KEY_ACCOUNT,
+            }),
+            "No OpenRouter API key is configured. Add one in Settings.",
+        )
+    })
+}
+
+/// Whether `base_url` points at OpenRouter (`openrouter.ai` or a regional
+/// domain such as `eu.openrouter.ai`).
+pub(crate) fn is_openrouter_url(base_url: &str) -> bool {
+    let without_scheme = base_url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = without_scheme
+        .split(['/', ':', '?'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    host == "openrouter.ai" || host.ends_with(".openrouter.ai")
+}
+
+/// The key for a request to `base_url`: OpenRouter's for OpenRouter, the LLM
+/// provider's otherwise.
+pub(crate) fn key_for_base_url(base_url: &str) -> Result<String, AppError> {
+    if is_openrouter_url(base_url) {
+        openrouter_api_key().require()
+    } else {
+        api_key().require()
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_openrouter_api_key(key: String) -> Result<(), AppError> {
+    openrouter_api_key().set(&key)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn clear_openrouter_api_key() -> Result<(), AppError> {
+    openrouter_api_key().clear()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn has_openrouter_api_key() -> Result<bool, AppError> {
+    openrouter_api_key().is_set()
 }
 
 #[tauri::command]
@@ -174,6 +247,18 @@ mod tests {
         assert_eq!(key.require().unwrap(), "sk-123");
         assert!(key.is_set().unwrap());
         assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn openrouter_urls_are_recognised_by_host() {
+        assert!(is_openrouter_url("https://openrouter.ai/api"));
+        assert!(is_openrouter_url("https://eu.openrouter.ai/api/v1"));
+        assert!(is_openrouter_url("openrouter.ai"));
+        assert!(!is_openrouter_url(
+            "https://generativelanguage.googleapis.com"
+        ));
+        assert!(!is_openrouter_url("https://openrouter.ai.example.com/api"));
+        assert!(!is_openrouter_url("https://example.com/openrouter.ai"));
     }
 
     #[test]

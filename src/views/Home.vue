@@ -23,6 +23,7 @@ import type {
     Clip,
     ClipWorkspaceState,
     LastAnalyzedSettings,
+    LocalEngine,
     PodcastWorkspaceState,
     ProcessedAudio,
     SilenceInterval,
@@ -51,11 +52,12 @@ import { adjustSegmentsWithOffsets } from '../utils/transcriptOffsets';
 import { appendFileNameSuffix } from '../utils/filePath';
 import { commands } from '../bindings';
 import { errorMessage } from '../utils/appError';
+import { openRouterBaseUrl } from '../utils/providers';
 
 const AUTOSAVE_DEBOUNCE_MS = 750;
 
 const router = useRouter();
-const { settings, apiKeyStored } = useSettings();
+const { settings, llmKeyStored, openRouterKeyStored } = useSettings();
 
 /**
  * Payloads of the backend's shared `progress` event: elapsed seconds, a plain
@@ -190,6 +192,26 @@ function currentEngineSignature(): string {
             diarize: settings.value.appleSpeechDiarize,
         });
     }
+    if (localEngine === 'nemotron') {
+        return JSON.stringify({
+            variant: settings.value.nemotronVariant,
+            language: settings.value.asrLanguage,
+            // Fillers are dropped by the instruction, and glossary terms steer
+            // spelling, so both change the transcript itself.
+            removeFillers: removeFillerWords.value,
+            glossary: workspaceSettings.value.glossary,
+            diarize: settings.value.nemotronDiarize,
+        });
+    }
+    if (localEngine === 'cloud') {
+        return JSON.stringify({
+            model: settings.value.cloudAsrModel,
+            euOnly: settings.value.openRouterEuOnly,
+            language: settings.value.asrLanguage,
+            glossary: workspaceSettings.value.glossary,
+            diarize: settings.value.cloudAsrDiarize,
+        });
+    }
     if (localEngine !== 'crisper') return '';
     return JSON.stringify({
         model: settings.value.crisperModel,
@@ -216,14 +238,20 @@ function currentParakeetCacheKey(): string {
 }
 
 const isLlmOnlyBackend = computed(() => workspaceSettings.value.transcriptionBackend === 'llm');
-const hasApiKey = computed(() => apiKeyStored.value);
+const hasApiKey = computed(() => llmKeyStored.value);
 const localEngineLabel = computed(() => LOCAL_ENGINE_LABELS[workspaceSettings.value.localEngine]);
 
 const hasBackendConfiguration = computed(() => {
     // Local engines need no configuration up front: Parakeet auto-downloads its
     // models and CrisperWhisper reports a fixable error when its Python
     // environment is missing. Only the LLM stages need a key.
-    return usesRemoteModel(workspaceSettings.value.transcriptionBackend) ? hasApiKey.value : true;
+    const { transcriptionBackend, localEngine } = workspaceSettings.value;
+    if (usesRemoteModel(transcriptionBackend) && !hasApiKey.value) return false;
+    // Cloud speech-to-text needs the OpenRouter key whatever the pipeline.
+    if (usesLocalEngine(transcriptionBackend) && localEngine === 'cloud') {
+        return openRouterKeyStored.value;
+    }
+    return true;
 });
 
 /** Short description of the local engine and its notable settings. */
@@ -234,6 +262,13 @@ const localEngineDisplay = computed(() => {
     }
     if (workspaceSettings.value.localEngine === 'apple-speech') {
         return `Apple Speech (${appleSpeechLocale(settings.value.appleSpeechLocale)})`;
+    }
+    if (workspaceSettings.value.localEngine === 'nemotron') {
+        return `Nemotron 3.5 Transcribe (${settings.value.nemotronVariant || 'recommended build'})`;
+    }
+    if (workspaceSettings.value.localEngine === 'cloud') {
+        const region = settings.value.openRouterEuOnly ? 'OpenRouter EU' : 'OpenRouter';
+        return `${settings.value.cloudAsrModel} via ${region}`;
     }
     const usesCustomPaths =
         workspaceSettings.value.parakeetModelPath.trim() ||
@@ -1138,35 +1173,27 @@ async function transcribeWithLocalEngine(
 
     const engine = workspaceSettings.value.localEngine;
     const segments =
-        engine === 'apple-speech'
-            ? await commands.transcribeWithAppleSpeech(runId, analysisAudioPath, {
-                  locale: appleSpeechLocale(settings.value.appleSpeechLocale),
-                  diarize: settings.value.appleSpeechDiarize,
+        engine === 'nemotron'
+            ? await commands.transcribeWithNemotron(runId, analysisAudioPath, {
+                  variant: settings.value.nemotronVariant || null,
+                  language: settings.value.asrLanguage,
+                  // The analysis toggle picks the instruction: verbatim keeps
+                  // fillers so they can be cut; otherwise the model omits them.
+                  mode: removeFillerWords.value ? 'readable' : 'verbatim',
+                  glossary: workspaceSettings.value.glossary,
+                  diarize: settings.value.nemotronDiarize,
                   sortformerModelPath: workspaceSettings.value.sortformerModelPath,
               })
-            : engine === 'crisper'
-              ? await commands.transcribeWithCrisper(runId, analysisAudioPath, {
-                    pythonPath: settings.value.crisperPythonPath,
-                    model: settings.value.crisperModel,
-                    language: settings.value.crisperLanguage,
-                    mode: settings.value.crisperMode,
-                    backend: settings.value.crisperBackend,
-                    device: settings.value.crisperDevice,
-                    computeType: settings.value.crisperComputeType,
-                    // The editor cuts on word timings, so they are always requested
-                    // (the model adds no measurable overhead for them).
-                    wordTimestamps: true,
-                    removeFillers: removeFillerWords.value,
-                    removeVocalEvents: settings.value.crisperRemoveVocalEvents,
-                    diarize: settings.value.crisperDiarize,
+            : engine === 'cloud'
+              ? await commands.transcribeWithCloudAsr(runId, analysisAudioPath, {
+                    baseUrl: openRouterBaseUrl(settings.value.openRouterEuOnly),
+                    model: settings.value.cloudAsrModel,
+                    language: settings.value.asrLanguage,
+                    glossary: workspaceSettings.value.glossary,
+                    diarize: settings.value.cloudAsrDiarize,
                     sortformerModelPath: workspaceSettings.value.sortformerModelPath,
                 })
-              : await commands.transcribeWithParakeet(
-                    runId,
-                    analysisAudioPath,
-                    workspaceSettings.value.parakeetModelPath,
-                    workspaceSettings.value.sortformerModelPath,
-                );
+              : await transcribeWithBuiltInEngine(runId, analysisAudioPath, engine);
 
     assertActiveRun(runId);
     // Cache the raw, pre-offset output so changing only LLM-side inputs (or
@@ -1174,6 +1201,43 @@ async function transcribeWithLocalEngine(
     rawParakeetSegments.value = segments;
     parakeetCacheKey.value = cacheKey;
     return segments;
+}
+
+/** Parakeet, CrisperWhisper and Apple Speech. */
+async function transcribeWithBuiltInEngine(
+    runId: number,
+    analysisAudioPath: string,
+    engine: LocalEngine,
+): Promise<TranscriptSegment[]> {
+    return engine === 'apple-speech'
+        ? await commands.transcribeWithAppleSpeech(runId, analysisAudioPath, {
+              locale: appleSpeechLocale(settings.value.appleSpeechLocale),
+              diarize: settings.value.appleSpeechDiarize,
+              sortformerModelPath: workspaceSettings.value.sortformerModelPath,
+          })
+        : engine === 'crisper'
+          ? await commands.transcribeWithCrisper(runId, analysisAudioPath, {
+                pythonPath: settings.value.crisperPythonPath,
+                model: settings.value.crisperModel,
+                language: settings.value.crisperLanguage,
+                mode: settings.value.crisperMode,
+                backend: settings.value.crisperBackend,
+                device: settings.value.crisperDevice,
+                computeType: settings.value.crisperComputeType,
+                // The editor cuts on word timings, so they are always requested
+                // (the model adds no measurable overhead for them).
+                wordTimestamps: true,
+                removeFillers: removeFillerWords.value,
+                removeVocalEvents: settings.value.crisperRemoveVocalEvents,
+                diarize: settings.value.crisperDiarize,
+                sortformerModelPath: workspaceSettings.value.sortformerModelPath,
+            })
+          : await commands.transcribeWithParakeet(
+                runId,
+                analysisAudioPath,
+                workspaceSettings.value.parakeetModelPath,
+                workspaceSettings.value.sortformerModelPath,
+            );
 }
 
 async function processFile() {
@@ -1194,7 +1258,9 @@ async function processFile() {
         status.value =
             workspaceSettings.value.transcriptionBackend === 'llm'
                 ? 'Please provide an API key.'
-                : 'Please provide an API key for the hybrid AI stage.';
+                : workspaceSettings.value.localEngine === 'cloud' && !openRouterKeyStored.value
+                  ? 'Add an OpenRouter API key in Settings for cloud speech-to-text.'
+                  : 'Please provide an API key for the hybrid AI stage.';
         return;
     }
 

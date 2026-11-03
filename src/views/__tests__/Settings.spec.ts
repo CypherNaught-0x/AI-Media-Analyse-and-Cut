@@ -82,12 +82,15 @@ const modelFetchStateRef = ref({
     supportsModelFetch: true,
 });
 const apiKeyStoredRef = ref(true);
+const openRouterKeyStoredRef = ref(false);
 const refreshApiKeyStatusMock = vi.fn(() => Promise.resolve());
 vi.mock('../../composables/useSettings', () => ({
+    SETUP_WIZARD_VERSION: 1,
     refreshApiKeyStatus: () => refreshApiKeyStatusMock(),
     useSettings: () => ({
         settings: settingsRef,
         apiKeyStored: apiKeyStoredRef,
+        openRouterKeyStored: openRouterKeyStoredRef,
         updateSettings: updateSettingsMock,
         modelFetchState: modelFetchStateRef,
         updateModelFetchState: updateModelFetchStateMock,
@@ -233,6 +236,43 @@ describe('Settings.vue', () => {
         expect(updateSettingsMock.mock.calls[0][0]).not.toHaveProperty('apiKey');
         expect(refreshApiKeyStatusMock).toHaveBeenCalled();
         expect((input.element as HTMLInputElement).value).toBe('');
+    });
+
+    it('sets up OpenRouter with EU-only routing and its own keychain slot', async () => {
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+
+        await wrapper.get('[data-testid="provider-openrouter"]').trigger('click');
+        // Presets own the base URL; only Custom shows the field.
+        expect(wrapper.find('#settings-base-url').exists()).toBe(false);
+        expect(wrapper.get('label[for="settings-api-key"]').text()).toBe('OpenRouter API key');
+
+        await wrapper.get('[data-testid="openrouter-eu-only"]').trigger('click');
+        await wrapper.get('[data-testid="api-key-input"]').setValue('sk-or-new');
+        await saveButton(wrapper)!.trigger('click');
+        await flushPromises();
+
+        expect(invokeMock).toHaveBeenCalledWith('set_openrouter_api_key', { key: 'sk-or-new' });
+        expect(invokeMock).not.toHaveBeenCalledWith('set_api_key', expect.anything());
+        expect(updateSettingsMock.mock.calls[0][0]).toMatchObject({
+            baseUrl: 'https://eu.openrouter.ai/api',
+            model: 'google/gemini-3.5-flash-lite',
+            openRouterEuOnly: true,
+            cloudAsrModel: 'mistralai/voxtral-small-transcribe-3-0',
+        });
+    });
+
+    it('offers Nemotron and cloud speech-to-text as speech engines', async () => {
+        const wrapper = mount(Settings, { global: { plugins: [router] } });
+        await flushPromises();
+        const engines = wrapper
+            .get('[data-testid="default-engine"]')
+            .findAll('[role="radio"]')
+            .map((radio) => radio.text());
+        expect(engines[0]).toContain('Nemotron 3.5');
+        expect(engines[0]).toContain('Recommended');
+        expect(engines.some((text) => text.startsWith('Cloud'))).toBe(true);
+        expect(wrapper.find('[data-testid="engine-card-nemotron"]').exists()).toBe(true);
+        expect(wrapper.find('[data-testid="engine-card-cloud"]').exists()).toBe(true);
     });
 
     it('never shows the stored key and can remove it', async () => {
@@ -386,7 +426,11 @@ describe('Settings.vue', () => {
     });
 
     it('opens the card of a newly picked default engine without closing others', async () => {
-        settingsRef.value = { ...settingsRef.value, transcriptionBackend: 'local' };
+        settingsRef.value = {
+            ...settingsRef.value,
+            transcriptionBackend: 'local',
+            localEngine: 'parakeet',
+        } as typeof settingsRef.value;
         const wrapper = mount(Settings, { global: { plugins: [router] } });
         const toggle = (engine: string) =>
             wrapper.get(`[data-testid="engine-card-${engine}"] button[aria-expanded]`);
@@ -434,7 +478,7 @@ describe('Settings.vue', () => {
         }
     });
 
-    it('notes that LLM-only sections are unused by a Local Only default', async () => {
+    it('notes that LLM-only sections are unused by a Speech Engine Only default', async () => {
         const wrapper = mount(Settings, { global: { plugins: [router] } });
         expect(wrapper.find('[data-testid="ai-provider-unused"]').exists()).toBe(false);
         // LLM Only as the default: the engines are the ones flagged instead.
@@ -442,7 +486,7 @@ describe('Settings.vue', () => {
 
         await wrapper
             .findAll('[role="radio"]')
-            .find((radio) => radio.text().startsWith('Local Only'))!
+            .find((radio) => radio.text().startsWith('Speech Engine Only'))!
             .trigger('click');
         expect(wrapper.get('[data-testid="ai-provider-unused"]').text()).toContain(
             'Only used by LLM and hybrid pipelines',

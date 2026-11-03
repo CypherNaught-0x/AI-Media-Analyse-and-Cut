@@ -1,0 +1,1642 @@
+{
+ "file": "test_podcast.wav",
+ "text": "Let's unpack this. We've got a fantastic deep dive today, and it's centered on a tool called AI Media Cutter. Hm. It's an open source project that's, uh, really trying to redefine video editing using AI. It really is. So our mission is to figure out how this thing, this desktop app, uses large language models to turn what is a really complex visual task into something you just do with text. It's a huge shift. We're talking about using LLMs, you know, like Google Gemini or the OpenAI models, to edit based on meaning, on the actual content. Not just pixels on a timeline. Exactly. It moves editing from this highly technical frame-by-frame skill to something that's more, uh, editorial. It's all about the story in the text. And that right there, that changes the whole game for creators. So here's the core of it and what you really need to grasp: text-based editing. Right. It starts with a very high accuracy AI transcription. But the magic, the real trick, is that you suddenly find yourself just editing a document. You see a line you don't like, you delete the sentence. And the video segment that corresponds to it is just gone. It's automatically and precisely cut out of the video file. Which is incredible. What's really fascinating is the efficiency you gain. Yeah. I mean, just think about long form content.",
+ "confidence": 0,
+ "duration": 74.2529,
+ "languages": [
+  "en"
+ ],
+ "words": [
+  {
+   "word": "Let's",
+   "start": 0.01,
+   "end": 0.32,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "unpack",
+   "start": 0.32,
+   "end": 0.639,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "this.",
+   "start": 0.639,
+   "end": 0.959,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "We've",
+   "start": 0.959,
+   "end": 1.119,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "got",
+   "start": 1.119,
+   "end": 1.279,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "a",
+   "start": 1.279,
+   "end": 1.439,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "fantastic",
+   "start": 1.439,
+   "end": 2.158,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "deep",
+   "start": 2.158,
+   "end": 2.398,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "dive",
+   "start": 2.398,
+   "end": 2.638,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "today,",
+   "start": 2.638,
+   "end": 2.99,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "and",
+   "start": 3.35,
+   "end": 3.437,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "it's",
+   "start": 3.437,
+   "end": 3.677,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "centered",
+   "start": 3.677,
+   "end": 3.996,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "on",
+   "start": 3.996,
+   "end": 4.116,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "a",
+   "start": 4.116,
+   "end": 4.316,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "tool",
+   "start": 4.316,
+   "end": 4.636,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "called",
+   "start": 4.636,
+   "end": 5.115,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "AI",
+   "start": 5.115,
+   "end": 5.835,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "Media",
+   "start": 5.835,
+   "end": 6.154,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "Cutter.",
+   "start": 6.154,
+   "end": 6.52,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "Hm.",
+   "start": 6.55,
+   "end": 6.84,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "It's",
+   "start": 7.114,
+   "end": 7.16,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "an",
+   "start": 7.16,
+   "end": 7.433,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "open",
+   "start": 7.433,
+   "end": 7.673,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "source",
+   "start": 7.673,
+   "end": 7.993,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "project",
+   "start": 7.993,
+   "end": 8.392,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "that's,",
+   "start": 8.392,
+   "end": 8.872,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "uh,",
+   "start": 8.872,
+   "end": 9.511,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "really",
+   "start": 9.511,
+   "end": 9.831,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "trying",
+   "start": 9.831,
+   "end": 10.071,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "to",
+   "start": 10.071,
+   "end": 10.311,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "redefine",
+   "start": 10.311,
+   "end": 11.11,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "video",
+   "start": 11.11,
+   "end": 11.51,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "editing",
+   "start": 11.51,
+   "end": 12.01,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "using",
+   "start": 12.31,
+   "end": 12.948,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "AI.",
+   "start": 12.948,
+   "end": 13.39,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "It",
+   "start": 13.53,
+   "end": 13.668,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "really",
+   "start": 13.668,
+   "end": 13.907,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "is.",
+   "start": 13.907,
+   "end": 14.16,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "So",
+   "start": 14.18,
+   "end": 14.547,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "our",
+   "start": 14.547,
+   "end": 14.867,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "mission",
+   "start": 14.867,
+   "end": 15.24,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "is",
+   "start": 15.506,
+   "end": 15.51,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "to",
+   "start": 15.51,
+   "end": 15.826,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "figure",
+   "start": 15.826,
+   "end": 16.145,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "out",
+   "start": 16.145,
+   "end": 16.625,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "how",
+   "start": 16.625,
+   "end": 16.865,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "this",
+   "start": 16.865,
+   "end": 17.025,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "thing,",
+   "start": 17.025,
+   "end": 17.184,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "this",
+   "start": 17.184,
+   "end": 17.424,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "desktop",
+   "start": 17.424,
+   "end": 17.824,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "app,",
+   "start": 17.824,
+   "end": 18.09,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "uses",
+   "start": 18.34,
+   "end": 18.863,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "large",
+   "start": 18.863,
+   "end": 19.183,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "language",
+   "start": 19.183,
+   "end": 19.662,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "models",
+   "start": 19.662,
+   "end": 20.222,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "to",
+   "start": 20.222,
+   "end": 20.382,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "turn",
+   "start": 20.382,
+   "end": 20.781,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "what",
+   "start": 20.781,
+   "end": 20.861,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "is",
+   "start": 20.861,
+   "end": 21.021,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "a",
+   "start": 21.021,
+   "end": 21.261,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "really",
+   "start": 21.261,
+   "end": 21.82,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "complex",
+   "start": 21.82,
+   "end": 22.3,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "visual",
+   "start": 22.3,
+   "end": 22.699,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "task",
+   "start": 22.699,
+   "end": 23.099,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "into",
+   "start": 23.099,
+   "end": 23.419,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "something",
+   "start": 23.419,
+   "end": 23.659,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "you",
+   "start": 23.659,
+   "end": 23.898,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "just",
+   "start": 23.898,
+   "end": 24.3,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "do",
+   "start": 24.778,
+   "end": 24.78,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "with",
+   "start": 24.78,
+   "end": 25.257,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "text.",
+   "start": 25.257,
+   "end": 25.68,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "It's",
+   "start": 25.64,
+   "end": 25.817,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "a",
+   "start": 25.817,
+   "end": 26.056,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "huge",
+   "start": 26.056,
+   "end": 26.456,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "shift.",
+   "start": 26.456,
+   "end": 26.81,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "We're",
+   "start": 27.016,
+   "end": 27.11,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "talking",
+   "start": 27.11,
+   "end": 27.415,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "about",
+   "start": 27.415,
+   "end": 27.655,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "using",
+   "start": 27.655,
+   "end": 27.975,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "LLMs,",
+   "start": 27.975,
+   "end": 28.694,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "you",
+   "start": 28.694,
+   "end": 28.734,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "know,",
+   "start": 28.734,
+   "end": 28.934,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "like",
+   "start": 28.934,
+   "end": 29.094,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "Google",
+   "start": 29.094,
+   "end": 29.413,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "Gemini",
+   "start": 29.413,
+   "end": 29.813,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "or",
+   "start": 29.813,
+   "end": 29.973,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 29.973,
+   "end": 30.133,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "OpenAI",
+   "start": 30.133,
+   "end": 30.612,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "models,",
+   "start": 30.612,
+   "end": 30.98,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "to",
+   "start": 31.29,
+   "end": 31.59,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "edit",
+   "start": 31.811,
+   "end": 31.84,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "based",
+   "start": 31.84,
+   "end": 32.611,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "on",
+   "start": 32.611,
+   "end": 32.85,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "meaning,",
+   "start": 32.85,
+   "end": 33.14,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "on",
+   "start": 33.49,
+   "end": 33.53,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 33.53,
+   "end": 33.889,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "actual",
+   "start": 33.889,
+   "end": 34.449,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "content.",
+   "start": 34.449,
+   "end": 34.89,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "Not",
+   "start": 34.78,
+   "end": 35.008,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "just",
+   "start": 35.008,
+   "end": 35.248,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "pixels",
+   "start": 35.248,
+   "end": 35.728,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "on",
+   "start": 35.728,
+   "end": 35.808,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "a",
+   "start": 35.808,
+   "end": 35.967,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "timeline.",
+   "start": 35.967,
+   "end": 36.56,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "Exactly.",
+   "start": 36.42,
+   "end": 37.007,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "It",
+   "start": 37.007,
+   "end": 37.166,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "moves",
+   "start": 37.166,
+   "end": 37.566,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "editing",
+   "start": 37.566,
+   "end": 38.1,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "from",
+   "start": 38.38,
+   "end": 38.845,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "this",
+   "start": 38.845,
+   "end": 39.25,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "highly",
+   "start": 39.74,
+   "end": 40.284,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "technical",
+   "start": 40.284,
+   "end": 40.843,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "frame-by-frame",
+   "start": 40.843,
+   "end": 41.562,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "skill",
+   "start": 41.562,
+   "end": 42.09,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "to",
+   "start": 42.36,
+   "end": 42.522,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "something",
+   "start": 42.522,
+   "end": 42.761,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "that's",
+   "start": 42.761,
+   "end": 43.001,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "more,",
+   "start": 43.001,
+   "end": 43.641,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "uh,",
+   "start": 43.641,
+   "end": 43.88,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "editorial.",
+   "start": 43.88,
+   "end": 44.52,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "It's",
+   "start": 44.52,
+   "end": 44.839,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "all",
+   "start": 44.839,
+   "end": 45.079,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "about",
+   "start": 45.079,
+   "end": 45.239,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 45.239,
+   "end": 45.399,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "story",
+   "start": 45.399,
+   "end": 45.639,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "in",
+   "start": 45.639,
+   "end": 45.719,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 45.719,
+   "end": 45.799,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "text.",
+   "start": 45.799,
+   "end": 46.19,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "And",
+   "start": 46.12,
+   "end": 46.358,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "that",
+   "start": 46.358,
+   "end": 46.598,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "right",
+   "start": 46.598,
+   "end": 46.758,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "there,",
+   "start": 46.758,
+   "end": 46.998,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "that",
+   "start": 46.998,
+   "end": 47.157,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "changes",
+   "start": 47.157,
+   "end": 47.477,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "the",
+   "start": 47.477,
+   "end": 47.557,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "whole",
+   "start": 47.557,
+   "end": 47.797,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "game",
+   "start": 47.797,
+   "end": 48.037,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "for",
+   "start": 48.037,
+   "end": 48.196,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "creators.",
+   "start": 48.196,
+   "end": 48.596,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "So",
+   "start": 48.596,
+   "end": 48.756,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "here's",
+   "start": 48.756,
+   "end": 48.996,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "the",
+   "start": 48.996,
+   "end": 49.156,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "core",
+   "start": 49.156,
+   "end": 49.315,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "of",
+   "start": 49.315,
+   "end": 49.395,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "it",
+   "start": 49.395,
+   "end": 49.555,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "and",
+   "start": 49.555,
+   "end": 49.635,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "what",
+   "start": 49.635,
+   "end": 49.795,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "you",
+   "start": 49.795,
+   "end": 49.955,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "really",
+   "start": 49.955,
+   "end": 50.115,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "need",
+   "start": 50.115,
+   "end": 50.275,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "to",
+   "start": 50.275,
+   "end": 50.434,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "grasp:",
+   "start": 50.434,
+   "end": 51.234,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "text-based",
+   "start": 51.234,
+   "end": 51.873,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "editing.",
+   "start": 51.873,
+   "end": 52.33,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "Right.",
+   "start": 52.25,
+   "end": 52.592,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "It",
+   "start": 52.592,
+   "end": 52.752,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "starts",
+   "start": 52.752,
+   "end": 52.912,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "with",
+   "start": 52.912,
+   "end": 52.992,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "a",
+   "start": 52.992,
+   "end": 53.152,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "very",
+   "start": 53.152,
+   "end": 53.472,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "high",
+   "start": 53.472,
+   "end": 53.711,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "accuracy",
+   "start": 53.711,
+   "end": 54.191,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "AI",
+   "start": 54.191,
+   "end": 54.591,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "transcription.",
+   "start": 54.591,
+   "end": 55.26,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "But",
+   "start": 55.14,
+   "end": 55.31,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "the",
+   "start": 55.31,
+   "end": 55.55,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "magic,",
+   "start": 55.55,
+   "end": 55.949,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "the",
+   "start": 55.949,
+   "end": 56.029,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "real",
+   "start": 56.029,
+   "end": 56.269,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "trick,",
+   "start": 56.269,
+   "end": 56.589,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "is",
+   "start": 56.589,
+   "end": 56.669,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "that",
+   "start": 56.669,
+   "end": 56.829,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "you",
+   "start": 56.829,
+   "end": 56.988,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "suddenly",
+   "start": 56.988,
+   "end": 57.228,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "find",
+   "start": 57.228,
+   "end": 57.468,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "yourself",
+   "start": 57.468,
+   "end": 57.788,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "just",
+   "start": 57.788,
+   "end": 57.948,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "editing",
+   "start": 57.948,
+   "end": 58.267,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "a",
+   "start": 58.267,
+   "end": 58.427,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "document.",
+   "start": 58.427,
+   "end": 58.987,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "You",
+   "start": 58.987,
+   "end": 59.067,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "see",
+   "start": 59.067,
+   "end": 59.226,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "a",
+   "start": 59.226,
+   "end": 59.306,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "line",
+   "start": 59.306,
+   "end": 59.466,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "you",
+   "start": 59.466,
+   "end": 59.546,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "don't",
+   "start": 59.546,
+   "end": 59.706,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "like,",
+   "start": 59.706,
+   "end": 59.946,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "you",
+   "start": 59.946,
+   "end": 60.026,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "delete",
+   "start": 60.026,
+   "end": 60.266,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "the",
+   "start": 60.266,
+   "end": 60.425,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "sentence.",
+   "start": 60.425,
+   "end": 61.05,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "And",
+   "start": 61.305,
+   "end": 61.31,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 61.31,
+   "end": 61.704,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "video",
+   "start": 61.704,
+   "end": 62.104,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "segment",
+   "start": 62.104,
+   "end": 62.424,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "that",
+   "start": 62.424,
+   "end": 62.583,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "corresponds",
+   "start": 62.583,
+   "end": 63.143,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "to",
+   "start": 63.143,
+   "end": 63.263,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "it",
+   "start": 63.263,
+   "end": 63.383,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "is",
+   "start": 63.383,
+   "end": 63.543,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "just",
+   "start": 63.543,
+   "end": 63.73,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "gone.",
+   "start": 64.17,
+   "end": 64.6,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "It's",
+   "start": 64.981,
+   "end": 65.02,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "automatically",
+   "start": 65.02,
+   "end": 65.94,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "and",
+   "start": 65.94,
+   "end": 66.1,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "precisely",
+   "start": 66.1,
+   "end": 66.9,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "cut",
+   "start": 66.9,
+   "end": 67.219,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "out",
+   "start": 67.219,
+   "end": 67.459,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "of",
+   "start": 67.459,
+   "end": 67.539,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 67.539,
+   "end": 67.699,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "video",
+   "start": 67.699,
+   "end": 68.019,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "file.",
+   "start": 68.019,
+   "end": 68.32,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "Which",
+   "start": 68.338,
+   "end": 68.36,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "is",
+   "start": 68.36,
+   "end": 68.738,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "incredible.",
+   "start": 68.738,
+   "end": 69.68,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "What's",
+   "start": 69.68,
+   "end": 69.937,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "really",
+   "start": 69.937,
+   "end": 70.256,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "fascinating",
+   "start": 70.256,
+   "end": 70.656,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "is",
+   "start": 70.656,
+   "end": 70.736,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "the",
+   "start": 70.736,
+   "end": 70.896,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "efficiency",
+   "start": 70.896,
+   "end": 71.375,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "you",
+   "start": 71.375,
+   "end": 71.535,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "gain.",
+   "start": 71.535,
+   "end": 71.85,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "Yeah.",
+   "start": 72.01,
+   "end": 72.33,
+   "confidence": 0,
+   "speaker": 1
+  },
+  {
+   "word": "I",
+   "start": 72.255,
+   "end": 72.27,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "mean,",
+   "start": 72.27,
+   "end": 72.494,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "just",
+   "start": 72.494,
+   "end": 72.654,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "think",
+   "start": 72.654,
+   "end": 72.894,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "about",
+   "start": 72.894,
+   "end": 73.134,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "long",
+   "start": 73.134,
+   "end": 73.374,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "form",
+   "start": 73.374,
+   "end": 73.773,
+   "confidence": 0,
+   "speaker": 2
+  },
+  {
+   "word": "content.",
+   "start": 73.773,
+   "end": 74.2,
+   "confidence": 0,
+   "speaker": 2
+  }
+ ]
+}

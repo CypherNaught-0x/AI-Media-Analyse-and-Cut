@@ -345,7 +345,9 @@ mod captions;
 pub mod chunking;
 pub mod clip_editing;
 pub mod clip_selection;
+mod cloud_asr;
 pub mod crisper;
+mod device;
 pub(crate) mod encoders;
 pub mod error;
 mod face_identity;
@@ -362,6 +364,7 @@ pub mod media_probe;
 mod media_protocol;
 mod model_download;
 mod morph;
+mod nemotron;
 mod parakeet;
 mod path_guard;
 mod pauses;
@@ -417,7 +420,11 @@ async fn select_clips(
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<clip_selection::ClipCandidate>, AppError> {
     run_control.ensure_active(run_id)?;
-    let client = GeminiClient::new(secrets::api_key().require()?, llm.base_url, llm.model);
+    let client = GeminiClient::new(
+        secrets::key_for_base_url(&llm.base_url)?,
+        llm.base_url,
+        llm.model,
+    );
     let on_progress = |done: usize, total: usize| {
         let _ = window.emit(
             "progress",
@@ -447,7 +454,11 @@ async fn suggest_clip_cuts(
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<Vec<clip_editing::WordCut>>, AppError> {
     run_control.ensure_active(run_id)?;
-    let client = GeminiClient::new(secrets::api_key().require()?, llm.base_url, llm.model);
+    let client = GeminiClient::new(
+        secrets::key_for_base_url(&llm.base_url)?,
+        llm.base_url,
+        llm.model,
+    );
     let on_progress = |done: usize, total: usize| {
         emit_progress(
             &window,
@@ -473,7 +484,7 @@ async fn list_models(
 ) -> Result<gemini::ModelList, AppError> {
     let api_key = match api_key.filter(|key| !key.trim().is_empty()) {
         Some(key) => key.trim().to_string(),
-        None => secrets::api_key().require()?,
+        None => secrets::key_for_base_url(&base_url)?,
     };
     Ok(gemini::list_models(&http::http_client(), &base_url, &api_key).await?)
 }
@@ -505,7 +516,7 @@ async fn translate_transcript(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
-    let api_key = secrets::api_key().require()?;
+    let api_key = secrets::key_for_base_url(&base_url)?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
         .run_cancellable(
@@ -529,7 +540,7 @@ async fn upload_file(
     run_control
         .run_cancellable(
             run_id,
-            upload_file_and_wait(&secrets::api_key().require()?, &base_url, &path_buf),
+            upload_file_and_wait(&secrets::key_for_base_url(&base_url)?, &base_url, &path_buf),
         )
         .await
         .map_err(|e| {
@@ -570,7 +581,7 @@ async fn analyze_audio(
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
     let LlmConfig { base_url, model } = llm;
-    let api_key = secrets::api_key().require()?;
+    let api_key = secrets::key_for_base_url(&base_url)?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     run_control
         .run_cancellable(
@@ -610,7 +621,7 @@ async fn cleanup_local_transcript(
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<TranscriptSegment>, AppError> {
     run_control.ensure_active(run_id)?;
-    let api_key = secrets::api_key().require()?;
+    let api_key = secrets::key_for_base_url(&base_url)?;
     let client = GeminiClient::new(api_key, base_url.clone(), model.clone());
     run_control
         .run_cancellable(
@@ -1352,7 +1363,7 @@ async fn generate_podcast(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
-    let api_key = secrets::api_key().require()?;
+    let api_key = secrets::key_for_base_url(&base_url)?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
         .run_cancellable(
@@ -1379,7 +1390,7 @@ async fn refine_podcast(
     run_control: State<'_, RunControl>,
 ) -> Result<String, AppError> {
     run_control.ensure_active(run_id)?;
-    let api_key = secrets::api_key().require()?;
+    let api_key = secrets::key_for_base_url(&base_url)?;
     let client = GeminiClient::new(api_key, base_url, model);
     run_control
         .run_cancellable(
@@ -1530,6 +1541,17 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             transcribe_with_apple_speech,
             apple_speech_status,
             install_apple_speech_locale,
+            nemotron::nemotron_status,
+            nemotron::install_nemotron,
+            nemotron::cancel_nemotron_install,
+            nemotron::remove_nemotron_model,
+            nemotron::transcribe_with_nemotron,
+            cloud_asr::transcribe_with_cloud_asr,
+            cloud_asr::list_transcription_models,
+            device::detect_device,
+            secrets::set_openrouter_api_key,
+            secrets::clear_openrouter_api_key,
+            secrets::has_openrouter_api_key,
             cut_video,
             export_clips,
             export_vertical_clips,
