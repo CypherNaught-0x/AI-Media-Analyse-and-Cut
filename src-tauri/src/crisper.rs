@@ -35,7 +35,7 @@ use crate::local_asr::{
     resolve_sortformer_file, speaker_label_for_word, write_wav_16k_mono, WordWithSpeaker,
 };
 use crate::path_guard::looks_like_python;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use crate::run_control::RUN_CANCELLED_MESSAGE;
 use crate::run_control::{run_blocking, RunControl};
 use crate::video::TranscriptSegment;

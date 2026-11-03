@@ -4,7 +4,28 @@ use std::process::Command;
 
 fn main() {
     build_apple_speech_helper();
-    tauri_build::build()
+    let attributes = tauri_build::Attributes::new()
+        .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
+    embed_windows_manifest();
+    tauri_build::try_build(attributes).expect("failed to run tauri-build");
+}
+
+/// Embed tauri-build's application manifest (Common Controls v6) into every
+/// Windows binary, test executables included. tauri-build only embeds it into
+/// the app, and without it a test binary that links the dialog code fails to
+/// start with STATUS_ENTRYPOINT_NOT_FOUND (`TaskDialogIndirect` lives only in
+/// Common Controls v6).
+fn embed_windows_manifest() {
+    println!("cargo:rerun-if-changed=windows-app-manifest.xml");
+    let windows_msvc = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if !windows_msvc {
+        return;
+    }
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
+        .join("windows-app-manifest.xml");
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
 }
 
 /// Compile the Apple Speech helper (`apple-speech/main.swift`) on macOS.
