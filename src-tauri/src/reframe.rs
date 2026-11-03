@@ -1111,8 +1111,8 @@ mod tests {
                 .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
                 .args(["-pix_fmt", "rgb24", "-"])
                 .output()
-                .unwrap()
-                .stdout;
+                .map(crate::reframe::checked_stdout)
+                .unwrap();
             (out[0], out[1], out[2])
         };
         let (r, g, b) = colour("0.5");
@@ -1131,6 +1131,22 @@ mod tests {
             "and pans to blue ({r},{g},{b})"
         );
     }
+}
+
+/// The stdout of an FFmpeg run the tests decode pixels from. A failed or
+/// empty run panics with FFmpeg's own error, which an index into an empty
+/// buffer would hide (as it did on Linux CI).
+#[cfg(test)]
+pub(crate) fn checked_stdout(output: std::process::Output) -> Vec<u8> {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && !output.stdout.is_empty(),
+        "ffmpeg {} with {} bytes of output: {}",
+        output.status,
+        output.stdout.len(),
+        stderr.trim()
+    );
+    output.stdout
 }
 
 #[cfg(test)]
@@ -1223,8 +1239,8 @@ mod transition_tests {
                 .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
                 .args(["-pix_fmt", "rgb24", "-"])
                 .output()
-                .unwrap()
-                .stdout;
+                .map(crate::reframe::checked_stdout)
+                .unwrap();
             (out[0], out[2])
         };
         let (red, blue) = colour("1.2");
@@ -1311,8 +1327,8 @@ mod transition_tests {
                     .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
                     .args(["-pix_fmt", "rgb24", "-"])
                     .output()
-                    .unwrap()
-                    .stdout;
+                    .map(crate::reframe::checked_stdout)
+                    .unwrap();
                 (out[0], out[2])
             };
             let (red, blue) = colour("0.5");
@@ -1406,8 +1422,8 @@ mod morph_tests {
                 .args(["-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo"])
                 .args(["-pix_fmt", "rgb24", "-"])
                 .output()
-                .unwrap()
-                .stdout;
+                .map(crate::reframe::checked_stdout)
+                .unwrap();
             out[1] > 150 && out[0] < 80
         };
         // Six frames at 25 fps = 0.24 s, centred on the cut at 1.5 s.
@@ -1480,8 +1496,8 @@ mod morph_tests {
                 .args(["-frames:v", "1", "-vf", &format!("crop=2:2:180:{y}")])
                 .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
                 .output()
-                .unwrap()
-                .stdout;
+                .map(crate::reframe::checked_stdout)
+                .unwrap();
             (out[0], out[1])
         };
         // The picture in the middle, its blurred, darker copy above it.
@@ -1557,8 +1573,8 @@ mod cover_tests {
                 "-",
             ])
             .output()
-            .unwrap()
-            .stdout;
+            .map(crate::reframe::checked_stdout)
+            .unwrap();
         assert!(
             top.iter().filter(|&&v| v > 240).count() > 200,
             "title pixels"
@@ -1653,8 +1669,8 @@ mod caption_tests {
                 .arg(&output)
                 .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
                 .output()
-                .unwrap()
-                .stdout;
+                .map(crate::reframe::checked_stdout)
+                .unwrap();
             frame
                 .as_chunks::<3>()
                 .0
