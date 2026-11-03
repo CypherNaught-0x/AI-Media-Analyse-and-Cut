@@ -28,7 +28,18 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libglib2.0-dev pkg-config build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev ffmpeg
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libglib2.0-dev pkg-config build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      # The FFmpeg the app downloads on Linux (ffmpeg-sidecar's BtbN 9.0 build),
+      # not Ubuntu's 6.1: on 6.1 two vertical render tests get no video frames
+      # back (they pass on 8 and 9), a version the app does not ship.
+      - name: Install FFmpeg (Linux)
+        run: |
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          tar -xJf /tmp/ffmpeg.tar.xz -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
+          echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version | head -1
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -111,7 +122,19 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libglib2.0-dev pkg-config build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev ffmpeg
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libglib2.0-dev pkg-config build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      # The FFmpeg the app downloads on Linux (ffmpeg-sidecar's BtbN 9.0 build),
+      # not Ubuntu's 6.1: on 6.1 two vertical render tests get no video frames
+      # back (they pass on 8 and 9), a version the app does not ship.
+      - name: Install FFmpeg (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          tar -xJf /tmp/ffmpeg.tar.xz -C "$RUNNER_TEMP/ffmpeg" --strip-components=1
+          echo "$RUNNER_TEMP/ffmpeg/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ffmpeg/bin/ffmpeg" -version | head -1
 
       - name: Install dependencies (macOS)
         if: startsWith(matrix.platform, 'macos')
