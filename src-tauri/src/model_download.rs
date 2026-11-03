@@ -87,22 +87,67 @@ pub(crate) async fn ensure_pinned_file(
     destination: &Path,
     on_progress: &(dyn Fn(&str) + Sync),
 ) -> Result<()> {
+    ensure_verified_download(
+        client,
+        &VerifiedDownload {
+            url: file.url(base),
+            label: file.file_name(),
+            sha256: file.sha256,
+            size: file.size,
+        },
+        destination,
+        on_progress,
+        &|_| {},
+    )
+    .await
+}
+
+/// A file at a fixed URL with a known size and SHA-256.
+pub(crate) struct VerifiedDownload<'a> {
+    pub url: String,
+    /// Names the file in progress messages and errors.
+    pub label: &'a str,
+    pub sha256: &'a str,
+    pub size: u64,
+}
+
+/// Bytes of a single download at or above which progress is reported in 1%
+/// steps rather than 10% ones: a 20 GB file would otherwise sit silent for
+/// minutes between messages.
+const FINE_PROGRESS_BYTES: u64 = 1 << 30;
+
+/// [`ensure_pinned_file`] for any URL. `on_bytes` receives the bytes on disk
+/// so far, for progress bars.
+pub(crate) async fn ensure_verified_download(
+    client: &reqwest::Client,
+    file: &VerifiedDownload<'_>,
+    destination: &Path,
+    on_progress: &(dyn Fn(&str) + Sync),
+    on_bytes: &(dyn Fn(u64) + Sync),
+) -> Result<()> {
     if tokio::fs::metadata(destination)
         .await
         .is_ok_and(|meta| meta.len() == file.size)
     {
+        on_bytes(file.size);
         return Ok(());
     }
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let label = file.file_name();
+    let label = file.label;
     let partial = partial_path(destination);
     let mut hasher = Sha256::new();
     let mut have = hash_existing(&partial, file.size, &mut hasher).await?;
+    on_bytes(have);
+    let step = if file.size >= FINE_PROGRESS_BYTES {
+        1
+    } else {
+        10
+    };
 
-    let mut request = client.get(file.url(base));
+    let mut request = client.get(&file.url);
     if have > 0 {
         request = request.header(RANGE, format!("bytes={have}-"));
         on_progress(&format!("Resuming download of {label}..."));
@@ -135,8 +180,9 @@ pub(crate) async fn ensure_pinned_file(
         output.write_all(&chunk).await?;
         hasher.update(&chunk);
         have += chunk.len() as u64;
+        on_bytes(have);
         let percent = have * 100 / file.size.max(1);
-        if percent >= last_reported + 10 {
+        if percent >= last_reported + step {
             last_reported = percent.min(100);
             on_progress(&format!("Downloading {label}... {last_reported}%"));
         }

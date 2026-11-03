@@ -1,7 +1,8 @@
-import { commands, type ExportQuality } from '../bindings';
+import { commands, type ExportQuality, type NemotronVariant } from '../bindings';
 import type { CrisperLanguage, CrisperMode, LocalEngine, TranscriptionBackend } from '../types';
 import { migrateTranscriptionBackend } from '../types';
-import { ref, watch } from 'vue';
+import { NEMOTRON_CLOUD_MODEL, isOpenRouterUrl } from '../utils/providers';
+import { computed, ref, watch } from 'vue';
 
 export interface LLMSettings {
     baseUrl: string;
@@ -42,7 +43,26 @@ export interface LLMSettings {
     appleSpeechLocale: string;
     /** Attribute speakers with Sortformer; Apple Speech does not diarize. */
     appleSpeechDiarize: boolean;
+    /** Nemotron decoder build; empty uses the one recommended for this machine. */
+    nemotronVariant: NemotronVariant | '';
+    /** Label speakers (Nemotron's speaker branch, Sortformer as fallback). */
+    nemotronDiarize: boolean;
+    /** ISO 639-1 code for Nemotron and cloud speech-to-text; empty detects it. */
+    asrLanguage: string;
+    /** OpenRouter speech-to-text model for the `cloud` engine. */
+    cloudAsrModel: string;
+    /** Attribute speakers with Sortformer for the `cloud` engine. */
+    cloudAsrDiarize: boolean;
+    /**
+     * Send OpenRouter requests (speech-to-text and, with the OpenRouter
+     * provider, the LLM) through eu.openrouter.ai: processed in Europe only.
+     */
+    openRouterEuOnly: boolean;
+    /** The setup wizard version last completed or skipped; 0 = never. */
+    setupWizardVersion: number;
 }
+
+export { SETUP_WIZARD_VERSION } from '../utils/setupWizardVersion';
 
 export interface ModelFetchState {
     availableModels: string[];
@@ -61,8 +81,8 @@ const defaultSettings: LLMSettings = {
     preClipPadding: 0.0,
     postClipPadding: 0.0,
     exportQuality: 'balanced',
-    transcriptionBackend: 'llm',
-    localEngine: 'parakeet',
+    transcriptionBackend: 'local',
+    localEngine: 'nemotron',
     parakeetModelPath: '',
     sortformerModelPath: '',
     crisperModel: 'large',
@@ -76,6 +96,13 @@ const defaultSettings: LLMSettings = {
     crisperPythonPath: '',
     appleSpeechLocale: '',
     appleSpeechDiarize: true,
+    nemotronVariant: '',
+    nemotronDiarize: true,
+    asrLanguage: '',
+    cloudAsrModel: NEMOTRON_CLOUD_MODEL,
+    cloudAsrDiarize: true,
+    openRouterEuOnly: false,
+    setupWizardVersion: 0,
 };
 
 // Load from localStorage
@@ -165,16 +192,28 @@ watch(
     { deep: true },
 );
 
-/** Whether an API key is saved in the OS credential store. */
+/** Whether the LLM provider's API key is saved in the OS credential store. */
 const apiKeyStored = ref(false);
+/** Whether an OpenRouter API key is saved (speech-to-text and OpenRouter LLMs). */
+const openRouterKeyStored = ref(false);
+/** Whether the key the configured LLM endpoint uses is stored. */
+const llmKeyStored = computed(() =>
+    isOpenRouterUrl(settings.value.baseUrl) ? openRouterKeyStored.value : apiKeyStored.value,
+);
 
-/** Re-read whether an API key is stored (after saving or removing one). */
+/** Re-read whether the API keys are stored (after saving or removing one). */
 export async function refreshApiKeyStatus(): Promise<void> {
     try {
         apiKeyStored.value = await commands.hasApiKey();
     } catch (error) {
         console.error('Failed to check for a stored API key:', error);
         apiKeyStored.value = false;
+    }
+    try {
+        openRouterKeyStored.value = await commands.hasOpenrouterApiKey();
+    } catch (error) {
+        console.error('Failed to check for a stored OpenRouter key:', error);
+        openRouterKeyStored.value = false;
     }
 }
 
@@ -212,6 +251,8 @@ export const useSettings = () => {
     return {
         settings,
         apiKeyStored,
+        openRouterKeyStored,
+        llmKeyStored,
         updateSettings,
         resetSettings,
         modelFetchState,

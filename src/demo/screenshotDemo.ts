@@ -4,6 +4,7 @@
 import { mockConvertFileSrc, mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { createDefaultEditSession, createDefaultLastAnalyzedSettings } from '../utils/editSession';
 import { SESSION_STORAGE_KEY } from '../composables/useHomeSessionPersistence';
+import { SETUP_WIZARD_VERSION } from '../utils/setupWizardVersion';
 import type { ClipCandidate, TranscriptSegment } from '../types';
 
 const DEMO_MEDIA_PATH = '/Users/demo/Videos/ai-deep-dive.mp4';
@@ -97,12 +98,51 @@ const DEMO_CLIPS: ClipCandidate[] = [
     },
 ];
 
-type Scenario = 'home' | 'transcript';
+type Scenario = 'home' | 'transcript' | 'setup';
 
 function currentScenario(): Scenario {
     const demo = new URLSearchParams(window.location.search).get('demo');
-    return demo === 'transcript' ? 'transcript' : 'home';
+    return demo === 'transcript' || demo === 'setup' ? demo : 'home';
 }
+
+/** A 36 GB M3 Pro: Nemotron fits the GPU with the recommended build. */
+const DEMO_NEMOTRON_STATUS = {
+    platformSupported: true,
+    runtimeInstalled: false,
+    runtimeDownloadBytes: 7_239_335,
+    encoderInstalled: false,
+    variants: [
+        ['Q8_0', 'Q8_0 (closest to the original)', 36_675_053_312, 35.7],
+        ['Q5_0_XL', 'Q5_0_XL', 30_927_808_512, 30.3],
+        ['IQ4_NL_L', 'IQ4_NL_L', 24_222_689_280, 24.1],
+        ['IQ4_NL', 'IQ4_NL (recommended)', 21_349_066_752, 21.4],
+        ['Q2_0_L', 'Q2_0_L', 17_218_234_368, 17.5],
+        ['Q2_0_M', 'Q2_0_M (for 16 GB GPUs)', 15_242_618_880, 15.7],
+    ].map(([variant, label, downloadBytes, requiredMemoryGb]) => ({
+        variant,
+        label,
+        downloadBytes,
+        requiredMemoryGb,
+        installed: false,
+    })),
+    recommendation: {
+        rating: 'good',
+        variant: 'IQ4_NL',
+        device: 'metal',
+        message: 'Runs on the GPU with the recommended IQ4_NL build.',
+    },
+    device: {
+        os: 'macos',
+        arch: 'aarch64',
+        cpu: 'Apple M3 Pro',
+        cpuCores: 12,
+        totalMemoryGb: 36,
+        appleSilicon: true,
+        gpus: [{ name: 'Apple M3 Pro GPU', vendor: 'apple', memoryGb: null }],
+        freeDiskGb: 75,
+    },
+    installing: false,
+};
 
 function seedStorage(scenario: Scenario) {
     localStorage.clear();
@@ -114,6 +154,8 @@ function seedStorage(scenario: Scenario) {
             model: 'gemini-2.5-flash',
             transcriptionBackend: 'hybrid',
             localEngine: 'parakeet',
+            // The README screenshots show the workspace, not the first-run wizard.
+            setupWizardVersion: scenario === 'setup' ? 0 : SETUP_WIZARD_VERSION,
         }),
     );
 
@@ -224,6 +266,44 @@ export function setupDemoMode() {
                 return (args as { segments: unknown[] }).segments;
             case 'has_api_key':
                 return true;
+            case 'has_openrouter_api_key':
+                return false;
+            case 'nemotron_status':
+                return DEMO_NEMOTRON_STATUS;
+            case 'apple_speech_status':
+                return {
+                    supportedPlatform: true,
+                    available: true,
+                    supportedLocales: ['en-US', 'de-DE'],
+                    installedLocales: ['en-US'],
+                    message: null,
+                };
+            case 'list_transcription_models':
+                return (args as { baseUrl: string }).baseUrl.includes('eu.')
+                    ? [
+                          {
+                              id: 'mistralai/voxtral-small-transcribe-3-0',
+                              name: 'Mistral: Voxtral Small Transcribe 3.0',
+                              usdPerMinute: 0.0044,
+                          },
+                          {
+                              id: 'mistralai/voxtral-mini-transcribe-3-0',
+                              name: 'Mistral: Voxtral Mini Transcribe 3.0',
+                              usdPerMinute: 0.00385,
+                          },
+                      ]
+                    : [
+                          {
+                              id: 'nvidia/nemotron-3.5-transcribe',
+                              name: 'NVIDIA: Nemotron 3.5 Transcribe',
+                              usdPerMinute: 0.001998,
+                          },
+                          {
+                              id: 'mistralai/voxtral-small-transcribe-3-0',
+                              name: 'Mistral: Voxtral Small Transcribe 3.0',
+                              usdPerMinute: 0.004,
+                          },
+                      ];
             case 'list_models':
                 return { supported: true, models: ['gemini-2.5-flash', 'gemini-2.5-pro'] };
             case 'cached_preview_audio':

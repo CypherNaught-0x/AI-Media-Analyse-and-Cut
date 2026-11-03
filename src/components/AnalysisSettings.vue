@@ -41,23 +41,34 @@ const usesLlmAssist = computed(() => usesRemoteModel(props.transcriptionBackend)
  * Parakeet alone has no such pass.
  */
 const supportsFillerRemoval = computed(
-    () => usesLlmAssist.value || props.localEngine === 'crisper',
+    () =>
+        usesLlmAssist.value || props.localEngine === 'crisper' || props.localEngine === 'nemotron',
+);
+/** Nemotron and cloud speech-to-text take the glossary even without an LLM. */
+const engineUsesGlossary = computed(
+    () =>
+        showsLocalEngine.value &&
+        (props.localEngine === 'nemotron' || props.localEngine === 'cloud'),
 );
 const isCrisperEngine = computed(() => showsLocalEngine.value && props.localEngine === 'crisper');
 /** The licence notice the runtime licence register requires for the weights. */
 const crisperWeightsNotice = runtimeDownload('crisperwhisper-weights').notice;
 
 /** Why filler removal is off for this pipeline/engine pair. */
-const fillerDisabledReason = computed(() =>
-    props.localEngine === 'apple-speech'
-        ? 'Apple Speech already drops most fillers; cutting them from the video needs CrisperWhisper or an LLM pass.'
-        : 'Parakeet keeps every word; filler removal needs CrisperWhisper or an LLM pass.',
-);
-const fillerDescription = computed(() =>
-    isCrisperEngine.value
-        ? 'Cuts [UM] / [UH] out of the transcript and the exported video.'
-        : 'The AI pass drops fillers like “um” and “uh” from the transcript.',
-);
+const fillerDisabledReason = computed(() => {
+    if (props.localEngine === 'apple-speech')
+        return 'Apple Speech already drops most fillers; cutting them from the video needs CrisperWhisper or an LLM pass.';
+    if (props.localEngine === 'cloud')
+        return 'Cloud speech-to-text has no filler pass; use Nemotron, CrisperWhisper or an LLM pass.';
+    return 'Parakeet keeps every word; filler removal needs Nemotron, CrisperWhisper or an LLM pass.';
+});
+const fillerDescription = computed(() => {
+    if (isCrisperEngine.value)
+        return 'Cuts [UM] / [UH] out of the transcript and the exported video.';
+    if (showsLocalEngine.value && props.localEngine === 'nemotron' && !usesLlmAssist.value)
+        return 'Nemotron writes the transcript without fillers and accidental repetitions.';
+    return 'The AI pass drops fillers like “um” and “uh” from the transcript.';
+});
 
 const PIPELINES: OptionCard<TranscriptionBackend>[] = [
     {
@@ -67,22 +78,28 @@ const PIPELINES: OptionCard<TranscriptionBackend>[] = [
     },
     {
         value: 'local',
-        title: 'Local Only',
-        description: 'Runs on this machine with the engine below. Nothing leaves the device.',
+        title: 'Speech Engine Only',
+        description: 'Just the engine below. With an on-device engine nothing leaves this machine.',
     },
     {
         value: 'hybrid',
         title: 'Hybrid Cleanup',
-        description: 'Local timings, then an LLM pass tidies wording and punctuation.',
+        description: 'Engine timings, then an LLM pass tidies wording and punctuation.',
     },
     {
         value: 'hybrid-merge',
         title: 'Hybrid Merge',
-        description: 'Transcribes locally and remotely, merged onto the local timings.',
+        description: 'The engine and the LLM both transcribe, merged onto the engine timings.',
     },
 ];
 
 const ENGINES: OptionCard<LocalEngine>[] = [
+    {
+        value: 'nemotron',
+        title: 'Nemotron 3.5',
+        badge: 'Recommended',
+        description: 'Most accurate, ~40 languages, speakers, follows your glossary. On device.',
+    },
     {
         value: 'parakeet',
         title: 'Parakeet',
@@ -99,6 +116,12 @@ const ENGINES: OptionCard<LocalEngine>[] = [
         title: 'Apple Speech',
         badge: 'macOS 26+',
         description: 'On-device, very fast, ~45 languages, drops fillers.',
+    },
+    {
+        value: 'cloud',
+        title: 'Cloud',
+        badge: 'OpenRouter',
+        description: 'Sends the audio to a speech-to-text API (Nemotron, Voxtral, …).',
     },
 ];
 
@@ -130,7 +153,7 @@ function onTextInput(event: Event, field: 'context' | 'glossary') {
 // Values set from outside (a restored session) resize too, and so do the
 // fields when switching back from Local Only re-creates them.
 watch(
-    () => [props.context, props.glossary, usesLlmAssist.value],
+    () => [props.context, props.glossary, usesLlmAssist.value, engineUsesGlossary.value],
     async () => {
         await nextTick();
         autosize(contextTextarea.value);
@@ -166,10 +189,12 @@ onMounted(() => {
              runs whichever engine is picked here. -->
         <Transition name="fade">
             <div v-if="showsLocalEngine" data-testid="engine-picker">
-                <p id="analysis-engine-label" class="field-label">Local engine</p>
+                <p id="analysis-engine-label" class="field-label">Speech engine</p>
                 <OptionCardGroup
                     class="grid-cols-1"
-                    :class="engines.length > 2 ? '@2xl:grid-cols-3' : '@lg:grid-cols-2'"
+                    :class="
+                        engines.length > 2 ? '@lg:grid-cols-2 @3xl:grid-cols-3' : '@lg:grid-cols-2'
+                    "
                     aria-labelledby="analysis-engine-label"
                     :model-value="localEngine"
                     :options="engines"
@@ -251,14 +276,31 @@ onMounted(() => {
                 />
             </div>
         </div>
-        <p
-            v-else
-            class="flex items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-[12px] text-fg-muted"
-            data-testid="llm-assist-hint"
-        >
-            <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
-            Context, glossary and speaker count only apply to LLM and hybrid pipelines.
-        </p>
+        <template v-else>
+            <div v-if="engineUsesGlossary" data-testid="engine-glossary">
+                <label for="analysis-glossary" class="field-label">Glossary</label>
+                <textarea
+                    id="analysis-glossary"
+                    ref="glossaryTextarea"
+                    :value="glossary"
+                    rows="2"
+                    class="input max-h-60 !min-h-[3.75rem] resize-none"
+                    placeholder="Names and terms to spell right, one per line…"
+                    @input="onTextInput($event, 'glossary')"
+                ></textarea>
+            </div>
+            <p
+                class="flex items-center gap-2 rounded-md border border-line bg-surface-2 px-3 py-2 text-[12px] text-fg-muted"
+                data-testid="llm-assist-hint"
+            >
+                <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
+                {{
+                    engineUsesGlossary
+                        ? 'The engine uses the glossary to spell names and terms. Context and speaker count only apply to LLM and hybrid pipelines.'
+                        : 'Context, glossary and speaker count only apply to LLM and hybrid pipelines.'
+                }}
+            </p>
+        </template>
 
         <!-- Clean-up -->
         <div class="grid grid-cols-1 gap-2 @lg:grid-cols-2">

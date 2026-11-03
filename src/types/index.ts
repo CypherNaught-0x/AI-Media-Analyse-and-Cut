@@ -16,6 +16,11 @@ export type {
     ClipSignals,
     AppleSpeechStatus,
     AudioChunk,
+    DeviceInfo,
+    NemotronFit,
+    NemotronStatus,
+    NemotronVariant,
+    TranscriptionModel,
     AudioInfo,
     CrisperEnvironmentStatus,
     ProcessedAudio,
@@ -30,8 +35,11 @@ export type {
  */
 export type TranscriptionBackend = 'llm' | 'local' | 'hybrid' | 'hybrid-merge';
 
-/** The on-device model that produces the timed words. */
-export type LocalEngine = 'parakeet' | 'crisper' | 'apple-speech';
+/**
+ * The speech engine that produces the timed words. All but `cloud` run on this
+ * machine; `cloud` sends the audio to a speech-to-text API (OpenRouter).
+ */
+export type LocalEngine = 'nemotron' | 'parakeet' | 'crisper' | 'apple-speech' | 'cloud';
 
 export const TRANSCRIPTION_BACKENDS: TranscriptionBackend[] = [
     'llm',
@@ -40,17 +48,30 @@ export const TRANSCRIPTION_BACKENDS: TranscriptionBackend[] = [
     'hybrid-merge',
 ];
 
-export const LOCAL_ENGINES: LocalEngine[] = ['parakeet', 'crisper', 'apple-speech'];
+export const LOCAL_ENGINES: LocalEngine[] = [
+    'nemotron',
+    'parakeet',
+    'crisper',
+    'apple-speech',
+    'cloud',
+];
 
 export function isLocalEngine(value: unknown): value is LocalEngine {
     return typeof value === 'string' && (LOCAL_ENGINES as string[]).includes(value);
 }
 
 export const LOCAL_ENGINE_LABELS: Record<LocalEngine, string> = {
+    nemotron: 'Nemotron',
     parakeet: 'Parakeet',
     crisper: 'CrisperWhisper',
     'apple-speech': 'Apple Speech',
+    cloud: 'Cloud speech-to-text',
 };
+
+/** True when the engine sends audio off the machine. */
+export function isRemoteEngine(engine: LocalEngine): boolean {
+    return engine === 'cloud';
+}
 
 /** True when the pipeline needs a local engine to run. */
 export function usesLocalEngine(backend: TranscriptionBackend): boolean {

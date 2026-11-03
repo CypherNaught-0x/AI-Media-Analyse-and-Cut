@@ -49,8 +49,14 @@ const defaultMockSettings = () => ({
 });
 const mockSettings = ref<Record<string, unknown>>(defaultMockSettings());
 const mockApiKeyStored = ref(true);
+const mockOpenRouterKeyStored = ref(false);
 vi.mock('../../composables/useSettings', () => ({
-    useSettings: () => ({ settings: mockSettings, apiKeyStored: mockApiKeyStored }),
+    useSettings: () => ({
+        settings: mockSettings,
+        apiKeyStored: mockApiKeyStored,
+        llmKeyStored: mockApiKeyStored,
+        openRouterKeyStored: mockOpenRouterKeyStored,
+    }),
 }));
 
 // Mock Editor component to avoid testing it again

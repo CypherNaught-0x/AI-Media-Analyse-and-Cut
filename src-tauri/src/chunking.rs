@@ -67,6 +67,27 @@ pub async fn split_audio_for_analysis(
     parakeet_model_path: String,
     run_control: State<'_, RunControl>,
 ) -> Result<Vec<AudioChunk>, AppError> {
+    split_audio(
+        run_id,
+        &window,
+        path,
+        max_chunk_seconds,
+        &parakeet_model_path,
+        run_control.inner(),
+    )
+    .await
+}
+
+/// [`split_audio_for_analysis`] for callers inside the backend (the speech
+/// engines that take at most so much audio per request).
+pub(crate) async fn split_audio(
+    run_id: u64,
+    window: &tauri::Window,
+    path: String,
+    max_chunk_seconds: f64,
+    parakeet_model_path: &str,
+    run_control: &RunControl,
+) -> Result<Vec<AudioChunk>, AppError> {
     run_control.ensure_active(run_id)?;
 
     let single_chunk = vec![AudioChunk {
@@ -88,7 +109,7 @@ pub async fn split_audio_for_analysis(
         "Audio '{}' is {:.1}s long (max chunk {:.1}s); planning split.",
         path, duration, max_chunk_seconds
     );
-    emit_message(&window, "Planning audio chunks...");
+    emit_message(window, "Planning audio chunks...");
 
     let window_half = (max_chunk_seconds * 0.10).max(1.0);
 
@@ -106,12 +127,8 @@ pub async fn split_audio_for_analysis(
     }
 
     // Primary: silence gaps of at least ~1s.
-    let silences = detect_silence_internal(
-        &path,
-        SILENCE_MIN_DURATION,
-        Some((run_id, run_control.inner())),
-    )
-    .await?;
+    let silences =
+        detect_silence_internal(&path, SILENCE_MIN_DURATION, Some((run_id, run_control))).await?;
     run_control.ensure_active(run_id)?;
     let silence_midpoints: Vec<f64> = silences
         .iter()
@@ -139,16 +156,11 @@ pub async fn split_audio_for_analysis(
             targets.len()
         );
         emit_message(
-            &window,
+            window,
             "No silence near some boundaries; locating word boundaries with Parakeet...",
         );
-        match parakeet_word_boundaries(
-            &window,
-            &path,
-            &parakeet_model_path,
-            (run_id, run_control.inner()),
-        )
-        .await
+        match parakeet_word_boundaries(window, &path, parakeet_model_path, (run_id, run_control))
+            .await
         {
             Ok(boundaries) => {
                 for &index in &unresolved {
@@ -221,7 +233,7 @@ pub async fn split_audio_for_analysis(
     for (index, (chunk_start, chunk_end)) in ranges.iter().enumerate() {
         run_control.ensure_active(run_id)?;
         emit_message(
-            &window,
+            window,
             &format!("Splitting audio (part {}/{})...", index + 1, ranges.len()),
         );
 
@@ -242,11 +254,8 @@ pub async fn split_audio_for_analysis(
                 "96k",
             ])
             .output(output_path.to_str().unwrap());
-        let (input, output, control) = (
-            input_path.clone(),
-            output_path.clone(),
-            run_control.inner().clone(),
-        );
+        let (input, output, control) =
+            (input_path.clone(), output_path.clone(), run_control.clone());
         run_blocking(move || {
             run_ffmpeg(
                 command,

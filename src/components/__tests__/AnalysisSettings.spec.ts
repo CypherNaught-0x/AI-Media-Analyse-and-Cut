@@ -70,7 +70,7 @@ describe('AnalysisSettings.vue', () => {
     it('emits pipeline updates independently of the engine', async () => {
         const wrapper = mountPanel();
 
-        await buttonWithText(wrapper, 'Local Only')!.trigger('click');
+        await buttonWithText(wrapper, 'Speech Engine Only')!.trigger('click');
         expect(wrapper.emitted('update:transcriptionBackend')![0]).toEqual(['local']);
 
         await buttonWithText(wrapper, 'Hybrid Merge')!.trigger('click');
@@ -83,10 +83,10 @@ describe('AnalysisSettings.vue', () => {
     it('hides the engine row for the LLM-only pipeline', () => {
         const llm = mountPanel({ transcriptionBackend: 'llm' });
         expect(llm.find('[data-testid="engine-picker"]').exists()).toBe(false);
-        expect(llm.text()).not.toContain('Local engine');
+        expect(llm.text()).not.toContain('Speech engine');
         const local = mountPanel({ transcriptionBackend: 'local' });
         expect(local.find('[data-testid="engine-picker"]').exists()).toBe(true);
-        expect(local.text()).toContain('Local engine');
+        expect(local.text()).toContain('Speech engine');
     });
 
     it('gives the pipeline and engine cards radio semantics', async () => {
@@ -109,12 +109,9 @@ describe('AnalysisSettings.vue', () => {
         await groups[0].trigger('keydown', { key: 'Home' });
         expect(wrapper.emitted('update:transcriptionBackend')![1]).toEqual(['llm']);
         await groups[1].trigger('keydown', { key: 'End' });
-        const engines = wrapper.findAll('[data-testid="engine-picker"] [role="radio"]');
-        expect(wrapper.emitted('update:localEngine')![0]).toEqual([
-            engines[engines.length - 1].text().includes('Apple Speech')
-                ? 'apple-speech'
-                : 'crisper',
-        ]);
+        expect(wrapper.emitted('update:localEngine')![0]).toEqual(['cloud']);
+        await groups[1].trigger('keydown', { key: 'Home' });
+        expect(wrapper.emitted('update:localEngine')![1]).toEqual(['nemotron']);
     });
 
     it('labels every input and explains that these settings are per project', () => {

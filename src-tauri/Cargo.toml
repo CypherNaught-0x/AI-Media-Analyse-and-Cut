@@ -62,6 +62,9 @@ thiserror = "2"
 sha2 = "0.10"
 keyring = "4"
 futures-util = "0.3"
+flate2 = "1.1"
+tar = "0.4"
+sysinfo = { version = "0.40.1", default-features = false, features = ["system", "disk"] }
 
 [dev-dependencies]
 dotenvy = "0.15.7"

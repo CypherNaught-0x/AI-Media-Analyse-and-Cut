@@ -4,7 +4,9 @@ import { useRouter } from 'vue-router';
 import {
     AudioLines,
     ChevronRight,
+    Cloud,
     Cpu,
+    Download,
     ExternalLink,
     Eye,
     EyeOff,
@@ -22,6 +24,7 @@ import {
     Sparkles,
     Timer,
     TriangleAlert,
+    Wand2,
 } from '@lucide/vue';
 import PageHeader from '../components/ui/PageHeader.vue';
 import SectionCard from '../components/ui/SectionCard.vue';
@@ -32,6 +35,19 @@ import DisclosureCard from '../components/settings/DisclosureCard.vue';
 import { useWorkspaceNav } from '../composables/useWorkspaceNav';
 import { refreshApiKeyStatus, useSettings } from '../composables/useSettings';
 import { appleSpeechLocale, useAppleSpeech } from '../composables/useAppleSpeech';
+import { effectiveNemotronVariant, useNemotron } from '../composables/useNemotron';
+import { useSetupWizard } from '../composables/useSetupWizard';
+import {
+    ASR_LANGUAGES,
+    DEFAULT_GEMINI_MODEL,
+    GEMINI_BASE_URL,
+    defaultCloudAsrModel,
+    defaultOpenRouterModel,
+    formatBytes,
+    openRouterBaseUrl,
+    providerForBaseUrl,
+    type LlmProvider,
+} from '../utils/providers';
 import { open, save, ask, message } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import { check } from '@tauri-apps/plugin-updater';
@@ -41,6 +57,7 @@ import Toast from '../components/Toast.vue';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { runtimeDownload, runtimeLicenses } from '../utils/runtimeLicenses';
 import { CRISPER_LANGUAGES, CRISPER_MODELS } from '../types';
+import type { NemotronVariant, TranscriptionModel } from '../bindings';
 import type {
     CrisperEnvironmentStatus,
     CrisperLanguage,
@@ -59,22 +76,29 @@ const PIPELINE_OPTIONS: OptionCard<TranscriptionBackend>[] = [
     },
     {
         value: 'local',
-        title: 'Local Only',
-        description: 'Runs the local engine on this machine. No API key required.',
+        title: 'Speech Engine Only',
+        description: 'Runs just the speech engine. On-device engines need no API key.',
     },
     {
         value: 'hybrid',
         title: 'Hybrid Cleanup',
-        description: 'Local timings, then a remote LLM pass to clean up wording.',
+        description: 'Engine timings, then a remote LLM pass to clean up wording.',
     },
     {
         value: 'hybrid-merge',
         title: 'Hybrid Merge',
-        description: 'Merges a local and a remote transcript onto the local timings.',
+        description: 'Merges the engine and a remote LLM transcript onto the engine timings.',
     },
 ];
 
 const ENGINE_OPTIONS: OptionCard<LocalEngine>[] = [
+    {
+        value: 'nemotron',
+        title: 'Nemotron 3.5',
+        badge: 'Recommended',
+        description:
+            "NVIDIA's speech-LLM on this machine: most accurate, ~40 languages, speakers, glossary.",
+    },
     {
         value: 'parakeet',
         title: 'Parakeet',
@@ -92,11 +116,46 @@ const ENGINE_OPTIONS: OptionCard<LocalEngine>[] = [
         badge: 'macOS 26+',
         description: "macOS's built-in on-device model. Very fast, ~45 languages; drops fillers.",
     },
+    {
+        value: 'cloud',
+        title: 'Cloud',
+        badge: 'OpenRouter',
+        description: 'Speech-to-text API via OpenRouter (Nemotron, Voxtral, …). Optional EU-only.',
+    },
+];
+
+const PROVIDER_OPTIONS: OptionCard<LlmProvider>[] = [
+    {
+        value: 'openrouter',
+        title: 'OpenRouter',
+        description: 'Hundreds of models with one key, shared with cloud speech-to-text.',
+        testId: 'provider-openrouter',
+    },
+    {
+        value: 'gemini',
+        title: 'Google Gemini',
+        description: 'Gemini API key from Google AI Studio.',
+        testId: 'provider-gemini',
+    },
+    {
+        value: 'custom',
+        title: 'Custom',
+        description: 'Any OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama, …).',
+        testId: 'provider-custom',
+    },
 ];
 
 const router = useRouter();
-const { settings, apiKeyStored, updateSettings, modelFetchState, updateModelFetchState } =
-    useSettings();
+const {
+    settings,
+    apiKeyStored,
+    openRouterKeyStored,
+    updateSettings,
+    modelFetchState,
+    updateModelFetchState,
+} = useSettings();
+const setupWizard = useSetupWizard();
+const nemotron = useNemotron();
 const {
     status: appleSpeechStatus,
     checking: isCheckingAppleSpeech,
@@ -106,9 +165,43 @@ const {
 } = useAppleSpeech();
 
 const localBaseUrl = ref(settings.value.baseUrl);
-// A new key typed here; the stored key itself is never loaded into the UI.
+const localProvider = ref<LlmProvider>(providerForBaseUrl(settings.value.baseUrl));
+const localOpenRouterEuOnly = ref(settings.value.openRouterEuOnly ?? false);
+// New keys typed here; stored keys are never loaded into the UI.
 const localApiKey = ref('');
-const canUseApiKey = computed(() => apiKeyStored.value || localApiKey.value.trim().length > 0);
+const localOpenRouterKey = ref('');
+const providerUsesOpenRouter = computed(() => localProvider.value === 'openrouter');
+/** The key field of the AI provider section edits the provider's own key. */
+const providerKey = computed({
+    get: () => (providerUsesOpenRouter.value ? localOpenRouterKey.value : localApiKey.value),
+    set: (value: string) => {
+        if (providerUsesOpenRouter.value) localOpenRouterKey.value = value;
+        else localApiKey.value = value;
+    },
+});
+const providerKeyStored = computed(() =>
+    providerUsesOpenRouter.value ? openRouterKeyStored.value : apiKeyStored.value,
+);
+const canUseApiKey = computed(() => providerKeyStored.value || providerKey.value.trim().length > 0);
+
+// Presets own the base URL; only Custom edits it.
+watch([localProvider, localOpenRouterEuOnly], ([provider, euOnly], [previous]) => {
+    if (provider === 'gemini') {
+        localBaseUrl.value = GEMINI_BASE_URL;
+        if (previous !== 'gemini') localModel.value = DEFAULT_GEMINI_MODEL;
+    } else if (provider === 'openrouter') {
+        localBaseUrl.value = openRouterBaseUrl(euOnly);
+        if (previous !== 'openrouter' || !localModel.value.includes('/')) {
+            localModel.value = defaultOpenRouterModel(euOnly);
+        }
+    } else if (previous !== 'custom') {
+        localBaseUrl.value = '';
+    }
+    if (provider !== previous || provider === 'openrouter') {
+        availableModels.value = [];
+        if (canUseApiKey.value) void fetchModels(true);
+    }
+});
 const localModel = ref(settings.value.model);
 const localEnforceJsonSchema = ref(settings.value.enforceJsonSchema ?? true);
 const localMaxAnalysisChunkMinutes = ref(settings.value.maxAnalysisChunkMinutes ?? 30);
@@ -153,7 +246,7 @@ const CRISPER_MODE_OPTIONS: OptionCard<CrisperMode>[] = [
 const localTranscriptionBackend = ref<TranscriptionBackend>(
     settings.value.transcriptionBackend ?? 'llm',
 );
-const localLocalEngine = ref<LocalEngine>(settings.value.localEngine ?? 'parakeet');
+const localLocalEngine = ref<LocalEngine>(settings.value.localEngine ?? 'nemotron');
 const localParakeetModelPath = ref(settings.value.parakeetModelPath ?? '');
 const localSortformerModelPath = ref(settings.value.sortformerModelPath ?? '');
 const localCrisperModel = ref(settings.value.crisperModel ?? 'large');
@@ -171,6 +264,120 @@ const isInstallingCrisper = ref(false);
 const crisperProgress = ref('');
 const localAppleSpeechLocale = ref(settings.value.appleSpeechLocale ?? '');
 const localAppleSpeechDiarize = ref(settings.value.appleSpeechDiarize ?? true);
+const localNemotronVariant = ref<NemotronVariant | ''>(settings.value.nemotronVariant ?? '');
+const localNemotronDiarize = ref(settings.value.nemotronDiarize ?? true);
+const localAsrLanguage = ref(settings.value.asrLanguage ?? '');
+const localCloudAsrModel = ref(settings.value.cloudAsrModel || defaultCloudAsrModel(false));
+const localCloudAsrDiarize = ref(settings.value.cloudAsrDiarize ?? true);
+
+// ---------------------------------------------------------------- Nemotron
+/** The build a run would use (the chosen one, else the recommended one). */
+const nemotronActiveVariant = computed(() =>
+    effectiveNemotronVariant(nemotron.status.value, localNemotronVariant.value),
+);
+const nemotronActiveInfo = computed(() =>
+    nemotron.status.value?.variants.find((entry) => entry.variant === nemotronActiveVariant.value),
+);
+const nemotronReady = computed(() => nemotron.isInstalled(nemotronActiveVariant.value));
+const nemotronDownloadBytes = computed(
+    () =>
+        (nemotronActiveInfo.value?.installed ? 0 : (nemotronActiveInfo.value?.downloadBytes ?? 0)) +
+        (nemotron.status.value?.runtimeDownloadBytes ?? 0),
+);
+const nemotronChip = computed<Chip>(() => {
+    if (nemotron.installing.value) {
+        const percent = nemotron.percent.value;
+        return {
+            label: percent == null ? 'Downloading' : `Downloading ${percent.toFixed(0)}%`,
+            tone: 'chip-accent',
+            busy: true,
+        };
+    }
+    if (nemotron.checking.value && !nemotron.status.value)
+        return { label: 'Checking', tone: 'chip', busy: true };
+    if (nemotronReady.value) return { label: 'Ready', tone: 'chip-success' };
+    if (nemotron.status.value?.recommendation.rating === 'unsupported')
+        return { label: 'Not on this machine', tone: 'chip-warning' };
+    return { label: 'Not downloaded', tone: 'chip-warning' };
+});
+const nemotronVariantOptions = computed(() =>
+    (nemotron.status.value?.variants ?? []).map((entry) => ({
+        value: entry.variant,
+        label: `${entry.label} · ${formatBytes(entry.downloadBytes)}, needs ~${Math.ceil(entry.requiredMemoryGb)} GB${entry.installed ? ' \u2713' : ''}`,
+    })),
+);
+async function downloadNemotron() {
+    const variant = nemotronActiveVariant.value;
+    if (!variant) return;
+    const finished = await nemotron.install(variant);
+    if (finished) showToast('Nemotron is ready to use.', 'success');
+    else if (nemotron.installError.value)
+        showToast(`Nemotron download stopped: ${nemotron.installError.value}`, 'error');
+}
+async function removeNemotron(variant: NemotronVariant) {
+    const confirmed = await ask(`Delete the downloaded Nemotron ${variant} model?`, {
+        title: 'Delete model',
+        kind: 'warning',
+    });
+    if (!confirmed) return;
+    try {
+        await nemotron.remove(variant);
+    } catch (error) {
+        showToast(`Could not delete the model: ${errorMessage(error)}`, 'error');
+    }
+}
+
+// ---------------------------------------------------------------- Cloud ASR
+const cloudModels = ref<TranscriptionModel[]>([]);
+const loadingCloudModels = ref(false);
+const cloudModelsError = ref('');
+async function loadCloudModels() {
+    loadingCloudModels.value = true;
+    cloudModelsError.value = '';
+    try {
+        cloudModels.value =
+            (await commands.listTranscriptionModels(
+                openRouterBaseUrl(localOpenRouterEuOnly.value),
+            )) ?? [];
+    } catch (error) {
+        cloudModels.value = [];
+        cloudModelsError.value = errorMessage(error);
+    } finally {
+        loadingCloudModels.value = false;
+    }
+}
+watch(localOpenRouterEuOnly, (euOnly, previous) => {
+    if (localCloudAsrModel.value === defaultCloudAsrModel(previous)) {
+        localCloudAsrModel.value = defaultCloudAsrModel(euOnly);
+    }
+    void loadCloudModels();
+});
+const cloudModelOptions = computed(() => {
+    const entries = cloudModels.value.map((model) => ({
+        value: model.id,
+        label:
+            model.usdPerMinute != null
+                ? `${model.name} · $${(model.usdPerMinute * 60).toFixed(2)}/h`
+                : model.name,
+    }));
+    if (!cloudModels.value.some((model) => model.id === localCloudAsrModel.value)) {
+        entries.unshift({ value: localCloudAsrModel.value, label: localCloudAsrModel.value });
+    }
+    return entries;
+});
+const cloudModelUnavailable = computed(
+    () =>
+        cloudModels.value.length > 0 &&
+        !cloudModels.value.some((model) => model.id === localCloudAsrModel.value),
+);
+const cloudChip = computed<Chip>(() =>
+    openRouterKeyStored.value || localOpenRouterKey.value.trim()
+        ? {
+              label: localOpenRouterEuOnly.value ? 'EU only' : 'Key saved',
+              tone: 'chip-success',
+          }
+        : { label: 'Needs an OpenRouter key', tone: 'chip-warning' },
+);
 const isInstallingAppleSpeech = ref(false);
 const appleSpeechProgress = ref('');
 // Apple Speech is only offered where it can exist (macOS builds with the
@@ -292,6 +499,7 @@ onMounted(async () => {
     }
 
     void refreshCrisperStatus();
+    void loadCloudModels();
 });
 
 onUnmounted(() => {
@@ -478,7 +686,7 @@ const hasChanges = computed(() => {
         localPostClipPadding.value !== (settings.value.postClipPadding || 0) ||
         localExportQuality.value !== (settings.value.exportQuality ?? 'balanced') ||
         localTranscriptionBackend.value !== (settings.value.transcriptionBackend ?? 'llm') ||
-        localLocalEngine.value !== (settings.value.localEngine ?? 'parakeet') ||
+        localLocalEngine.value !== (settings.value.localEngine ?? 'nemotron') ||
         localParakeetModelPath.value !== (settings.value.parakeetModelPath ?? '') ||
         localSortformerModelPath.value !== (settings.value.sortformerModelPath ?? '') ||
         localCrisperModel.value !== (settings.value.crisperModel ?? 'large') ||
@@ -492,7 +700,15 @@ const hasChanges = computed(() => {
         localCrisperDiarize.value !== (settings.value.crisperDiarize ?? true) ||
         localCrisperPythonPath.value !== (settings.value.crisperPythonPath ?? '') ||
         localAppleSpeechLocale.value !== (settings.value.appleSpeechLocale ?? '') ||
-        localAppleSpeechDiarize.value !== (settings.value.appleSpeechDiarize ?? true)
+        localAppleSpeechDiarize.value !== (settings.value.appleSpeechDiarize ?? true) ||
+        localOpenRouterKey.value.trim() !== '' ||
+        localOpenRouterEuOnly.value !== (settings.value.openRouterEuOnly ?? false) ||
+        localNemotronVariant.value !== (settings.value.nemotronVariant ?? '') ||
+        localNemotronDiarize.value !== (settings.value.nemotronDiarize ?? true) ||
+        localAsrLanguage.value !== (settings.value.asrLanguage ?? '') ||
+        localCloudAsrModel.value !==
+            (settings.value.cloudAsrModel || defaultCloudAsrModel(false)) ||
+        localCloudAsrDiarize.value !== (settings.value.cloudAsrDiarize ?? true)
     );
 });
 
@@ -501,6 +717,10 @@ const isGoogleApi = computed(() => {
 });
 
 const endpointInfo = computed(() => {
+    if (providerUsesOpenRouter.value)
+        return localOpenRouterEuOnly.value
+            ? 'OpenRouter EU (eu.openrouter.ai): only models served in Europe'
+            : 'OpenRouter (openrouter.ai)';
     return isGoogleApi.value
         ? 'Using Google API (query parameter auth)'
         : 'Using OpenAI-compatible API (Bearer token auth)';
@@ -536,7 +756,7 @@ async function fetchModels(silent = false) {
         // was typed here and not saved yet.
         const list = await commands.listModels(
             normalizeBaseUrl(localBaseUrl.value),
-            localApiKey.value.trim() || null,
+            providerKey.value.trim() || null,
         );
         if (!list.supported) {
             updateModelFetchState({ supportsModelFetch: false, availableModels: [] });
@@ -586,14 +806,18 @@ onMounted(() => {
     }
 });
 
-async function removeApiKey() {
-    const confirmed = await ask('Remove the saved API key from the system keychain?', {
-        title: 'Remove API key',
-        kind: 'warning',
-    });
+async function removeApiKey(openRouter = providerUsesOpenRouter.value) {
+    const confirmed = await ask(
+        `Remove the saved ${openRouter ? 'OpenRouter ' : ''}API key from the system keychain?`,
+        {
+            title: 'Remove API key',
+            kind: 'warning',
+        },
+    );
     if (!confirmed) return;
     try {
-        await commands.clearApiKey();
+        if (openRouter) await commands.clearOpenrouterApiKey();
+        else await commands.clearApiKey();
     } catch (error) {
         showToast(`Could not remove the API key: ${errorMessage(error)}`, 'error');
     }
@@ -665,6 +889,17 @@ async function saveSettings() {
         localApiKey.value = '';
         await refreshApiKeyStatus();
     }
+    const newOpenRouterKey = localOpenRouterKey.value.trim();
+    if (newOpenRouterKey) {
+        try {
+            await commands.setOpenrouterApiKey(newOpenRouterKey);
+        } catch (error) {
+            showToast(`Could not save the OpenRouter key: ${errorMessage(error)}`, 'error');
+            return;
+        }
+        localOpenRouterKey.value = '';
+        await refreshApiKeyStatus();
+    }
 
     updateSettings({
         baseUrl: normalizedUrl,
@@ -689,6 +924,12 @@ async function saveSettings() {
         crisperPythonPath: localCrisperPythonPath.value.trim(),
         appleSpeechLocale: localAppleSpeechLocale.value,
         appleSpeechDiarize: localAppleSpeechDiarize.value,
+        openRouterEuOnly: localOpenRouterEuOnly.value,
+        nemotronVariant: localNemotronVariant.value,
+        nemotronDiarize: localNemotronDiarize.value,
+        asrLanguage: localAsrLanguage.value,
+        cloudAsrModel: localCloudAsrModel.value.trim() || defaultCloudAsrModel(false),
+        cloudAsrDiarize: localCloudAsrDiarize.value,
     });
     allowLeave = true;
     router.push('/');
@@ -733,7 +974,7 @@ function answerLeave(leave: boolean) {
 const SECTIONS = [
     { id: 'transcription', label: 'Transcription defaults', icon: AudioLines },
     { id: 'ai-provider', label: 'AI provider', icon: Sparkles },
-    { id: 'engines', label: 'Local engines', icon: Cpu },
+    { id: 'engines', label: 'Speech engines', icon: Cpu },
     { id: 'long-audio', label: 'Long audio & validation', icon: Timer },
     { id: 'export', label: 'Export & clips', icon: Film },
     { id: 'updates', label: 'Updates & logs', icon: LifeBuoy },
@@ -815,6 +1056,8 @@ function engineOpen(engine: LocalEngine) {
     return pipelineUsesEngine.value && localLocalEngine.value === engine;
 }
 const openEngines = reactive<Record<LocalEngine, boolean>>({
+    nemotron: engineOpen('nemotron'),
+    cloud: engineOpen('cloud'),
     parakeet: engineOpen('parakeet'),
     crisper: engineOpen('crisper'),
     'apple-speech': engineOpen('apple-speech'),
@@ -828,7 +1071,7 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
     <div class="@container mx-auto w-full max-w-[1400px] px-8 pt-8 pb-10">
         <PageHeader
             title="Settings"
-            description="Defaults for new projects, AI provider and local engines."
+            description="Defaults for new projects, AI provider and speech engines."
         />
 
         <div class="@3xl:grid @3xl:grid-cols-[14rem_minmax(0,1fr)] @3xl:gap-8">
@@ -871,17 +1114,28 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                     class="scroll-mt-8"
                     aria-labelledby="settings-transcription-title"
                 >
-                    <header class="mb-3">
-                        <h2
-                            id="settings-transcription-title"
-                            class="text-[15px] font-semibold text-fg"
+                    <header class="mb-3 flex items-start justify-between gap-3">
+                        <div>
+                            <h2
+                                id="settings-transcription-title"
+                                class="text-[15px] font-semibold text-fg"
+                            >
+                                Transcription defaults
+                            </h2>
+                            <p class="hint mt-0.5">
+                                New projects start with these. Each project can override them on its
+                                Source page.
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            class="btn-secondary btn-sm shrink-0"
+                            data-testid="run-setup-wizard"
+                            @click="setupWizard.show()"
                         >
-                            Transcription defaults
-                        </h2>
-                        <p class="hint mt-0.5">
-                            New projects start with these. Each project can override them on its
-                            Source page.
-                        </p>
+                            <Wand2 aria-hidden="true" />
+                            Run setup wizard
+                        </button>
                     </header>
                     <div class="panel divide-y divide-line">
                         <div class="p-4">
@@ -896,16 +1150,11 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                         </div>
                         <div class="p-4">
                             <p id="settings-engine-label" class="field-label">
-                                Default local engine
+                                Default speech engine
                             </p>
                             <OptionCardGroup
                                 v-model="localLocalEngine"
-                                class="grid-cols-1"
-                                :class="
-                                    engineOptions.length > 2
-                                        ? '@2xl:grid-cols-3'
-                                        : '@xl:grid-cols-2'
-                                "
+                                class="grid-cols-1 @xl:grid-cols-2 @3xl:grid-cols-3"
                                 aria-labelledby="settings-engine-label"
                                 :options="engineOptions"
                                 data-testid="default-engine"
@@ -943,10 +1192,32 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                         data-testid="ai-provider-unused"
                     >
                         <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
-                        Only used by LLM and hybrid pipelines. Your default pipeline is Local Only.
+                        Only used by LLM and hybrid pipelines. Your default pipeline is Speech
+                        Engine Only.
                     </p>
                     <div class="panel divide-y divide-line">
                         <div class="p-4">
+                            <p id="settings-provider-label" class="field-label">Provider</p>
+                            <OptionCardGroup
+                                v-model="localProvider"
+                                class="grid-cols-1 @xl:grid-cols-3"
+                                aria-labelledby="settings-provider-label"
+                                :options="PROVIDER_OPTIONS"
+                                dense
+                                data-testid="llm-provider"
+                            />
+                        </div>
+
+                        <div v-if="providerUsesOpenRouter" class="p-4">
+                            <SettingsSwitchRow
+                                v-model="localOpenRouterEuOnly"
+                                test-id="openrouter-eu-only"
+                                title="Keep requests in the EU (eu.openrouter.ai)"
+                                description="Requests are decrypted and processed in Europe only and fail rather than leave it. Applies to the AI model and cloud speech-to-text. Needs OpenRouter's EU in-region routing on your account; fewer models are available."
+                            />
+                        </div>
+
+                        <div v-if="localProvider === 'custom'" class="p-4">
                             <label for="settings-base-url" class="field-label">Base URL</label>
                             <input
                                 id="settings-base-url"
@@ -965,11 +1236,11 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
 
                         <div class="p-4">
                             <div class="mb-1.5 flex items-center justify-between gap-3">
-                                <label for="settings-api-key" class="field-label !mb-0"
-                                    >API key</label
-                                >
+                                <label for="settings-api-key" class="field-label !mb-0">{{
+                                    providerUsesOpenRouter ? 'OpenRouter API key' : 'API key'
+                                }}</label>
                                 <span
-                                    v-if="apiKeyStored"
+                                    v-if="providerKeyStored"
                                     class="chip-success"
                                     data-testid="api-key-stored"
                                 >
@@ -982,7 +1253,7 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                                 <div class="relative min-w-0 flex-1">
                                     <input
                                         id="settings-api-key"
-                                        v-model="localApiKey"
+                                        v-model="providerKey"
                                         :type="showApiKey ? 'text' : 'password'"
                                         autocomplete="off"
                                         spellcheck="false"
@@ -990,7 +1261,7 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                                         class="input pr-9"
                                         aria-describedby="settings-api-key-hint"
                                         :placeholder="
-                                            apiKeyStored
+                                            providerKeyStored
                                                 ? 'Saved in the system keychain — enter a new key to replace it'
                                                 : 'Enter your API key'
                                         "
@@ -1008,11 +1279,11 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                                     </button>
                                 </div>
                                 <button
-                                    v-if="apiKeyStored"
+                                    v-if="providerKeyStored"
                                     type="button"
                                     data-testid="api-key-remove"
                                     class="btn-danger"
-                                    @click="removeApiKey"
+                                    @click="removeApiKey()"
                                 >
                                     Remove
                                 </button>
@@ -1146,11 +1417,11 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                 >
                     <header class="mb-3">
                         <h2 id="settings-engines-title" class="text-[15px] font-semibold text-fg">
-                            Local engines
+                            Speech engines
                         </h2>
                         <p class="hint mt-0.5">
-                            On-device speech recognition. The default engine is expanded; the others
-                            keep their settings for projects that pick them.
+                            Speech recognition on this machine or in the cloud. The default engine
+                            is expanded; the others keep their settings for projects that pick them.
                         </p>
                     </header>
                     <p
@@ -1159,9 +1430,177 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                         data-testid="engines-unused"
                     >
                         <Info class="h-3.5 w-3.5 shrink-0 text-info" aria-hidden="true" />
-                        Only used by Local and hybrid pipelines. Your default pipeline is LLM Only.
+                        Only used by Speech Engine Only and hybrid pipelines. Your default pipeline
+                        is LLM Only.
                     </p>
                     <div class="space-y-3">
+                        <!-- Nemotron -->
+                        <DisclosureCard
+                            title="Nemotron 3.5 Transcribe"
+                            description="NVIDIA's 30B speech-LLM on this machine, via NeMo-Speech.cpp."
+                            v-model:open="openEngines.nemotron"
+                            data-testid="engine-card-nemotron"
+                        >
+                            <template #actions>
+                                <span v-if="localLocalEngine === 'nemotron'" class="chip-accent"
+                                    >Default</span
+                                >
+                                <span :class="nemotronChip.tone" data-testid="nemotron-chip">
+                                    <Loader2
+                                        v-if="nemotronChip.busy"
+                                        class="animate-spin"
+                                        aria-hidden="true"
+                                    />
+                                    {{ nemotronChip.label }}
+                                </span>
+                            </template>
+                            <div class="space-y-4">
+                                <div class="well px-3 py-2.5">
+                                    <div class="flex items-start justify-between gap-3">
+                                        <div class="min-w-0" aria-live="polite">
+                                            <p class="eyebrow">This machine</p>
+                                            <p
+                                                v-if="nemotron.installing.value"
+                                                class="mt-1 truncate text-[13px] text-fg-muted"
+                                            >
+                                                {{
+                                                    nemotron.progress.value?.message ??
+                                                    'Downloading…'
+                                                }}
+                                            </p>
+                                            <p
+                                                v-else-if="nemotron.status.value"
+                                                class="mt-1 text-[13px]"
+                                                :class="
+                                                    nemotron.status.value.recommendation.rating ===
+                                                    'unsupported'
+                                                        ? 'text-warning'
+                                                        : 'text-fg'
+                                                "
+                                                data-testid="nemotron-fit"
+                                            >
+                                                {{ nemotron.status.value.recommendation.message }}
+                                            </p>
+                                            <p v-else class="mt-1 text-[13px] text-fg-muted">
+                                                Checking…
+                                            </p>
+                                        </div>
+                                        <div class="flex shrink-0 gap-2">
+                                            <button
+                                                v-if="nemotron.installing.value"
+                                                type="button"
+                                                class="btn-secondary btn-sm"
+                                                @click="nemotron.cancel"
+                                            >
+                                                Pause
+                                            </button>
+                                            <button
+                                                v-else-if="
+                                                    !nemotronReady &&
+                                                    nemotronActiveVariant &&
+                                                    nemotron.status.value?.platformSupported
+                                                "
+                                                type="button"
+                                                class="btn-primary btn-sm"
+                                                data-testid="nemotron-download"
+                                                @click="downloadNemotron"
+                                            >
+                                                <Download aria-hidden="true" />
+                                                Download {{ formatBytes(nemotronDownloadBytes) }}
+                                            </button>
+                                            <button
+                                                v-else-if="nemotronReady && nemotronActiveVariant"
+                                                type="button"
+                                                class="btn-ghost btn-sm"
+                                                @click="removeNemotron(nemotronActiveVariant)"
+                                            >
+                                                Delete
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div
+                                        v-if="nemotron.installing.value"
+                                        class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-accent/20"
+                                        role="progressbar"
+                                        aria-label="Downloading Nemotron"
+                                        :aria-valuenow="Math.round(nemotron.percent.value ?? 0)"
+                                        aria-valuemin="0"
+                                        aria-valuemax="100"
+                                    >
+                                        <div
+                                            class="h-full bg-accent transition-[width] duration-300"
+                                            :style="{ width: `${nemotron.percent.value ?? 0}%` }"
+                                        />
+                                    </div>
+                                    <p class="hint mt-2">
+                                        Nothing leaves this machine. Punctuated transcripts in ~40
+                                        languages with word timings and speakers; the project
+                                        glossary steers how names are spelled. About 2x real time on
+                                        an M3 Pro, so slower than the other on-device engines.
+                                        Downloads resume if interrupted.
+                                    </p>
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-4 @xl:grid-cols-2">
+                                    <div>
+                                        <label for="settings-nemotron-variant" class="field-label"
+                                            >Model build</label
+                                        >
+                                        <select
+                                            id="settings-nemotron-variant"
+                                            v-model="localNemotronVariant"
+                                            class="input"
+                                        >
+                                            <option value="">
+                                                Recommended for this machine{{
+                                                    nemotron.status.value?.recommendation.variant
+                                                        ? ` (${nemotron.status.value.recommendation.variant})`
+                                                        : ''
+                                                }}
+                                            </option>
+                                            <option
+                                                v-for="option in nemotronVariantOptions"
+                                                :key="option.value"
+                                                :value="option.value"
+                                            >
+                                                {{ option.label }}
+                                            </option>
+                                        </select>
+                                        <p class="hint mt-1.5">
+                                            All builds from Q2_0_L up are within 0.2 WER points of
+                                            the original; larger ones are slower.
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <label for="settings-nemotron-language" class="field-label"
+                                            >Spoken language</label
+                                        >
+                                        <select
+                                            id="settings-nemotron-language"
+                                            v-model="localAsrLanguage"
+                                            class="input"
+                                        >
+                                            <option
+                                                v-for="entry in ASR_LANGUAGES"
+                                                :key="entry.value"
+                                                :value="entry.value"
+                                            >
+                                                {{ entry.label }}
+                                            </option>
+                                        </select>
+                                        <p class="hint mt-1.5">Shared with cloud speech-to-text.</p>
+                                    </div>
+                                </div>
+
+                                <SettingsSwitchRow
+                                    v-model="localNemotronDiarize"
+                                    test-id="nemotron-diarize"
+                                    title="Identify speakers"
+                                    description="Uses the model's own speaker branch (up to 8 speakers); Sortformer fills in for long, chunked recordings."
+                                />
+                            </div>
+                        </DisclosureCard>
+
                         <!-- Parakeet -->
                         <DisclosureCard
                             title="Parakeet"
@@ -1723,6 +2162,147 @@ watch([localLocalEngine, pipelineUsesEngine], ([engine, usesEngine]) => {
                                     test-id="apple-speech-diarize"
                                     title="Identify speakers"
                                     description="Adds Sortformer diarization; Apple Speech does not tell speakers apart."
+                                />
+                            </div>
+                        </DisclosureCard>
+
+                        <!-- Cloud speech-to-text -->
+                        <DisclosureCard
+                            title="Cloud speech-to-text"
+                            description="OpenRouter's /audio/transcriptions: Nemotron, Voxtral and more, one key."
+                            v-model:open="openEngines.cloud"
+                            data-testid="engine-card-cloud"
+                        >
+                            <template #actions>
+                                <span v-if="localLocalEngine === 'cloud'" class="chip-accent"
+                                    >Default</span
+                                >
+                                <span :class="cloudChip.tone">
+                                    <Cloud aria-hidden="true" />
+                                    {{ cloudChip.label }}
+                                </span>
+                            </template>
+                            <div class="space-y-4">
+                                <div v-if="!providerUsesOpenRouter">
+                                    <div class="mb-1.5 flex items-center justify-between gap-3">
+                                        <label for="settings-cloud-key" class="field-label !mb-0"
+                                            >OpenRouter API key</label
+                                        >
+                                        <span v-if="openRouterKeyStored" class="chip-success">
+                                            <KeyRound aria-hidden="true" />
+                                            Saved in keychain
+                                        </span>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <input
+                                            id="settings-cloud-key"
+                                            v-model="localOpenRouterKey"
+                                            type="password"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            class="input min-w-0 flex-1"
+                                            data-testid="cloud-key-input"
+                                            :placeholder="
+                                                openRouterKeyStored
+                                                    ? 'Saved — enter a new key to replace it'
+                                                    : 'sk-or-…'
+                                            "
+                                        />
+                                        <button
+                                            v-if="openRouterKeyStored"
+                                            type="button"
+                                            class="btn-danger"
+                                            @click="removeApiKey(true)"
+                                        >
+                                            Remove
+                                        </button>
+                                    </div>
+                                    <p class="hint mt-1.5">
+                                        Also used by the AI model when its provider is OpenRouter.
+                                    </p>
+                                </div>
+                                <p v-else class="hint">
+                                    Uses the OpenRouter key from the AI provider section.
+                                </p>
+
+                                <SettingsSwitchRow
+                                    v-model="localOpenRouterEuOnly"
+                                    test-id="cloud-eu-only"
+                                    title="Keep requests in the EU (eu.openrouter.ai)"
+                                    description="Processed in Europe only. Nemotron isn't served there; Mistral's Voxtral models are."
+                                />
+
+                                <div class="grid grid-cols-1 gap-4 @xl:grid-cols-2">
+                                    <div>
+                                        <label for="settings-cloud-model" class="field-label"
+                                            >Model</label
+                                        >
+                                        <select
+                                            id="settings-cloud-model"
+                                            v-model="localCloudAsrModel"
+                                            class="input"
+                                            data-testid="cloud-model"
+                                        >
+                                            <option
+                                                v-for="option in cloudModelOptions"
+                                                :key="option.value"
+                                                :value="option.value"
+                                            >
+                                                {{ option.label }}
+                                            </option>
+                                        </select>
+                                        <p
+                                            v-if="cloudModelUnavailable"
+                                            class="mt-1.5 flex items-start gap-2 text-[12px] text-warning"
+                                            data-testid="cloud-model-unavailable"
+                                        >
+                                            <TriangleAlert
+                                                class="mt-0.5 h-3.5 w-3.5 shrink-0"
+                                                aria-hidden="true"
+                                            />
+                                            Not served in this region.
+                                        </p>
+                                        <p
+                                            v-else-if="cloudModelsError"
+                                            class="mt-1.5 text-[12px] text-warning"
+                                        >
+                                            Couldn't load the model list: {{ cloudModelsError }}
+                                        </p>
+                                        <p v-else class="hint mt-1.5">
+                                            <Loader2
+                                                v-if="loadingCloudModels"
+                                                class="mr-1 inline h-3 w-3 animate-spin"
+                                                aria-hidden="true"
+                                            />
+                                            Prices are OpenRouter's, per hour of audio.
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <label for="settings-cloud-language" class="field-label"
+                                            >Spoken language</label
+                                        >
+                                        <select
+                                            id="settings-cloud-language"
+                                            v-model="localAsrLanguage"
+                                            class="input"
+                                        >
+                                            <option
+                                                v-for="entry in ASR_LANGUAGES"
+                                                :key="entry.value"
+                                                :value="entry.value"
+                                            >
+                                                {{ entry.label }}
+                                            </option>
+                                        </select>
+                                        <p class="hint mt-1.5">Shared with Nemotron.</p>
+                                    </div>
+                                </div>
+
+                                <SettingsSwitchRow
+                                    v-model="localCloudAsrDiarize"
+                                    test-id="cloud-diarize"
+                                    title="Identify speakers"
+                                    description="Runs Sortformer on this machine, so speakers stay consistent across the uploaded chunks."
                                 />
                             </div>
                         </DisclosureCard>
