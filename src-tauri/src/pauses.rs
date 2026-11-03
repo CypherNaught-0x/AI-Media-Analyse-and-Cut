@@ -83,7 +83,7 @@ pub(crate) fn detect_pauses(
             "-t",
             &format!("{:.6}", end - start),
         ])
-        .input(path.to_string_lossy())
+        .input(path)
         .args(["-vn", "-sn", "-ac", "1", "-ar", &SAMPLE_RATE.to_string()])
         .args(["-f", "f32le", "-acodec", "pcm_f32le"])
         .pipe_stdout();

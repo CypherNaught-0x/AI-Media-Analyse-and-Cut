@@ -61,9 +61,7 @@ pub fn probe_media(path: &Path) -> Result<MediaInfo, String> {
     }
 
     let mut command = FfmpegCommand::new();
-    command
-        .input(path.to_string_lossy())
-        .args(["-t", "0", "-f", "null", "-"]);
+    command.input(path).args(["-t", "0", "-f", "null", "-"]);
 
     let mut parser = ProbeParser::default();
     run_ffmpeg(

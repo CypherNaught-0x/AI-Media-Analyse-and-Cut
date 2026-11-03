@@ -492,7 +492,7 @@ fn measure_loudness(
     for seek in &sources.0 {
         command
             .args(["-ss", &format!("{seek:.6}")])
-            .input(render.input.to_string_lossy());
+            .input(render.input);
     }
     command
         .args(["-filter_complex", &graph, "-map", "[a]", "-f", "null"])
@@ -797,7 +797,7 @@ pub(crate) fn render_vertical(
     for seek in &sources.0 {
         command
             .args(["-ss", &format!("{seek:.6}")])
-            .input(render.input.to_string_lossy());
+            .input(render.input);
     }
     if let Some(overlay) = &overlay {
         command
@@ -813,7 +813,7 @@ pub(crate) fn render_vertical(
     }
     command
         .args(encode_args(preferred_h264_encoder(), render.quality))
-        .output(render.output.to_string_lossy());
+        .output(render.output);
     command.as_inner_mut().current_dir(dir.path());
 
     run_ffmpeg(
@@ -912,7 +912,7 @@ pub(crate) fn render_cover(
     let mut command = FfmpegCommand::new();
     command
         .args(["-y", "-ss", &format!("{time:.6}")])
-        .input(input.to_string_lossy())
+        .input(input)
         .input("title.png")
         .args([
             "-filter_complex",
@@ -924,7 +924,7 @@ pub(crate) fn render_cover(
             "-q:v",
             "2",
         ])
-        .output(output.to_string_lossy());
+        .output(output);
     command.as_inner_mut().current_dir(dir.path());
     run_ffmpeg(
         command,

@@ -35,7 +35,7 @@ pub(crate) fn detect_cuts(
     command
         .args(["-ss", &format!("{start:.6}")])
         .args(["-t", &format!("{:.6}", end - start)])
-        .input(path.to_string_lossy())
+        .input(path)
         .args(["-an", "-sn"])
         .filter(format!(
             "scale={ANALYSIS_WIDTH}:-2,scdet=threshold={SCENE_THRESHOLD}:sc_pass=1,\

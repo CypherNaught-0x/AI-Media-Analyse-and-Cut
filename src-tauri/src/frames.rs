@@ -60,7 +60,7 @@ pub(crate) fn decode_frames(
     let mut command = FfmpegCommand::new();
     command
         .args(["-ss", &format!("{:.6}", request.start)])
-        .input(request.path.to_string_lossy())
+        .input(request.path)
         .args(["-t", &format!("{:.6}", request.end - request.start)])
         .args(["-an", "-sn"])
         .filter(format!(

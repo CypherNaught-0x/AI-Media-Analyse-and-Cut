@@ -4,6 +4,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["node"],
+    // The specs run on Node, which has ES2022 (Array.prototype.at, ...); the
+    // app keeps the base lib. @types/node 26 no longer declares these itself.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "allowJs": true
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],
