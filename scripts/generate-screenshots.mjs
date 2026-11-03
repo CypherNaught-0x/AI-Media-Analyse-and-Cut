@@ -1,7 +1,7 @@
 // Regenerates the README preview screenshots (dev-resources/preview_*.png)
 // from the live UI. Starts a Vite dev server in screenshot-demo mode (mocked
 // Tauri IPC + seeded demo data, see src/demo/screenshotDemo.ts) and captures
-// the two documented views with Playwright. Run via `just screenshots`.
+// the documented views with Playwright. Run via `just screenshots`.
 import { execFileSync, spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -9,21 +9,38 @@ import { chromium } from 'playwright';
 
 const PORT = 5199;
 const BASE_URL = `http://localhost:${PORT}`;
-const VIEWPORT = { width: 1456, height: 1300 };
+const VIEWPORT = { width: 1456, height: 900 };
+
+const status = (page, text) => page.getByTestId('status-text').getByText(text);
 
 const SHOTS = [
     {
+        file: 'dev-resources/preview_setup.png',
+        url: `${BASE_URL}/?demo=setup`,
+        waitFor: (page) => page.getByRole('dialog').getByText('Quick setup'),
+    },
+    {
         file: 'dev-resources/preview_1.png',
         url: `${BASE_URL}/?demo=home`,
-        waitFor: (page) => page.getByText('FFmpeg is already installed.'),
+        // Tall enough for the whole Source page, analysis options included.
+        viewport: { width: 1456, height: 1180 },
+        waitFor: (page) => status(page, 'FFmpeg is already installed.'),
     },
     {
         file: 'dev-resources/preview_2.png',
         url: `${BASE_URL}/?demo=transcript`,
-        waitFor: (page) => page.getByText('Analysis complete.'),
-        // The media players above the transcript fill most of the first viewport;
-        // frame this shot on the transcript workspace itself.
-        scrollTo: (page) => page.locator('h2:text-is("Transcript")'),
+        before: (page) => page.getByText('Transcript', { exact: true }).first().click(),
+        waitFor: (page) => page.getByRole('textbox', { name: 'Search transcript' }),
+    },
+    {
+        file: 'dev-resources/preview_clips.png',
+        url: `${BASE_URL}/?demo=transcript`,
+        before: async (page) => {
+            await page.getByText('Viral Clips', { exact: true }).click();
+            await page.getByRole('switch', { name: 'Vertical 9:16' }).click();
+            await page.getByRole('button', { name: 'Find clips' }).click();
+        },
+        waitFor: (page) => status(page, 'faces in'),
     },
 ];
 
@@ -97,7 +114,9 @@ try {
     const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
 
     for (const shot of SHOTS) {
+        await page.setViewportSize(shot.viewport ?? VIEWPORT);
         await page.goto(shot.url);
+        await shot.before?.(page);
         await shot.waitFor(page).waitFor({ state: 'visible', timeout: 15_000 });
         // Wait for <video>/<audio> elements to finish loading or fail (the demo
         // asset URL never resolves in a browser), so no loading spinner is caught.
@@ -105,16 +124,15 @@ try {
             .waitForFunction(
                 () =>
                     [...document.querySelectorAll('video, audio')].every(
-                        (m) => m.readyState > 0 || m.error,
+                        (m) => m.readyState >= 2 || m.error,
                     ),
                 { timeout: 10_000 },
             )
             .catch(() => {});
-        if (shot.scrollTo) {
-            await shot.scrollTo(page).evaluate((el) => el.scrollIntoView({ block: 'start' }));
-        }
+        // No focus ring on whatever a dialog focused first.
+        await page.evaluate(() => document.activeElement?.blur());
         // Let transitions/layout settle before capturing.
-        await sleep(750);
+        await sleep(1500);
         await page.screenshot({ path: shot.file });
         console.log(`captured ${shot.file}`);
     }

@@ -2,29 +2,59 @@
 
 # AI Media Cutter
 
-**AI Media Cutter** is a powerful, cross-platform desktop application designed to streamline video editing workflows using Artificial Intelligence. It leverages advanced LLMs (like Google Gemini and OpenAI) to transcribe, analyze, and edit video content intelligently.
+**AI Media Cutter** is a cross-platform desktop app that turns long recordings into finished
+edits. It transcribes a video or audio file, lets you cut the video by editing the transcript,
+and finds the moments that work as shorts, then exports them as framed, captioned 9:16 clips.
+Transcription runs on your machine (Nemotron 3.5, Parakeet, CrisperWhisper, Apple Speech) or in
+the cloud via OpenRouter (optionally EU-only); an LLM of your choice (OpenRouter, Google Gemini
+or any OpenAI-compatible endpoint) handles cleanup, translation and clip selection.
 
-![Application Preview](dev-resources/preview_1.png)
+![Source page: pick a recording and choose how to transcribe it](dev-resources/preview_1.png)
 
 ## Key Features
 
-*   **AI Transcription**: Automatically transcribe audio and video files with high accuracy.
-*   **Nemotron 3.5 Transcribe (recommended)**: NVIDIA's 30B speech-LLM, on your machine or in the cloud via OpenRouter: punctuated transcripts in ~40 languages with word timings, speaker labels and glossary-aware spelling. See [Nemotron 3.5 Transcribe](#nemotron-35-transcribe).
-*   **Quick setup wizard**: On first start the app checks what your machine can run (memory, GPU, disk) and walks you through the speech engine, AI provider, EU-only routing and language. Run it again from Settings.
-*   **OpenRouter with EU-only routing**: One key for cloud speech-to-text and the AI features; optionally keep every request in Europe (`eu.openrouter.ai`). See [Cloud speech-to-text](#cloud-speech-to-text-openrouter).
-*   **Verbatim Transcription (CrisperWhisper)**: Local, English/German-only engine that writes down every filler, stutter and vocal event with ~30 ms word timings — so "um"s can be cut out of the video, not just the text. See [Transcription Backends](#transcription-backends).
-*   **Composable Pipelines**: Pick a pipeline (local, remote, or hybrid) and a local engine independently — every hybrid works with either engine. See [Transcription Backends](#transcription-backends).
-*   **Text-Based Editing**: Edit videos by simply deleting text from the transcript. The video is automatically cut to match your text edits.
-*   **Smart Filler Word Removal**: Toggle to automatically remove filler words (um, uh, like) and non-voice sounds for cleaner cuts.
-*   **Advanced Editor**: Multi-select segments (Shift+Click) to merge or delete multiple parts at once.
-*   **Real-time Preview**: Built-in video player that simulates the final cut by skipping deleted segments during playback.
-*   **Transcript Blacklist Warnings**: Flag word-level matches from language-specific blacklist files directly in the transcript review UI.
-*   **Viral Clips**: AI picks the moments that work as standalone shorts (TikTok, Shorts, Reels), ranked by a score built from hook, standalone, emotion and info ratings plus transcript signals. Clips always start and end on transcript segment boundaries. Options: "Smart Splicing" (combine separate moments, e.g. a cold-open hook) and **Looped shorts** (open on the resolution, end on a line that leads back into it, so the replay feels continuous). Preview and trim each clip word by word, then export the ones you pick.
-*   **Multi-Language Translation**: Translate transcripts into 15+ languages (Spanish, French, German, Japanese, etc.) while preserving original timestamps.
-*   **Export Options**: Export subtitles (SRT, VTT, TXT) or the cut video file directly.
-*   **Context-Aware**: Provide context and glossaries to the AI to improve transcription accuracy for technical terms or specific names.
+### Transcribe
 
-![Transcript Editing](dev-resources/preview_2.png)
+*   **Quick setup wizard**: On first start the app checks what your machine can run (memory, GPU, disk) and walks you through the speech engine, AI provider, EU-only routing and language. Run it again from Settings.
+*   **Nemotron 3.5 Transcribe (recommended)**: NVIDIA's 30B speech-LLM, on your machine or in the cloud via OpenRouter: punctuated transcripts in ~40 languages with word timings, speaker labels and glossary-aware spelling. See [Nemotron 3.5 Transcribe](#nemotron-35-transcribe).
+*   **Five speech engines**: Nemotron 3.5, Parakeet (with Sortformer speaker labels), CrisperWhisper (verbatim, keeps every "um"), Apple Speech (macOS 26+, very fast) and Cloud speech-to-text. See [Transcription Backends](#transcription-backends).
+*   **Composable pipelines**: Run the engine alone, the LLM alone, or a hybrid where the LLM tidies or merges with the engine's transcript. Every pipeline works with every engine.
+*   **OpenRouter with EU-only routing**: One key for cloud speech-to-text and the AI features; optionally keep every request in Europe (`eu.openrouter.ai`). See [Cloud speech-to-text](#cloud-speech-to-text-openrouter).
+*   **Context and glossary**: Describe the recording and list names or jargon to steer spelling.
+*   **Silence trimming**: Long pauses can be removed from the audio before it is transcribed.
+
+### Edit
+
+*   **Text-based editing**: Delete a line from the transcript and that part is cut from the video.
+*   **Filler word removal**: Drop "um", "uh" and vocal events; with a verbatim engine they are cut from the video too, not only from the text.
+*   **Transcript editor**: Search and replace (whole word optional), split a segment at an exact audio point, merge or delete several segments at once (Shift+Click), and preview each segment's audio or video.
+*   **Speakers**: Rename speakers globally, hide them, or solo one with Shift+Click.
+*   **Real-time preview**: The built-in player skips deleted segments, so you hear the final cut.
+*   **Blacklist warnings**: Words from language-specific blacklist files are flagged in the transcript review.
+*   **Translation**: Translate transcripts into 15+ languages while keeping the original timestamps.
+
+![Transcript editor with speakers, search and export controls](dev-resources/preview_2.png)
+
+### Viral clips and vertical shorts
+
+*   **Clip finder**: The AI picks the moments that work as standalone shorts (TikTok, Shorts, Reels), ranked by a score built from hook, standalone, emotion and info ratings plus transcript signals. Clips start and end on segment boundaries; long recordings are searched in overlapping parts.
+*   **Smart splicing and looped shorts**: Combine separate moments (e.g. a cold-open hook), or open on the resolution and end on a line that leads back into it, so the replay feels continuous.
+*   **Clip text and word cuts**: Read each clip's words, follow the spoken word during preview, correct a word (the fix reaches the transcript, subtitles and captions), or cut single words out of one clip.
+*   **Auto edit**: An LLM cuts false starts, repetitions and asides from new clips; every cut shows its reason and can be restored.
+*   **Tightening**: Off, Chill, Punchy or Hyper shortens pauses (measured from the audio) and removes fillers and stutters.
+*   **Vertical 9:16 export**: Face detection and a camera planner follow whoever is speaking, with smoothed pans, word-by-word burned-in captions, morph cuts (RIFE frame interpolation), punch-ins and listener cutaways to hide jump cuts, a choice of splice transitions, loudness normalised to about -14 LUFS, and a cover image per clip. See [Vertical shorts (9:16)](#vertical-shorts-916).
+*   **Face review**: Detected faces are grouped into people across camera angles; choose who to follow, name them, or ignore a face (e.g. one on a TV).
+*   **Saved with the recording**: Clips, word cuts and face choices are stored next to the transcript and come back when you reopen the file.
+
+![Viral clips with 9:16 framing, captions and score breakdowns](dev-resources/preview_clips.png)
+
+### Podcast and export
+
+*   **Podcast**: Condense the recording into an episode of the length you want, then rearrange its segments.
+*   **Export**: The cut video (High, Balanced or Draft quality, with optional padding around each cut), subtitles as SRT, VTT or TXT on the source or the cut timeline, with a validator for line length, duration and reading speed.
+*   **Private by default**: API keys live in the system keychain, and with an on-device engine and the *Speech Engine Only* pipeline nothing leaves your machine.
+
+![Quick setup: the app checks the machine and recommends a speech engine](dev-resources/preview_setup.png)
 
 ## Installation
 
@@ -82,7 +112,8 @@ You can download the latest version for Windows and MacOS from the releases page
 
 #### Regenerating the preview screenshots
 
-The preview images above are generated from the live UI (with mocked backend data). With [`just`](https://github.com/casey/just) installed, run:
+The preview images above are generated from the live UI (with mocked backend data, see
+[`src/demo/screenshotDemo.ts`](src/demo/screenshotDemo.ts)). With [`just`](https://github.com/casey/just) installed, run:
 
 ```bash
 just screenshots
@@ -189,16 +220,24 @@ green on a machine that has never set one up.
     *   Switch between "Original" and translated versions to verify.
 
 6.  **Find Clips**:
-    *   Open the **Viral Clips** tab, set the count and duration range, and optionally a topic.
-    *   Optionally enable **Smart splicing**, **Looped shorts** or **Trim edge silence**.
-    *   Click **Find Clips**. Long recordings are analysed in overlapping parts and the best
+    *   Open the **Viral Clips** tab, set the count and length range, and optionally a topic.
+    *   Under **Style**, optionally enable **Looped shorts** or **Auto edit**, and pick a
+        **Tightening** level. **Smart splicing** and **Trim edge silence** are under *Advanced*.
+    *   Turn on **Vertical 9:16** for portrait exports, with **Captions** and **Transitions**.
+    *   Click **Find clips**. Long recordings are analysed in overlapping parts and the best
         non-overlapping clips are kept.
-    *   Each card shows the score, the hook line and the ranges. **Preview** plays the clip,
-        **Start/End ◀ ▶** trims by one word, and **Include** chooses what **Export selected** exports.
+    *   Each card shows the score, the hook line, the ranges and the ratings. **Preview** plays
+        the clip (framed for 9:16 when that is on), **Text** shows its words for corrections and
+        cuts, **Start/End ◀ ▶** trims by one word, and the checkbox chooses what
+        **Export selected** exports.
 
-7.  **Export**:
-    *   Click **Export Video** to render the final edited video based on your transcript.
+7.  **Make a podcast** (Optional): the **Podcast** tab condenses the recording into an episode
+    of the length you want.
+
+8.  **Export**:
+    *   Click **Export video** to render the final edited video based on your transcript.
     *   Use the **SRT / VTT / TXT** buttons to export subtitles.
+    *   **Validate** checks line length, duration and reading speed.
     *   Pick the timeline first: *Source timeline* matches the media you selected, *Cut timeline* re-times the cues for the `_cut` file (which contains only the transcript segments, so it starts at the first cue) and saves them as `<name>_cut.srt` next to it.
 
 ## Transcription Backends
@@ -430,6 +469,32 @@ Xcode or the Command Line Tools with the macOS 26 SDK; without them the app stil
 simply doesn't offer the engine. Only the helper needs macOS 26: the app itself still runs on
 older macOS versions, where the engine is not offered.
 
+## Vertical shorts (9:16)
+
+With **Vertical 9:16** on, clip exports become portrait videos named
+`clip_NNN_<title>_9x16.mp4`, each with a `.jpg` cover next to it. Preview shows the planned
+framing and captions live in a 9:16 frame before anything is rendered.
+
+*   **Framing**: YuNet finds faces, which are bound to the transcript's speakers. A camera planner
+    follows the current speaker with smoothed pans and keeps the framing steady across jump cuts
+    when the same face is on both sides. Wide shots fall back to the whole picture over a blurred
+    copy.
+*   **Faces**: SFace embeddings group faces into people across camera angles. In the *Faces*
+    panel you choose who to follow, assign a speaker, or ignore a face. The search runs on its
+    own when the clips change.
+*   **Jump cuts**: where tightening or word cuts jump forward, the render morphs across the cut
+    (six frames from RIFE 4.9) when the speaker barely moved, otherwise it punches in or cuts
+    away to a listener in the same shot for a moment.
+*   **Splices** between separate moments use a transition: whip, blur zoom, blur cut, wipe, flash,
+    dip to black, pixelate or iris. *Auto* lets the tightening level choose.
+*   **Captions**: one to three words at a time, the spoken word highlighted, drawn by the app
+    itself, so any FFmpeg build works.
+*   **Audio** is normalised to about -14 LUFS, the level short-video platforms play at. Looped
+    shorts get tight seams so the replay sounds like one cut.
+
+The YuNet face detector ships with the app. SFace (39 MB) and RIFE (21 MB) download on first
+use, pinned to a revision and checked by SHA-256.
+
 ## Transcript Blacklists
 
 Language-specific blacklist files live in [`src/assets/transcript-blacklists/`](src/assets/transcript-blacklists/). Each file should use the language code as its filename, for example `de.txt`.
@@ -446,8 +511,11 @@ To extend blacklist coverage for another language, add a new `xx.txt` file in th
 ## Tech Stack
 
 *   **Frontend**: Vue 3, TypeScript, Tailwind CSS
-*   **Backend**: Rust (Tauri), FFmpeg
-*   **AI Integration**: Google Gemini API / OpenAI API
+*   **Backend**: Rust (Tauri 2), FFmpeg, typed IPC bindings generated for the frontend
+*   **On-device models**: ONNX Runtime (Parakeet, Sortformer, YuNet, SFace, RIFE),
+    NeMo-Speech.cpp (Nemotron), a managed Python environment (CrisperWhisper), and a Swift
+    helper for Apple Speech
+*   **AI Integration**: OpenRouter, Google Gemini or any OpenAI-compatible API
 
 ## License
 
