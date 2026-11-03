@@ -23,7 +23,7 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -41,14 +41,13 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 'lts/*'
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+        # Version from package.json's `packageManager`.
+        uses: pnpm/action-setup@v6
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -106,7 +105,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install dependencies (Ubuntu)
         if: startsWith(matrix.platform, 'ubuntu')
@@ -131,14 +130,13 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 'lts/*'
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+        # Version from package.json's `packageManager`.
+        uses: pnpm/action-setup@v6
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -167,7 +165,7 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-${{ matrix.platform }}
           path: |
