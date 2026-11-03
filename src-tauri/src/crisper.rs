@@ -1299,16 +1299,17 @@ mod tests {
 
         let control = RunControl::default();
         let run_id = control.begin_run();
-        let canceller = control.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            canceller.cancel_current_run().unwrap();
-        });
 
+        // Cancel once the runner is demonstrably up (its first progress line),
+        // not after a fixed delay: on a slow CI runner Python had not even
+        // started after 500 ms.
         let progress = std::sync::Mutex::new(Vec::new());
         let started = std::time::Instant::now();
         let error = run_runner(
-            &|text| progress.lock().unwrap().push(text.to_string()),
+            &|text| {
+                progress.lock().unwrap().push(text.to_string());
+                control.cancel_current_run().unwrap();
+            },
             "python3",
             &script,
             serde_json::json!({ "action": "transcribe" }),
