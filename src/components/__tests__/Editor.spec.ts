@@ -29,6 +29,32 @@ describe('Editor.vue', () => {
         expect(wrapper.text()).toContain('How are you?');
     });
 
+    it('sizes the time gutter to the timestamps and shows milliseconds on focus only', async () => {
+        const wrapper = mount(Editor, {
+            props: {
+                segments: [
+                    { start: '01:18.400', end: '01:22.640', speaker: 'Speaker 1', text: 'Heute' },
+                    {
+                        start: '01:01:06.720',
+                        end: '01:01:09.000',
+                        speaker: 'Speaker 1',
+                        text: 'Später',
+                    },
+                ],
+            },
+        });
+
+        // 12 characters (hh:mm:ss.mmm) of 11px monospace, plus slack.
+        const list = wrapper.get('.segment').element.parentElement as HTMLElement;
+        expect(list.style.getPropertyValue('--time-col')).toBe('5.075rem');
+
+        const fraction = wrapper.findAll('[data-testid="segment-time-fraction"]');
+        expect(fraction[0].text()).toBe('.400');
+        expect(fraction[0].classes()).toContain('opacity-0');
+        expect(fraction[0].classes()).toContain('group-hover:opacity-100');
+        expect(wrapper.findAll('.segment')[0].text()).toContain('01:18.400');
+    });
+
     it('does not control playback when a segment body is clicked', async () => {
         const wrapper = mount(Editor, {
             props: {

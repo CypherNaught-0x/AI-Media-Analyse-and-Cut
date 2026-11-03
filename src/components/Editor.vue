@@ -165,6 +165,24 @@ const existingSpeakers = computed(() => {
     return Array.from(names).sort((a, b) => a.localeCompare(b));
 });
 
+/**
+ * Width of the time gutter: fits the longest start time (`01:18.400`, or
+ * `01:01:06.720` past an hour) in 11px monospace (0.6em per character).
+ */
+const timeColumnWidth = computed(() => {
+    const longest = props.segments.reduce(
+        (length, segment) => Math.max(length, segment.start.length),
+        '00:00.000'.length,
+    );
+    return `${(longest * 11 * 0.6) / 16 + 0.125}rem`;
+});
+
+/** `01:18.400` → [`01:18`, `.400`]: the fraction only shows on the row in focus. */
+function splitTime(time: string): [string, string] {
+    const dot = time.lastIndexOf('.');
+    return dot < 0 ? [time, ''] : [time.slice(0, dot), time.slice(dot)];
+}
+
 const visibleSegments = computed(() =>
     props.segments
         .map((segment, originalIndex) => ({ segment, originalIndex }))
@@ -1138,6 +1156,7 @@ const mergeDown = (originalIndex: number) => {
         <div
             class="relative px-1.5 pt-3 transition-[padding] duration-150"
             :class="selectedIndices.size > 0 && !lockStructure ? 'pb-28' : 'pb-1.5'"
+            :style="{ '--time-col': timeColumnWidth }"
         >
             <EmptyState
                 v-if="visibleSegments.length === 0"
@@ -1162,7 +1181,7 @@ const mergeDown = (originalIndex: number) => {
                 role="article"
                 :aria-labelledby="`${uid}-t-${originalIndex}`"
                 :aria-describedby="`${uid}-x-${originalIndex}`"
-                class="segment group relative grid scroll-mt-32 scroll-mb-32 grid-cols-[3.25rem_minmax(0,1fr)_auto] gap-x-3 rounded-md @4xl:grid-cols-[3.25rem_minmax(0,1fr)_auto_auto] border-l-2 py-2 pr-1.5 pl-2.5 transition-colors duration-100 focus-visible:-outline-offset-2"
+                class="segment group relative grid scroll-mt-32 scroll-mb-32 grid-cols-[var(--time-col)_minmax(0,1fr)_auto] gap-x-3 rounded-md @4xl:grid-cols-[var(--time-col)_minmax(0,1fr)_auto_auto] border-l-2 py-2 pr-1.5 pl-2.5 transition-colors duration-100 focus-visible:-outline-offset-2"
                 :class="[
                     rowStateClass(originalIndex),
                     startsSpeakerRun(visibleIndex) && visibleIndex > 0 ? 'mt-2.5' : '',
@@ -1178,8 +1197,22 @@ const mergeDown = (originalIndex: number) => {
                     class="col-start-1 row-start-1 flex flex-col items-start gap-1 pt-[3px] font-mono text-[11px] leading-5 select-none"
                     :class="playingIndex === originalIndex ? 'text-success' : 'text-fg-subtle'"
                     :title="`${segment.start} – ${segment.end}`"
-                    ><span class="sr-only">{{ segment.speaker }}, </span>{{ segment.start
-                    }}<span
+                    ><span class="sr-only">{{ segment.speaker }}, </span
+                    ><span class="whitespace-nowrap"
+                        >{{ splitTime(segment.start)[0]
+                        }}<span
+                            class="transition-opacity duration-100"
+                            :class="
+                                activeIndex === originalIndex ||
+                                playingIndex === originalIndex ||
+                                selectedIndices.has(originalIndex)
+                                    ? 'opacity-100'
+                                    : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                            "
+                            data-testid="segment-time-fraction"
+                            >{{ splitTime(segment.start)[1] }}</span
+                        ></span
+                    ><span
                         v-if="selectedIndices.has(originalIndex)"
                         class="inline-flex h-4 w-4 items-center justify-center rounded-sm bg-accent text-accent-fg"
                         title="Selected"

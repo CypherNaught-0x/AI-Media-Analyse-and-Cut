@@ -67,7 +67,13 @@ const DEMO_SEGMENTS: TranscriptSegment[] = [
         'Right. You focus on the story, and the tooling handles the scissors.',
     ],
     ['00:56', '01:01', 'Speaker 1', "Let's walk through how that works under the hood."],
-].map(([start, end, speaker, text]) => ({ start, end, speaker, text }));
+].map(([start, end, speaker, text], index) => ({
+    // Local engines time words to the millisecond; show that like a real transcript.
+    start: `${start}.${String((index * 137) % 1000).padStart(3, '0')}`,
+    end: `${end}.${String((index * 137 + 90) % 1000).padStart(3, '0')}`,
+    speaker,
+    text,
+}));
 
 const DEMO_CLIPS: ClipCandidate[] = [
     {
