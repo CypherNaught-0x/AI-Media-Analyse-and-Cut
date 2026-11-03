@@ -59,7 +59,26 @@ pub(crate) fn source_key(source: &Path) -> Result<String, String> {
 }
 
 fn touch(dir: &Path) {
-    let _ = std::fs::File::open(dir).and_then(|file| file.set_modified(SystemTime::now()));
+    let _ = set_dir_modified(dir, SystemTime::now());
+}
+
+/// Set a directory's modification time. Windows only opens a directory as a
+/// file with FILE_FLAG_BACKUP_SEMANTICS, and setting its time needs
+/// FILE_WRITE_ATTRIBUTES; a plain `File::open` fails with "Access is denied".
+fn set_dir_modified(dir: &Path, time: SystemTime) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let file = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)?
+    };
+    #[cfg(not(windows))]
+    let file = std::fs::File::open(dir)?;
+    file.set_modified(time)
 }
 
 /// Delete entries unused for [`MAX_AGE`], then the least recently used ones
@@ -155,10 +174,7 @@ mod tests {
         let path = root.join(name);
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("analysis.ogg"), vec![0u8; bytes]).unwrap();
-        std::fs::File::open(&path)
-            .unwrap()
-            .set_modified(SystemTime::now() - age)
-            .unwrap();
+        set_dir_modified(&path, SystemTime::now() - age).unwrap();
         path
     }
 

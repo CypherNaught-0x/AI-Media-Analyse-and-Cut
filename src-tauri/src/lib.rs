@@ -1651,7 +1651,10 @@ mod ipc_binding_tests {
         let fresh = tempfile::tempdir().unwrap().keep().join("bindings.ts");
         render_ipc_bindings(&fresh).unwrap();
         let expected = std::fs::read_to_string(&fresh).unwrap();
-        let actual = std::fs::read_to_string(&committed).unwrap_or_default();
+        // A Windows checkout may turn the committed file's line endings into CRLF.
+        let actual = std::fs::read_to_string(&committed)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
         assert!(
             expected == actual,
             "src/bindings.ts is out of date with the Tauri commands; run `just bindings`"
